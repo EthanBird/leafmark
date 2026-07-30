@@ -52,6 +52,11 @@ cd ..
 npm run tauri:build
 ```
 
+## 下载
+
+Windows 用户可以从 [GitHub Releases](https://github.com/EthanBird/leafmark/releases/latest)
+下载 NSIS 安装包。安装后可在 LeafMark 的“设置 → 系统集成”中完成 Markdown 默认应用确认。
+
 ## 实时编辑说明
 
 在“设置 → 编辑与保存”开启实时编辑后，工具栏会出现铅笔按钮。此模式直接编辑渲染后的内容，并持续转换回 Markdown。数学公式和 Mermaid 作为不可破坏的渲染块保留原始源码；编辑复杂公式、图表、脚注或表格结构时，建议临时切到源码或分栏模式。
