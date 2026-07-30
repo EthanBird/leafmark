@@ -34,7 +34,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Import trusted Windows signing certificate
+      - name: Prepare optional Windows signing certificate
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -42,10 +42,14 @@ jobs:
           WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) {
-            throw "WINDOWS_CERTIFICATE is required. Unsigned public releases are blocked."
+            "{}" | Set-Content src-tauri/tauri.signing.conf.json -Encoding utf8
+            "WINDOWS_CERTIFICATE_CONFIGURED=false" |
+              Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Warning "No Authenticode certificate configured; publishing an unsigned installer."
+            exit 0
           }
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw "WINDOWS_CERTIFICATE_PASSWORD is required."
+            throw "WINDOWS_CERTIFICATE_PASSWORD is required when WINDOWS_CERTIFICATE is set."
           }
 
           $pfxPath = Join-Path $env:RUNNER_TEMP "leafmark-codesign.pfx"
@@ -85,6 +89,8 @@ jobs:
           }
           $config | ConvertTo-Json -Depth 5 |
             Set-Content src-tauri/tauri.signing.conf.json -Encoding utf8
+          "WINDOWS_CERTIFICATE_CONFIGURED=true" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install frontend dependencies
         run: npm ci
@@ -103,8 +109,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            此版本通过受信任证书完成 Authenticode 签名。
+            - 修复发布版启动时伴随黑色控制台窗口的问题
+            - 默认进入实时渲染编辑，并自动迁移旧版设置
+            - 设置页支持搜索、选择和即时预览本机字体
+
             下载下方 NSIS 安装程序即可安装。
+            未签名构建可能触发 Windows SmartScreen 提示。
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
@@ -113,7 +123,7 @@ jobs:
           args: --bundles nsis --config src-tauri/tauri.signing.conf.json
           releaseAssetNamePattern: LeafMark_[version]_[arch][setup].[ext]
 
-      - name: Verify Authenticode signature
+      - name: Verify installer
         shell: pwsh
         run: |
           $installer = Get-ChildItem `
@@ -125,14 +135,20 @@ jobs:
           }
 
           $signature = Get-AuthenticodeSignature $installer.FullName
-          if ($signature.Status -ne "Valid") {
+          if (
+            $env:WINDOWS_CERTIFICATE_CONFIGURED -eq "true" -and
+            $signature.Status -ne "Valid"
+          ) {
             throw "Invalid Authenticode signature: $($signature.Status) $($signature.StatusMessage)"
+          }
+          if ($env:WINDOWS_CERTIFICATE_CONFIGURED -ne "true") {
+            Write-Warning "Publishing unsigned installer: $($installer.Name)"
           }
 
           $version = node -p "require('./package.json').version"
           "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Publish verified release
+      - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -57,8 +57,8 @@ npm run tauri:build
 Windows 用户可以从 [GitHub Releases](https://github.com/EthanBird/leafmark/releases/latest)
 下载 NSIS 安装包。安装后可在 LeafMark 的“设置 → 系统集成”中完成 Markdown 默认应用确认。
 
-公开发布强制使用 Authenticode 代码签名；未配置受信任证书时，发布工作流会在创建公开
-Release 前停止。证书配置见 [Windows 发布签名](docs/windows-code-signing.md)。
+发布工作流支持可选 Authenticode 代码签名。未配置证书时仍可生成安装包，但 Windows
+SmartScreen 可能显示未知发布者提示。证书配置见 [Windows 发布签名](docs/windows-code-signing.md)。
 
 ## 实时编辑说明
 
