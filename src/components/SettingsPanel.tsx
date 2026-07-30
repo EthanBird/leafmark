@@ -1,4 +1,4 @@
-import { Check, ChevronRight, FolderOpen, Monitor, Moon, RotateCcw, Sun, X } from "lucide-react";
+import { Check, ChevronRight, FileKey2, FolderOpen, Monitor, Moon, RotateCcw, Sun, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppSettings, ThemeMode } from "../types";
@@ -16,6 +16,7 @@ type Section = "editor" | "appearance" | "workspace" | "performance";
 export function SettingsPanel({ settings, onChange, onWorkspaceChange, onClose }: SettingsPanelProps) {
   const [section, setSection] = useState<Section>("editor");
   const [working, setWorking] = useState(false);
+  const [associationNotice, setAssociationNotice] = useState("");
   const sections = useMemo(() => [
     { id: "editor" as const, label: "编辑与保存", detail: "编译模式、自动保存" },
     { id: "appearance" as const, label: "外观", detail: "主题、字号与版心" },
@@ -32,6 +33,17 @@ export function SettingsPanel({ settings, onChange, onWorkspaceChange, onClose }
     setWorking(true);
     try {
       await onWorkspaceChange(selected);
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const chooseDefaultApplication = async () => {
+    setWorking(true);
+    try {
+      setAssociationNotice(await api.openDefaultApps());
+    } catch (error) {
+      setAssociationNotice(`无法打开系统设置：${String(error)}`);
     } finally {
       setWorking(false);
     }
@@ -103,6 +115,12 @@ export function SettingsPanel({ settings, onChange, onWorkspaceChange, onClose }
                 <div className="settings-note">
                   目录扫描遵守 <code>.gitignore</code>、<code>.ignore</code> 和 <code>.markignore</code>，并自动跳过隐藏目录与常见构建产物。
                 </div>
+                <SettingRow title="默认打开 Markdown" description="安装版 LeafMark 已注册 .md 与 .markdown。点击后在 Windows 默认应用设置中将 LeafMark 选为默认应用。">
+                  <button className="secondary-button" type="button" onClick={() => void chooseDefaultApplication()} disabled={working || !api.isTauri()}>
+                    <FileKey2 size={14} /> 设置为默认
+                  </button>
+                </SettingRow>
+                {associationNotice && <div className="settings-note">{associationNotice}</div>}
               </>
             )}
 

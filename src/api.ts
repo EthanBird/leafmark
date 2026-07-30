@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, BootstrapPayload, DocumentEntry, EntryKind, LoadedDocument } from "./types";
+import type { AppSettings, ArchiveRecord, BootstrapPayload, DocumentEntry, DocumentOrigin, EntryKind, LoadedDocument } from "./types";
 
 const browserSettings: AppSettings = {
   workspacePath: "浏览器预览",
@@ -68,6 +68,8 @@ export const api = {
     return {
       settings: browserSettings,
       entries: [{ path: "欢迎.md", name: "欢迎.md", kind: "file", depth: 0, size: sample.length, modifiedMs: Date.now() }],
+      records: [],
+      pendingOpenPaths: [],
     };
   },
   async listEntries(): Promise<DocumentEntry[]> {
@@ -77,15 +79,36 @@ export const api = {
   async readDocument(path: string): Promise<LoadedDocument> {
     if (isTauri()) return invoke("read_document", { relativePath: path });
     const { renderMarkdown } = await import("./markdown");
-    return { path, content: sample, html: await renderMarkdown(sample), size: sample.length, modifiedMs: Date.now(), cached: false };
+    return {
+      path,
+      sourcePath: path,
+      name: path,
+      content: sample,
+      html: await renderMarkdown(sample),
+      size: sample.length,
+      modifiedMs: Date.now(),
+      cached: false,
+      origin: "workspace",
+      recordId: "browser-sample",
+      sourceExists: true,
+      writable: true,
+    };
+  },
+  async readExternalDocument(path: string): Promise<LoadedDocument> {
+    if (isTauri()) return invoke("read_external_document", { path });
+    return this.readDocument(path);
+  },
+  async readArchiveDocument(recordId: string): Promise<LoadedDocument> {
+    if (isTauri()) return invoke("read_archive_document", { recordId });
+    return this.readDocument(recordId);
   },
   async render(source: string): Promise<string> {
     if (isTauri()) return invoke("render_markdown", { source });
     const { renderMarkdown } = await import("./markdown");
     return renderMarkdown(source);
   },
-  async write(path: string, content: string): Promise<void> {
-    if (isTauri()) await invoke("write_document", { relativePath: path, content });
+  async write(origin: DocumentOrigin, path: string, content: string): Promise<void> {
+    if (isTauri()) await invoke("write_document", { origin, path, content });
   },
   async create(path: string, kind: EntryKind): Promise<void> {
     if (isTauri()) await invoke("create_entry", { relativePath: path, kind });
@@ -100,15 +123,31 @@ export const api = {
     if (isTauri()) return invoke("import_files", { sourcePaths: paths, targetDirectory });
     return [];
   },
-  async exportFile(path: string, target: string): Promise<void> {
-    if (isTauri()) await invoke("export_file", { relativePath: path, targetPath: target });
+  async exportFile(origin: DocumentOrigin, path: string, target: string): Promise<void> {
+    if (isTauri()) await invoke("export_file", { origin, path, targetPath: target });
   },
   async setWorkspace(path: string): Promise<BootstrapPayload> {
     if (isTauri()) return invoke("set_workspace", { path });
-    return { settings: { ...browserSettings, workspacePath: path }, entries: [] };
+    return { settings: { ...browserSettings, workspacePath: path }, entries: [], records: [], pendingOpenPaths: [] };
   },
   async saveSettings(settings: AppSettings): Promise<AppSettings> {
     if (isTauri()) return invoke("save_settings", { settings });
     return settings;
+  },
+  async listRecords(): Promise<ArchiveRecord[]> {
+    if (isTauri()) return invoke("list_archive_records");
+    return [];
+  },
+  async setFavorite(recordId: string, favorite: boolean): Promise<ArchiveRecord[]> {
+    if (isTauri()) return invoke("set_favorite", { recordId, favorite });
+    return [];
+  },
+  async clearHistory(): Promise<ArchiveRecord[]> {
+    if (isTauri()) return invoke("clear_history");
+    return [];
+  },
+  async openDefaultApps(): Promise<string> {
+    if (isTauri()) return invoke("open_default_app_settings");
+    return "请在系统设置中选择 LeafMark 作为 Markdown 默认应用。";
   },
 };
