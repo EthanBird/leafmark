@@ -120,9 +120,10 @@ jobs:
             - 支持从文件管理器、聊天、网盘等应用通过 Android Intent 打开或分享 .md / .markdown
             - Android 外部文档会复制到私有资料库，并继续进入历史、收藏与防删除快照
             - 默认进入接近 Typora 的实时渲染编辑，设置页可扫描和切换系统字体
+            - v0.3.1 改为仅面向现代手机的 ARM64 优化构建，移除调试符号与 32 位库并显著缩小 APK
 
             Android 请下载 APK；Windows 请下载 NSIS 安装程序。
-            Android 首版为可直接安装的调试签名 APK；Windows 未签名构建可能触发 SmartScreen 提示。
+            Android APK 是使用开发密钥签名的优化 release 构建；Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
@@ -193,7 +194,7 @@ jobs:
       - name: Install Rust Android targets
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi
+          targets: aarch64-linux-android
 
       - name: Install frontend dependencies
         run: npm ci
@@ -209,8 +210,45 @@ jobs:
           prerelease: false
           uploadUpdaterJson: false
           retryAttempts: 2
-          args: --debug --apk --target aarch64 armv7
+          args: --apk --target aarch64 --split-per-abi
           releaseAssetNamePattern: LeafMark_[version]_Android_[arch].[ext]
+
+      - name: Verify ARM64 release APK
+        shell: bash
+        run: |
+          mapfile -t apks < <(
+            find src-tauri/gen/android/app/build/outputs/apk \
+              -type f -name '*.apk' ! -name '*unsigned*'
+          )
+          if [[ "${#apks[@]}" -ne 1 ]]; then
+            printf 'Expected exactly one signed APK, found %s\n' "${#apks[@]}"
+            printf '%s\n' "${apks[@]}"
+            exit 1
+          fi
+
+          apk="${apks[0]}"
+          mapfile -t abis < <(
+            zipinfo -1 "$apk" |
+              awk -F/ '/^lib\/[^/]+\/[^/]+\.so$/ { print $2 }' |
+              sort -u
+          )
+          if [[ "${abis[*]}" != "arm64-v8a" ]]; then
+            printf 'Expected only arm64-v8a, found: %s\n' "${abis[*]:-none}"
+            exit 1
+          fi
+
+          size_bytes="$(stat -c '%s' "$apk")"
+          max_bytes="$((64 * 1024 * 1024))"
+          if (( size_bytes > max_bytes )); then
+            printf 'APK is still too large: %s bytes (limit %s)\n' \
+              "$size_bytes" "$max_bytes"
+            exit 1
+          fi
+
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" \
+            verify --verbose --print-certs "$apk"
+          sha256sum "$apk"
+          du -h "$apk"
 
   publish-release:
     needs:

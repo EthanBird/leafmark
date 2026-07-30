@@ -60,13 +60,19 @@ Android APK：
 
 ```powershell
 npm run tauri -- android init
-npm run tauri -- android build --apk
+npm run tauri -- android build --apk --target aarch64 --split-per-abi
 ```
+
+GitHub Release 只发布适用于现代 Android 手机的 `arm64-v8a` 优化 APK。发布构建会启用
+Rust LTO/strip、R8、资源裁剪和原生库压缩，并在上传后自动验证 APK 只包含 ARM64
+动态库且不超过 64 MiB。
 
 ## 下载
 
 可以从 [GitHub Releases](https://github.com/EthanBird/leafmark/releases/latest)
-下载 Android APK 或 Windows NSIS 安装包。Android APK 使用可直接安装的调试签名；Windows 安装后可在 LeafMark 的“设置 → 系统集成”中完成 Markdown 默认应用确认。
+下载 Android APK 或 Windows NSIS 安装包。Android APK 是使用开发密钥签名、可直接安装
+的优化 release 构建；Windows 安装后可在 LeafMark 的“设置 → 系统集成”中完成
+Markdown 默认应用确认。
 
 发布工作流支持可选 Authenticode 代码签名。未配置证书时仍可生成安装包，但 Windows
 SmartScreen 可能显示未知发布者提示。证书配置见 [Windows 发布签名](docs/windows-code-signing.md)。
