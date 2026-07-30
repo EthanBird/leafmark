@@ -4,6 +4,7 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --reader-width: 860px;
+  --reader-font-family: "Iowan Old Style", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, "Segoe UI", serif;
   --reader-font-size: 16px;
   --reader-line-height: 1.75;
   --canvas: #f2f3ef;
@@ -363,7 +364,7 @@ button:disabled { opacity: .42; cursor: default !important; }
   overflow: auto;
   background: var(--surface);
   color: var(--text);
-  font-family: "Iowan Old Style", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, "Segoe UI", serif;
+  font-family: var(--reader-font-family);
   font-size: var(--reader-font-size);
   line-height: var(--reader-line-height);
   overflow-wrap: anywhere;
@@ -379,7 +380,7 @@ button:disabled { opacity: .42; cursor: default !important; }
 .markdown-body > :last-child { margin-bottom: 0 !important; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 {
   color: var(--text);
-  font-family: Inter, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--reader-font-family);
   font-weight: 680;
   line-height: 1.28;
   letter-spacing: -.025em;
@@ -560,6 +561,10 @@ button:disabled { opacity: .42; cursor: default !important; }
 .setting-row p { max-width: 480px; margin: 4px 0 0; color: var(--text-tertiary); font-size: 9px; line-height: 1.55; }
 .setting-control { flex: 0 0 auto; }
 .setting-control select { height: 30px; padding: 0 28px 0 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); color: var(--text-secondary); font-size: 10px; }
+.font-picker { display: grid; grid-template-columns: minmax(180px, 240px) auto; align-items: center; gap: 5px 10px; }
+.font-picker input { width: 240px; height: 32px; padding: 0 9px; border: 1px solid var(--border); border-radius: 7px; outline: 0; background: var(--surface-raised); color: var(--text); font-size: 10px; }
+.font-picker > span { grid-column: 1; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.font-picker > small { grid-row: 1 / span 2; grid-column: 2; color: var(--text-tertiary); font-size: 8px; white-space: nowrap; }
 .switch { position: relative; width: 36px; height: 21px; padding: 0; border: 0; border-radius: 11px; background: var(--border); cursor: pointer; transition: background 150ms ease; }
 .switch span { position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 20%); transition: transform 150ms ease; }
 .switch.checked { background: var(--accent); }.switch.checked span { transform: translateX(15px); }

@@ -70,11 +70,13 @@ interface MenuState {
 type SidebarView = "workspace" | "history" | "favorites";
 
 const EMPTY_SETTINGS: AppSettings = {
+  settingsSchemaVersion: 2,
   workspacePath: "",
   theme: "system",
-  liveEditing: false,
+  liveEditing: true,
   autosaveDelayMs: 600,
   contentWidth: 860,
+  fontFamily: "system",
   fontSize: 16,
   lineHeight: 1.75,
   showStatusBar: true,
@@ -104,7 +106,7 @@ export default function App() {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [renderedHtml, setRenderedHtml] = useState("");
-  const [mode, setMode] = useState<ViewMode>("read");
+  const [mode, setMode] = useState<ViewMode>("live");
   const [sidebarView, setSidebarView] = useState<SidebarView>("workspace");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -149,6 +151,7 @@ export default function App() {
     root.dataset.resolvedTheme = resolved;
     root.dataset.reduceMotion = String(next.reduceMotion);
     root.style.setProperty("--reader-width", `${next.contentWidth}px`);
+    root.style.setProperty("--reader-font-family", readerFontStack(next.fontFamily));
     root.style.setProperty("--reader-font-size", `${next.fontSize}px`);
     root.style.setProperty("--reader-line-height", String(next.lineHeight));
   }, []);
@@ -276,6 +279,7 @@ export default function App() {
       .then(async (payload) => {
         if (!active) return;
         setSettings(payload.settings);
+        setMode(payload.settings.liveEditing ? "live" : "read");
         setAssociationStatus(payload.associationStatus);
         setArchiveEntries(payload.library);
         settingsReady.current = true;
@@ -313,6 +317,10 @@ export default function App() {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [settings]);
+
+  useEffect(() => {
+    if (!settings.liveEditing && mode === "live") setMode("read");
+  }, [mode, settings.liveEditing]);
 
   useEffect(() => {
     if (!settingsOpen || !associationStatus.supported || !api.isTauri()) return;
@@ -936,6 +944,12 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function readerFontStack(fontFamily: string) {
+  const fallback = '"Iowan Old Style", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, "Segoe UI", serif';
+  const family = fontFamily.trim();
+  return !family || family === "system" ? fallback : `${JSON.stringify(family)}, ${fallback}`;
 }
 
 function countWords(value: string) {

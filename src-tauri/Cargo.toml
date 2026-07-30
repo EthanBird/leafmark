@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 atomicwrites = "0.4"
+fontdb = { version = "0.24", default-features = false, features = ["fs"] }
 ignore = "0.4"
 parking_lot = "0.12"
 pulldown-cmark = "0.13"

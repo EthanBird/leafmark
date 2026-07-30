@@ -1,4 +1,5 @@
 mod library;
+mod system_fonts;
 mod system_integration;
 
 use atomicwrites::{AllowOverwrite, AtomicFile};
@@ -22,15 +23,24 @@ use tauri::{Emitter, Manager, State};
 const CACHE_DOCUMENTS: usize = 12;
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
+const SETTINGS_SCHEMA_VERSION: u32 = 2;
+
+fn default_font_family() -> String {
+    "system".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
+    #[serde(default)]
+    settings_schema_version: u32,
     workspace_path: String,
     theme: String,
     live_editing: bool,
     autosave_delay_ms: u64,
     content_width: u32,
+    #[serde(default = "default_font_family")]
+    font_family: String,
     font_size: u32,
     line_height: f32,
     show_status_bar: bool,
@@ -42,11 +52,13 @@ struct AppSettings {
 impl AppSettings {
     fn defaults(workspace: &Path) -> Self {
         Self {
+            settings_schema_version: SETTINGS_SCHEMA_VERSION,
             workspace_path: workspace.to_string_lossy().into_owned(),
             theme: "system".into(),
-            live_editing: false,
+            live_editing: true,
             autosave_delay_ms: 600,
             content_width: 860,
+            font_family: default_font_family(),
             font_size: 16,
             line_height: 1.75,
             show_status_bar: true,
@@ -57,8 +69,19 @@ impl AppSettings {
     }
 
     fn normalize(mut self) -> Self {
+        if self.settings_schema_version < SETTINGS_SCHEMA_VERSION {
+            self.live_editing = true;
+            self.settings_schema_version = SETTINGS_SCHEMA_VERSION;
+        }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".into();
+        }
+        self.font_family = self.font_family.trim().to_owned();
+        if self.font_family.is_empty()
+            || self.font_family.len() > 120
+            || self.font_family.chars().any(char::is_control)
+        {
+            self.font_family = default_font_family();
         }
         self.autosave_delay_ms = self.autosave_delay_ms.clamp(150, 5_000);
         self.content_width = self.content_width.clamp(560, 1_400);
@@ -341,6 +364,13 @@ fn get_markdown_association_status() -> AssociationStatus {
 #[tauri::command]
 fn request_default_markdown_association() -> Result<AssociationStatus, String> {
     configure_markdown_association()
+}
+
+#[tauri::command]
+async fn list_system_fonts() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(system_fonts::system_font_families)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -985,6 +1015,7 @@ pub fn run() {
             export_archived_document,
             get_markdown_association_status,
             request_default_markdown_association,
+            list_system_fonts,
             render_markdown,
             write_document,
             create_entry,
@@ -1037,5 +1068,28 @@ mod tests {
         assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'o', b'k']), "ok");
         assert_eq!(decode_text(&[0xFF, 0xFE, b'o', 0, b'k', 0]), "ok");
         assert_eq!(decode_text(&[0xFE, 0xFF, 0, b'o', 0, b'k']), "ok");
+    }
+
+    #[test]
+    fn migrates_existing_settings_to_live_editing_and_system_font() {
+        let legacy = serde_json::json!({
+            "workspacePath": "C:\\Documents\\LeafMark",
+            "theme": "system",
+            "liveEditing": false,
+            "autosaveDelayMs": 600,
+            "contentWidth": 860,
+            "fontSize": 16,
+            "lineHeight": 1.75,
+            "showStatusBar": true,
+            "reduceMotion": false,
+            "mermaidEnabled": true,
+            "mathEnabled": true
+        });
+        let settings: AppSettings = serde_json::from_value(legacy).unwrap();
+        let migrated = settings.normalize();
+
+        assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
+        assert!(migrated.live_editing);
+        assert_eq!(migrated.font_family, "system");
     }
 }

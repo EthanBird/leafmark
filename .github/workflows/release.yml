@@ -34,6 +34,58 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Import trusted Windows signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) {
+            throw "WINDOWS_CERTIFICATE is required. Unsigned public releases are blocked."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "WINDOWS_CERTIFICATE_PASSWORD is required."
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "leafmark-codesign.pfx"
+          $encoded = $env:WINDOWS_CERTIFICATE `
+            -replace "-----BEGIN CERTIFICATE-----", "" `
+            -replace "-----END CERTIFICATE-----", "" `
+            -replace "\s", ""
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($encoded))
+
+          $password = ConvertTo-SecureString `
+            -String $env:WINDOWS_CERTIFICATE_PASSWORD `
+            -Force `
+            -AsPlainText
+          $certificates = Import-PfxCertificate `
+            -FilePath $pfxPath `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password $password
+          $certificate = $certificates | Where-Object HasPrivateKey | Select-Object -First 1
+          Remove-Item $pfxPath -Force
+
+          if (-not $certificate) {
+            throw "The imported PFX does not contain a code-signing private key."
+          }
+
+          $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
+          if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
+            $timestampUrl = "http://timestamp.digicert.com"
+          }
+          $config = @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $certificate.Thumbprint
+                digestAlgorithm = "sha256"
+                timestampUrl = $timestampUrl
+              }
+            }
+          }
+          $config | ConvertTo-Json -Depth 5 |
+            Set-Content src-tauri/tauri.signing.conf.json -Encoding utf8
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -51,19 +103,37 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            LeafMark v0.2.0
-
-            - 支持从 Windows 资源管理器右键、打开方式和双击打开 Markdown 文件
-            - 设置中可注册 LeafMark 并进入系统默认应用确认页
-            - 新增最近打开历史、搜索与收藏
-            - 自动保留独立文档副本，源文件删除后仍可阅读、编辑和导出
-            - 收藏副本不受批量清除历史影响
-
+            此版本通过受信任证书完成 Authenticode 签名。
             下载下方 NSIS 安装程序即可安装。
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
           uploadUpdaterJson: false
           retryAttempts: 2
-          args: --bundles nsis
+          args: --bundles nsis --config src-tauri/tauri.signing.conf.json
           releaseAssetNamePattern: LeafMark_[version]_[arch][setup].[ext]
+
+      - name: Verify Authenticode signature
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem `
+            -Path src-tauri/target/release/bundle/nsis `
+            -Filter *.exe |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "NSIS installer was not generated."
+          }
+
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          if ($signature.Status -ne "Valid") {
+            throw "Invalid Authenticode signature: $($signature.Status) $($signature.StatusMessage)"
+          }
+
+          $version = node -p "require('./package.json').version"
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Publish verified release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit $env:RELEASE_TAG --draft=false --repo $env:GITHUB_REPOSITORY

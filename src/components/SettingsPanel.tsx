@@ -11,7 +11,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppSettings, AssociationStatus, ThemeMode } from "../types";
 import { api } from "../api";
@@ -38,6 +38,8 @@ export function SettingsPanel({
   const [section, setSection] = useState<Section>("editor");
   const [working, setWorking] = useState(false);
   const [associationWorking, setAssociationWorking] = useState(false);
+  const [fontFamilies, setFontFamilies] = useState<string[] | null>(null);
+  const fontListId = useId();
   const sections = useMemo(() => [
     { id: "editor" as const, label: "编辑与保存", detail: "编译模式、自动保存" },
     { id: "appearance" as const, label: "外观", detail: "主题、字号与版心" },
@@ -47,6 +49,21 @@ export function SettingsPanel({
   ], []);
 
   const patch = (next: Partial<AppSettings>) => onChange({ ...settings, ...next });
+
+  useEffect(() => {
+    if (section !== "appearance" || fontFamilies !== null) return;
+    let active = true;
+    void api.listSystemFonts()
+      .then((families) => {
+        if (active) setFontFamilies(families);
+      })
+      .catch(() => {
+        if (active) setFontFamilies([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [fontFamilies, section]);
 
   const chooseWorkspace = async () => {
     if (!api.isTauri()) return;
@@ -93,7 +110,7 @@ export function SettingsPanel({
             {section === "editor" && (
               <>
                 <SettingsIntro title="编辑与保存" description="在纯源码与接近 Typora 的实时编译体验之间自由切换。" />
-                <SettingRow title="启用实时编辑（编译模式）" description="允许直接编辑渲染后的内容。公式与 Mermaid 会作为不可破坏的渲染块显示，复杂语法仍可随时切回源码。">
+                <SettingRow title="默认使用实时渲染编辑" description="启动后直接进入接近 Typora 的所见即所得编辑。公式与 Mermaid 作为不可破坏的渲染块显示，复杂语法仍可随时切回源码。">
                   <Switch checked={settings.liveEditing} onChange={(checked) => patch({ liveEditing: checked })} />
                 </SettingRow>
                 <SettingRow title="自动保存延迟" description="停止输入后再写入磁盘，降低频繁 I/O。">
@@ -112,6 +129,15 @@ export function SettingsPanel({
                 <SettingsIntro title="外观" description="保持安静的阅读界面，同时让长文档拥有舒适的密度。" />
                 <SettingRow title="颜色主题" description="系统模式会跟随操作系统切换。">
                   <ThemePicker value={settings.theme} onChange={(theme) => patch({ theme })} />
+                </SettingRow>
+                <SettingRow title="文档字体" description="读取本机已安装字体；输入名称时会即时预览，清空则恢复系统推荐字体。">
+                  <FontPicker
+                    value={settings.fontFamily}
+                    families={fontFamilies ?? []}
+                    loading={fontFamilies === null}
+                    listId={fontListId}
+                    onChange={(fontFamily) => patch({ fontFamily })}
+                  />
                 </SettingRow>
                 <SettingSlider title="正文字号" value={settings.fontSize} min={13} max={22} unit="px" onChange={(fontSize) => patch({ fontSize })} />
                 <SettingSlider title="正文行高" value={settings.lineHeight} min={1.4} max={2.1} step={0.05} unit="" onChange={(lineHeight) => patch({ lineHeight })} />
@@ -235,10 +261,43 @@ function ThemePicker({ value, onChange }: { value: ThemeMode; onChange: (value: 
   return <div className="theme-picker">{choices.map((choice) => <button key={choice.value} type="button" className={value === choice.value ? "active" : ""} onClick={() => onChange(choice.value)}>{choice.icon}{choice.label}</button>)}</div>;
 }
 
+function FontPicker({ value, families, loading, listId, onChange }: {
+  value: string;
+  families: string[];
+  loading: boolean;
+  listId: string;
+  onChange: (value: string) => void;
+}) {
+  const selected = value === "system" ? "" : value;
+  return (
+    <div className="font-picker">
+      <input
+        type="text"
+        list={listId}
+        value={selected}
+        placeholder={loading ? "正在读取本机字体…" : "系统推荐字体"}
+        onChange={(event) => onChange(event.target.value || "system")}
+        aria-label="文档字体"
+      />
+      <datalist id={listId}>
+        {families.map((family) => <option key={family} value={family} />)}
+      </datalist>
+      <span style={{ fontFamily: fontPreviewStack(value) }}>一叶 · Markdown Aa 0123</span>
+      <small>{loading ? "扫描中" : `${families.length} 个本机字体族`}</small>
+    </div>
+  );
+}
+
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <div className="metric"><small>{label}</small><strong>{value}</strong><span>{detail}</span></div>;
 }
 
 function defaultVisualSettings(settings: AppSettings): AppSettings {
-  return { ...settings, theme: "system", contentWidth: 860, fontSize: 16, lineHeight: 1.75, reduceMotion: false };
+  return { ...settings, theme: "system", contentWidth: 860, fontFamily: "system", fontSize: 16, lineHeight: 1.75, reduceMotion: false };
+}
+
+function fontPreviewStack(fontFamily: string) {
+  const fallback = '"Iowan Old Style", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Georgia, "Segoe UI", serif';
+  const family = fontFamily.trim();
+  return !family || family === "system" ? fallback : `${JSON.stringify(family)}, ${fallback}`;
 }

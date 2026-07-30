@@ -10,11 +10,13 @@ import type {
 } from "./types";
 
 const browserSettings: AppSettings = {
+  settingsSchemaVersion: 2,
   workspacePath: "浏览器预览",
   theme: "system",
   liveEditing: true,
   autosaveDelayMs: 600,
   contentWidth: 860,
+  fontFamily: "system",
   fontSize: 16,
   lineHeight: 1.75,
   showStatusBar: true,
@@ -149,6 +151,18 @@ export const api = {
   async requestDefaultAssociation(): Promise<AssociationStatus> {
     if (isTauri()) return invoke("request_default_markdown_association");
     return this.getAssociationStatus();
+  },
+  async listSystemFonts(): Promise<string[]> {
+    if (isTauri()) return invoke("list_system_fonts");
+    return [
+      "Arial",
+      "Georgia",
+      "Microsoft YaHei UI",
+      "Noto Sans CJK SC",
+      "Noto Serif CJK SC",
+      "Segoe UI",
+      "SimSun",
+    ];
   },
   async render(source: string): Promise<string> {
     if (isTauri()) return invoke("render_markdown", { source });

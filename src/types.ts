@@ -44,11 +44,13 @@ export interface AssociationStatus {
 }
 
 export interface AppSettings {
+  settingsSchemaVersion: number;
   workspacePath: string;
   theme: ThemeMode;
   liveEditing: boolean;
   autosaveDelayMs: number;
   contentWidth: number;
+  fontFamily: string;
   fontSize: number;
   lineHeight: number;
   showStatusBar: boolean;
