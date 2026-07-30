@@ -1,0 +1,32 @@
+[package]
+name = "leafmark"
+version = "0.1.0"
+description = "A fast, local-first Markdown workspace"
+authors = ["LeafMark contributors"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "leafmark_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+atomicwrites = "0.4"
+ignore = "0.4"
+parking_lot = "0.12"
+pulldown-cmark = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+panic = "abort"
+strip = true
