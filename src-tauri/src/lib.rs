@@ -18,10 +18,14 @@ use std::{
 use system_integration::{
     association_status, configure_markdown_association, markdown_paths_from_args, AssociationStatus,
 };
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(target_os = "android")]
+use tauri_plugin_fs::FsExt;
 
 const CACHE_DOCUMENTS: usize = 12;
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(target_os = "android")]
+const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
 const SETTINGS_SCHEMA_VERSION: u32 = 2;
 
@@ -351,9 +355,11 @@ fn clear_document_history(state: State<'_, AppState>) -> Result<Vec<ArchiveEntry
 fn export_archived_document(
     id: String,
     target_path: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.0.lock().library.export(&id, Path::new(&target_path))
+    let archived = state.0.lock().library.open(&id)?;
+    write_export_target(&app, &target_path, archived.content.as_bytes())
 }
 
 #[tauri::command]
@@ -478,6 +484,7 @@ fn delete_entry(relative_path: String, state: State<'_, AppState>) -> Result<(),
 fn import_files(
     source_paths: Vec<String>,
     target_directory: String,
+    _app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let directory = if target_directory.trim().is_empty() {
@@ -491,6 +498,30 @@ fn import_files(
     let mut imported = Vec::new();
 
     for source_value in source_paths {
+        #[cfg(target_os = "android")]
+        if let Ok(url) = tauri::Url::parse(&source_value) {
+            if url.scheme() == "content" {
+                let bytes = _app
+                    .fs()
+                    .read(tauri_plugin_fs::FilePath::Url(url.clone()))
+                    .map_err(|error| format!("无法读取 Android 文档：{error}"))?;
+                if bytes.len() > MAX_OPENED_DOCUMENT_BYTES {
+                    return Err("Markdown 文档超过 32 MB，已拒绝导入".into());
+                }
+                let name = opened_url_filename(&url);
+                let destination =
+                    unique_destination(&destination_root, std::ffi::OsStr::new(&name));
+                atomic_write(&destination, &bytes)?;
+                let relative = destination
+                    .strip_prefix(&inner.workspace)
+                    .map_err(|_| "导入路径超出文档库".to_string())?;
+                let normalized = path_to_slash(relative);
+                inner.cache.invalidate(&normalized);
+                imported.push(normalized);
+                continue;
+            }
+        }
+
         let source = PathBuf::from(&source_value);
         ensure_markdown_extension(&source)?;
         if !source.is_file() {
@@ -515,14 +546,14 @@ fn import_files(
 fn export_file(
     relative_path: String,
     target_path: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let relative = validate_markdown_path(&relative_path)?;
     let workspace = state.0.lock().workspace.clone();
     let source = secure_existing_path(&workspace, &relative)?;
-    fs::copy(source, PathBuf::from(target_path))
-        .map(|_| ())
-        .map_err(error_string)
+    let bytes = fs::read(source).map_err(error_string)?;
+    write_export_target(&app, &target_path, &bytes)
 }
 
 #[tauri::command]
@@ -940,30 +971,151 @@ fn error_string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+#[cfg(any(target_os = "android", test))]
+fn opened_url_filename(url: &tauri::Url) -> String {
+    let encoded = url
+        .path_segments()
+        .and_then(|segments| segments.last())
+        .unwrap_or_default();
+    let decoded = percent_encoding::percent_decode_str(encoded)
+        .decode_utf8_lossy()
+        .into_owned();
+    let source_name = decoded
+        .rsplit(['/', '\\', ':'])
+        .find(|part| !part.trim().is_empty())
+        .unwrap_or_default()
+        .trim();
+    let mut safe_name: String = source_name
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+        })
+        .take(120)
+        .collect();
+    if safe_name.is_empty() || !is_markdown(Path::new(&safe_name)) {
+        safe_name = format!("打开的文档-{}.md", now_ms());
+    }
+    safe_name
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+fn local_path_from_opened_url(_app: &AppHandle, url: &tauri::Url) -> Result<PathBuf, String> {
+    if url.scheme() == "file" {
+        let path = url
+            .to_file_path()
+            .map_err(|_| "无法解析系统传入的文件路径".to_string())?;
+        ensure_markdown_extension(&path)?;
+        if !path.is_file() {
+            return Err("系统传入的 Markdown 文档不存在".into());
+        }
+        return path.canonicalize().map_err(error_string);
+    }
+
+    #[cfg(target_os = "android")]
+    if url.scheme() == "content" {
+        let bytes = _app
+            .fs()
+            .read(tauri_plugin_fs::FilePath::Url(url.clone()))
+            .map_err(|error| format!("无法读取 Android 文档：{error}"))?;
+        if bytes.len() > MAX_OPENED_DOCUMENT_BYTES {
+            return Err("Markdown 文档超过 32 MB，已拒绝导入".into());
+        }
+        let incoming_dir = _app
+            .path()
+            .app_data_dir()
+            .map_err(error_string)?
+            .join("opened-documents");
+        fs::create_dir_all(&incoming_dir).map_err(error_string)?;
+        let name = opened_url_filename(url);
+        let destination = unique_destination(&incoming_dir, std::ffi::OsStr::new(&name));
+        atomic_write(&destination, &bytes)?;
+        return destination.canonicalize().map_err(error_string);
+    }
+
+    Err(format!("不支持的文档地址：{}", url.scheme()))
+}
+
+fn write_export_target(app: &AppHandle, target: &str, bytes: &[u8]) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    if let Ok(url) = tauri::Url::parse(target) {
+        if url.scheme() == "content" {
+            let mut options = tauri_plugin_fs::OpenOptions::new();
+            options.write(true).truncate(true);
+            let mut file = app
+                .fs()
+                .open(tauri_plugin_fs::FilePath::Url(url), options)
+                .map_err(|error| format!("无法写入 Android 文档：{error}"))?;
+            return file.write_all(bytes).map_err(error_string);
+        }
+    }
+    let _ = app;
+    atomic_write(Path::new(target), bytes)
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+fn queue_opened_url(app: &AppHandle, url: &tauri::Url) {
+    match local_path_from_opened_url(app, url) {
+        Ok(path) => {
+            let path = path.to_string_lossy().into_owned();
+            if let Some(state) = app.try_state::<AppState>() {
+                let mut inner = state.0.lock();
+                if !inner.pending_open_paths.contains(&path) {
+                    inner.pending_open_paths.push(path.clone());
+                }
+            }
+            let _ = app.emit("open-markdown", path);
+        }
+        Err(error) => {
+            let _ = app.emit("open-markdown-error", error);
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn default_workspace(app: &AppHandle, _config_dir: &Path) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(error_string)?
+        .join("workspace"))
+}
+
+#[cfg(not(target_os = "android"))]
+fn default_workspace(app: &AppHandle, config_dir: &Path) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .document_dir()
+        .unwrap_or_else(|_| config_dir.to_path_buf())
+        .join("LeafMark"))
+}
+
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            let paths = markdown_paths_from_args(args, Path::new(&cwd));
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-            for path in paths {
-                let _ = app.emit("open-markdown", path);
-            }
-        }))
+    let builder = tauri::Builder::default();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        let paths = markdown_paths_from_args(args, Path::new(&cwd));
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        for path in paths {
+            let _ = app.emit("open-markdown", path);
+        }
+    }));
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config_dir = app.path().app_config_dir().map_err(error_string)?;
             fs::create_dir_all(&config_dir).map_err(error_string)?;
             let settings_path = config_dir.join("settings.json");
-            let default_workspace = app
-                .path()
-                .document_dir()
-                .unwrap_or_else(|_| config_dir.clone())
-                .join("LeafMark");
+            let default_workspace = default_workspace(app.handle(), &config_dir)?;
             fs::create_dir_all(&default_workspace).map_err(error_string)?;
 
             let mut settings = fs::read(&settings_path)
@@ -1026,8 +1178,17 @@ pub fn run() {
             set_workspace,
             save_settings,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run LeafMark");
+        .build(tauri::generate_context!())
+        .expect("failed to build LeafMark");
+
+    app.run(|_app, _event| {
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+        if let tauri::RunEvent::Opened { urls } = _event {
+            for url in urls {
+                queue_opened_url(_app, &url);
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1068,6 +1229,18 @@ mod tests {
         assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'o', b'k']), "ok");
         assert_eq!(decode_text(&[0xFF, 0xFE, b'o', 0, b'k', 0]), "ok");
         assert_eq!(decode_text(&[0xFE, 0xFF, 0, b'o', 0, b'k']), "ok");
+    }
+
+    #[test]
+    fn creates_safe_markdown_names_for_opened_urls() {
+        let url = tauri::Url::parse(
+            "content://com.android.providers.downloads/document/primary%3ADownload%2Fnotes.md",
+        )
+        .unwrap();
+        assert_eq!(opened_url_filename(&url), "notes.md");
+
+        let opaque = tauri::Url::parse("content://provider/document/42").unwrap();
+        assert!(opened_url_filename(&opaque).ends_with(".md"));
     }
 
     #[test]

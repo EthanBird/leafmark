@@ -1,4 +1,4 @@
-name: Publish Windows release
+name: Publish desktop and Android release
 
 on:
   push:
@@ -109,12 +109,13 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 修复发布版启动时伴随黑色控制台窗口的问题
-            - 默认进入实时渲染编辑，并自动迁移旧版设置
-            - 设置页支持搜索、选择和即时预览本机字体
+            - 新增 Android APK，针对手机触控、抽屉导航与安全区完成适配
+            - 支持从文件管理器、聊天、网盘等应用通过 Android Intent 打开或分享 .md / .markdown
+            - Android 外部文档会复制到私有资料库，并继续进入历史、收藏与防删除快照
+            - 默认进入接近 Typora 的实时渲染编辑，设置页可扫描和切换系统字体
 
-            下载下方 NSIS 安装程序即可安装。
-            未签名构建可能触发 Windows SmartScreen 提示。
+            Android 请下载 APK；Windows 请下载 NSIS 安装程序。
+            Android 首版为可直接安装的调试签名 APK；Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
@@ -148,8 +149,76 @@ jobs:
           $version = node -p "require('./package.json').version"
           "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Publish release
+      - name: Remember release tag
         shell: pwsh
+        run: Write-Host "Windows artifact uploaded to draft release $env:RELEASE_TAG"
+
+  release-android:
+    needs: release-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Install Rust Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload Android APK
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          mobile: android
+          tagName: v__VERSION__
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: false
+          retryAttempts: 2
+          args: --debug --apk --target aarch64 armv7
+          releaseAssetNamePattern: LeafMark_[version]_Android_[arch].[ext]
+
+  publish-release:
+    needs:
+      - release-windows
+      - release-android
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Publish verified release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit $env:RELEASE_TAG --draft=false --repo $env:GITHUB_REPOSITORY
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          gh release edit "v$version" --draft=false --repo "$GITHUB_REPOSITORY"

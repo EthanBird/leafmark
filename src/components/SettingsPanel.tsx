@@ -35,6 +35,7 @@ export function SettingsPanel({
   onAssociationChange,
   onClose,
 }: SettingsPanelProps) {
+  const isAndroid = api.isAndroid();
   const [section, setSection] = useState<Section>("editor");
   const [working, setWorking] = useState(false);
   const [associationWorking, setAssociationWorking] = useState(false);
@@ -130,7 +131,7 @@ export function SettingsPanel({
                 <SettingRow title="颜色主题" description="系统模式会跟随操作系统切换。">
                   <ThemePicker value={settings.theme} onChange={(theme) => patch({ theme })} />
                 </SettingRow>
-                <SettingRow title="文档字体" description="读取本机已安装字体；输入名称时会即时预览，清空则恢复系统推荐字体。">
+                <SettingRow title="文档字体" description={isAndroid ? "读取 Android 系统字体；选择名称后即时预览，清空则恢复系统推荐字体。" : "读取本机已安装字体；输入名称时会即时预览，清空则恢复系统推荐字体。"}>
                   <FontPicker
                     value={settings.fontFamily}
                     families={fontFamilies ?? []}
@@ -150,34 +151,36 @@ export function SettingsPanel({
 
             {section === "workspace" && (
               <>
-                <SettingsIntro title="文档库" description="LeafMark 直接读取本地目录，不导入数据库，也不锁定你的内容。" />
+                <SettingsIntro title="文档库" description={isAndroid ? "Android 版使用应用私有文档库；从其他应用打开或手动导入的 Markdown 会复制并长期保留。" : "LeafMark 直接读取本地目录，不导入数据库，也不锁定你的内容。"} />
                 <div className="workspace-card">
                   <div className="workspace-icon"><FolderOpen size={20} /></div>
                   <div><small>当前目录</small><strong title={settings.workspacePath}>{settings.workspacePath}</strong></div>
-                  <button className="secondary-button" type="button" onClick={() => void chooseWorkspace()} disabled={working || !api.isTauri()}>
-                    {working ? "切换中…" : "更换目录"}
+                  <button className="secondary-button" type="button" onClick={() => void chooseWorkspace()} disabled={isAndroid || working || !api.isTauri()}>
+                    {isAndroid ? "应用私有目录" : working ? "切换中…" : "更换目录"}
                   </button>
                 </div>
                 <div className="settings-note">
-                  目录扫描遵守 <code>.gitignore</code>、<code>.ignore</code> 和 <code>.markignore</code>，并自动跳过隐藏目录与常见构建产物。
+                  {isAndroid
+                    ? "通过 Android“打开方式”或分享菜单送入 LeafMark 的文档会立即复制到应用资料库；原文件之后即使被删除，历史与收藏中的保留副本仍可打开。"
+                    : <>目录扫描遵守 <code>.gitignore</code>、<code>.ignore</code> 和 <code>.markignore</code>，并自动跳过隐藏目录与常见构建产物。</>}
                 </div>
               </>
             )}
 
             {section === "integration" && (
               <>
-                <SettingsIntro title="系统集成" description="从资源管理器右键菜单、打开方式或双击直接进入 LeafMark。" />
+                <SettingsIntro title="系统集成" description={isAndroid ? "从文件管理器、聊天、网盘或其他应用把 Markdown 直接交给 LeafMark。" : "从资源管理器右键菜单、打开方式或双击直接进入 LeafMark。"} />
                 <div className="association-card">
-                  <div className={`association-icon${associationStatus.isDefault ? " ready" : ""}`}>
-                    {associationStatus.isDefault ? <Check size={20} /> : <AppWindow size={20} />}
+                  <div className={`association-icon${associationStatus.isDefault || associationStatus.registered ? " ready" : ""}`}>
+                    {associationStatus.isDefault || associationStatus.registered ? <Check size={20} /> : <AppWindow size={20} />}
                   </div>
                   <div>
                     <small>.MD / .MARKDOWN</small>
-                    <strong>{associationStatus.isDefault ? "LeafMark 是默认应用" : "Markdown 文件关联"}</strong>
+                    <strong>{isAndroid ? "已响应 Android Markdown Intent" : associationStatus.isDefault ? "LeafMark 是默认应用" : "Markdown 文件关联"}</strong>
                     <p>{associationStatus.message}</p>
                   </div>
                 </div>
-                <div className="association-buttons">
+                {!isAndroid && <div className="association-buttons">
                   <button
                     className="primary-button"
                     type="button"
@@ -195,9 +198,11 @@ export function SettingsPanel({
                   >
                     <RefreshCw size={13} /> 刷新状态
                   </button>
-                </div>
+                </div>}
                 <div className="settings-note">
-                  Windows 会阻止应用静默篡改默认程序。LeafMark 会先注册为 Markdown 打开方式，再带你进入系统确认页；确认后，右键“打开方式”和双击都会交给 LeafMark。
+                  {isAndroid
+                    ? "首次从其他应用打开 .md / .markdown 时选择 LeafMark；若系统提供“始终”选项，可将它设为默认打开方式。ACTION_VIEW、ACTION_SEND 与多文件分享均已注册。"
+                    : "Windows 会阻止应用静默篡改默认程序。LeafMark 会先注册为 Markdown 打开方式，再带你进入系统确认页；确认后，右键“打开方式”和双击都会交给 LeafMark。"}
                 </div>
               </>
             )}

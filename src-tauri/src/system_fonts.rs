@@ -8,6 +8,12 @@ pub(crate) fn system_font_families() -> Vec<String> {
 
 fn load_system_font_families() -> Vec<String> {
     let mut database = fontdb::Database::new();
+    #[cfg(target_os = "android")]
+    {
+        database.load_fonts_dir("/system/fonts");
+        database.load_fonts_dir("/product/fonts");
+    }
+    #[cfg(not(target_os = "android"))]
     database.load_system_fonts();
 
     let mut families = BTreeMap::new();

@@ -69,6 +69,8 @@ interface MenuState {
 
 type SidebarView = "workspace" | "history" | "favorites";
 
+const isCompactLayout = () => window.matchMedia("(max-width: 620px)").matches;
+
 const EMPTY_SETTINGS: AppSettings = {
   settingsSchemaVersion: 2,
   workspacePath: "",
@@ -108,7 +110,7 @@ export default function App() {
   const [renderedHtml, setRenderedHtml] = useState("");
   const [mode, setMode] = useState<ViewMode>("live");
   const [sidebarView, setSidebarView] = useState<SidebarView>("workspace");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactLayout());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("正在启动…");
@@ -222,6 +224,7 @@ export default function App() {
     setContent(loaded.content);
     setSavedContent(loaded.content);
     setRenderedHtml(loaded.html);
+    if (isCompactLayout()) setSidebarOpen(false);
   }, []);
 
   const openDocument = useCallback(async (path: string, force = false) => {
@@ -301,13 +304,16 @@ export default function App() {
 
   useEffect(() => {
     if (!api.isTauri()) return;
-    let unlisten: (() => void) | undefined;
-    void listen<string>("open-markdown", (event) => {
-      void openExternalDocument(event.payload);
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => unlisten?.();
+    const cleanups: Array<() => void> = [];
+    void Promise.all([
+      listen<string>("open-markdown", (event) => {
+        void openExternalDocument(event.payload);
+      }),
+      listen<string>("open-markdown-error", (event) => {
+        setNotice(`无法接收 Android 文档：${event.payload}`);
+      }),
+    ]).then((next) => cleanups.push(...next));
+    return () => cleanups.forEach((cleanup) => cleanup());
   }, [openExternalDocument]);
 
   useEffect(() => {
@@ -621,7 +627,7 @@ export default function App() {
     : settings.workspacePath;
 
   return (
-    <div className={`app-shell${sidebarOpen ? "" : " sidebar-closed"}`} onClick={() => setMenu(null)}>
+    <div className={`app-shell${sidebarOpen ? "" : " sidebar-closed"}${api.isAndroid() ? " platform-android" : ""}`} onClick={() => setMenu(null)}>
       {busy && <div className="top-progress" />}
       <aside className="sidebar">
         <div className="sidebar-toolbar">
@@ -694,6 +700,7 @@ export default function App() {
           <button type="button" onClick={() => setSettingsOpen(true)}><Settings size={14} /> 设置</button>
         </footer>
       </aside>
+      {sidebarOpen && <button className="sidebar-scrim" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭文档抽屉" />}
 
       <main className="workspace">
         <header className="document-toolbar">

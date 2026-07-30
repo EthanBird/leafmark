@@ -1934,18 +1934,20 @@ dependencies = [
 
 [[package]]
 name = "leafmark"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "atomicwrites",
  "fontdb",
  "ignore",
  "parking_lot",
+ "percent-encoding",
  "pulldown-cmark",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-fs",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
 ]

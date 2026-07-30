@@ -66,13 +66,24 @@ pub(crate) fn association_status() -> AssociationStatus {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "android")]
+pub(crate) fn association_status() -> AssociationStatus {
+    AssociationStatus {
+        supported: false,
+        registered: true,
+        is_default: false,
+        message: "LeafMark 已注册为 Markdown 打开方式；可在文件管理器或其他应用中选择 LeafMark"
+            .into(),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
 pub(crate) fn association_status() -> AssociationStatus {
     AssociationStatus {
         supported: false,
         registered: false,
         is_default: false,
-        message: "当前安装包仅配置了 Windows 文件关联".into(),
+        message: "当前平台暂不支持在应用内更改默认 Markdown 打开方式".into(),
     }
 }
 
@@ -146,9 +157,14 @@ pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, Stri
     Ok(association_status())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "android")]
 pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, String> {
-    Err("当前安装包仅支持在 Windows 中配置默认 Markdown 应用".into())
+    Err("请在 Android 的“打开方式”选择器中选择 LeafMark，并按需设为始终使用".into())
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
+pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, String> {
+    Err("当前平台不支持在应用内配置默认 Markdown 打开方式".into())
 }
 
 fn is_markdown(path: &Path) -> bool {

@@ -323,15 +323,6 @@ impl DocumentArchive {
         Ok(())
     }
 
-    pub(crate) fn export(&self, id: &str, target: &Path) -> Result<(), String> {
-        if !self.index.documents.iter().any(|entry| entry.id == id) {
-            return Err("历史记录不存在".into());
-        }
-        fs::copy(self.snapshot_path(id), target)
-            .map(|_| ())
-            .map_err(error_string)
-    }
-
     fn snapshot_path(&self, id: &str) -> PathBuf {
         self.documents_dir.join(format!("{id}.md"))
     }

@@ -71,8 +71,13 @@ function isTauri() {
   return "__TAURI_INTERNALS__" in window;
 }
 
+function isAndroid() {
+  return /Android/i.test(navigator.userAgent);
+}
+
 export const api = {
   isTauri,
+  isAndroid,
   async bootstrap(): Promise<BootstrapPayload> {
     if (isTauri()) return invoke("bootstrap");
     return {
