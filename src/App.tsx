@@ -7,10 +7,9 @@ import {
   Clock3,
   Download,
   Eye,
-  FileArchive,
   FileCode2,
   FilePlus2,
-  FileWarning,
+  Files,
   FolderPlus,
   Italic,
   LayoutPanelLeft,
@@ -32,15 +31,26 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
+import { DocumentLibrary } from "./components/DocumentLibrary";
 import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { enhanceDocument, type OutlineItem } from "./rendering";
 import { buildTree, joinPath, parentPath, resolveMarkdownLink } from "./tree";
-import type { AppSettings, ArchiveRecord, DocumentEntry, EntryKind, LoadedDocument, TreeNode, ViewMode } from "./types";
+import type {
+  AppSettings,
+  ArchiveEntry,
+  AssociationStatus,
+  DocumentEntry,
+  DocumentOrigin,
+  EntryKind,
+  LoadedDocument,
+  TreeNode,
+  ViewMode,
+} from "./types";
 import { htmlToMarkdown, runFormat } from "./wysiwyg";
 
 interface EntryDialogState {
@@ -57,7 +67,7 @@ interface MenuState {
   entry: DocumentEntry | null;
 }
 
-type SidebarView = "files" | "history" | "favorites";
+type SidebarView = "workspace" | "history" | "favorites";
 
 const EMPTY_SETTINGS: AppSettings = {
   workspacePath: "",
@@ -73,19 +83,30 @@ const EMPTY_SETTINGS: AppSettings = {
   mathEnabled: true,
 };
 
+const EMPTY_ASSOCIATION_STATUS: AssociationStatus = {
+  supported: false,
+  registered: false,
+  isDefault: false,
+  message: "正在检查系统文件关联…",
+};
+
 export default function App() {
   const [settings, setSettings] = useState<AppSettings>(EMPTY_SETTINGS);
   const [entries, setEntries] = useState<DocumentEntry[]>([]);
-  const [records, setRecords] = useState<ArchiveRecord[]>([]);
-  const [currentDocument, setCurrentDocument] = useState<LoadedDocument | null>(null);
+  const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[]>([]);
+  const [associationStatus, setAssociationStatus] = useState<AssociationStatus>(EMPTY_ASSOCIATION_STATUS);
   const [selectedPath, setSelectedPath] = useState("");
   const [selectedEntryPath, setSelectedEntryPath] = useState("");
+  const [documentOrigin, setDocumentOrigin] = useState<DocumentOrigin>("workspace");
+  const [archiveId, setArchiveId] = useState("");
+  const [sourcePath, setSourcePath] = useState("");
+  const [sourceExists, setSourceExists] = useState(true);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [renderedHtml, setRenderedHtml] = useState("");
   const [mode, setMode] = useState<ViewMode>("read");
+  const [sidebarView, setSidebarView] = useState<SidebarView>("workspace");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [sidebarView, setSidebarView] = useState<SidebarView>("files");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("正在启动…");
@@ -96,27 +117,29 @@ export default function App() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [entryDialog, setEntryDialog] = useState<EntryDialogState | null>(null);
   const [deleteEntry, setDeleteEntry] = useState<DocumentEntry | null>(null);
-  const [clearHistoryConfirm, setClearHistoryConfirm] = useState(false);
   const [rendering, setRendering] = useState(false);
   const contentRef = useRef(content);
   const savedRef = useRef(savedContent);
   const selectedRef = useRef(selectedPath);
-  const documentRef = useRef<LoadedDocument | null>(null);
+  const originRef = useRef<DocumentOrigin>(documentOrigin);
+  const archiveIdRef = useRef(archiveId);
   const liveEditorRef = useRef<HTMLElement>(null);
   const settingsReady = useRef(false);
   const renderRequest = useRef(0);
 
-  const dirty = Boolean(currentDocument?.writable) && content !== savedContent;
+  const dirty = Boolean(selectedPath) && content !== savedContent;
   const files = useMemo(() => entries.filter((entry) => entry.kind === "file"), [entries]);
   const tree = useMemo(() => buildTree(entries), [entries]);
   const entryMap = useMemo(() => new Map(entries.map((entry) => [entry.path, entry])), [entries]);
   const selectedEntry = entryMap.get(selectedEntryPath);
   const currentDirectory = selectedEntry?.kind === "directory" ? selectedEntry.path : parentPath(selectedEntryPath);
+  const currentArchiveEntry = archiveEntries.find((entry) => entry.id === archiveId);
 
   useEffect(() => { contentRef.current = content; }, [content]);
   useEffect(() => { savedRef.current = savedContent; }, [savedContent]);
   useEffect(() => { selectedRef.current = selectedPath; }, [selectedPath]);
-  useEffect(() => { documentRef.current = currentDocument; }, [currentDocument]);
+  useEffect(() => { originRef.current = documentOrigin; }, [documentOrigin]);
+  useEffect(() => { archiveIdRef.current = archiveId; }, [archiveId]);
 
   const applyTheme = useCallback((next: AppSettings) => {
     const mediaDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -138,21 +161,32 @@ export default function App() {
     return () => media.removeEventListener("change", handler);
   }, [applyTheme, settings]);
 
+  const refreshLibrary = useCallback(async () => {
+    const next = await api.listArchiveEntries();
+    setArchiveEntries(next);
+    return next;
+  }, []);
+
   const persistCurrent = useCallback(async (quiet = false) => {
-    const document = documentRef.current;
+    const path = selectedRef.current;
     const value = contentRef.current;
-    if (!document?.writable || value === savedRef.current) return;
+    if (!path || value === savedRef.current) return;
     try {
-      await api.write(document.origin, document.path, value);
+      if (originRef.current === "archive") {
+        const updated = await api.writeArchivedDocument(archiveIdRef.current, value);
+        if (updated) setSourceExists(updated.sourceExists);
+      } else {
+        await api.write(path, value);
+      }
       savedRef.current = value;
       setSavedContent(value);
-      if (!quiet) setNotice(`已保存 ${document.name}`);
-      setRecords(await api.listRecords());
+      void refreshLibrary();
+      if (!quiet) setNotice(`已保存 ${nativeFileName(path)}`);
     } catch (error) {
       setNotice(`保存失败：${String(error)}`);
       throw error;
     }
-  }, []);
+  }, [refreshLibrary]);
 
   const refresh = useCallback(async (preferredPath?: string) => {
     const next = await api.listEntries();
@@ -170,84 +204,71 @@ export default function App() {
     return target;
   }, []);
 
-  const acceptDocument = useCallback((loaded: LoadedDocument) => {
+  const applyLoadedDocument = useCallback((loaded: LoadedDocument) => {
     selectedRef.current = loaded.path;
-    documentRef.current = loaded;
+    originRef.current = loaded.origin;
+    archiveIdRef.current = loaded.archiveId;
     contentRef.current = loaded.content;
     savedRef.current = loaded.content;
-    setCurrentDocument(loaded);
     setSelectedPath(loaded.path);
     setSelectedEntryPath(loaded.origin === "workspace" ? loaded.path : "");
+    setDocumentOrigin(loaded.origin);
+    setArchiveId(loaded.archiveId);
+    setSourcePath(loaded.sourcePath);
+    setSourceExists(loaded.sourceExists);
     setContent(loaded.content);
     setSavedContent(loaded.content);
     setRenderedHtml(loaded.html);
-    if (!loaded.writable) setMode((current) => current === "live" ? "read" : current);
-    setNotice(loaded.sourceExists
-      ? `${loaded.cached ? "瞬时打开（缓存）" : "已打开"} · ${formatBytes(loaded.size)}`
-      : `源文件已删除 · 正在读取保留副本 · ${formatBytes(loaded.size)}`);
   }, []);
 
   const openDocument = useCallback(async (path: string, force = false) => {
-    if (!force && documentRef.current?.origin === "workspace" && path === selectedRef.current) return;
+    if (!force && path === selectedRef.current) return;
     await persistCurrent(true);
     setBusy(true);
     try {
       const loaded = await api.readDocument(path);
-      acceptDocument(loaded);
-      setRecords(await api.listRecords());
+      applyLoadedDocument(loaded);
+      void refreshLibrary();
+      setNotice(`${loaded.cached ? "瞬时打开（缓存）" : "已打开"} · ${formatBytes(loaded.size)}`);
     } catch (error) {
       setNotice(`打开文档失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
-  }, [acceptDocument, persistCurrent]);
+  }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   const openExternalDocument = useCallback(async (path: string) => {
     await persistCurrent(true);
     setBusy(true);
     try {
-      const loaded = await api.readExternalDocument(path);
-      acceptDocument(loaded);
-      setRecords(await api.listRecords());
+      const loaded = await api.openExternalDocument(path);
+      applyLoadedDocument(loaded);
+      setSidebarView("history");
+      await refreshLibrary();
+      setNotice(`已从系统打开 · 已保留副本 · ${formatBytes(loaded.size)}`);
     } catch (error) {
-      setNotice(`打开外部文档失败：${String(error)}`);
+      setNotice(`无法打开外部文档：${String(error)}`);
     } finally {
       setBusy(false);
     }
-  }, [acceptDocument, persistCurrent]);
+  }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
 
-  const openArchiveDocument = useCallback(async (recordId: string) => {
+  const openArchivedDocument = useCallback(async (entry: ArchiveEntry) => {
     await persistCurrent(true);
     setBusy(true);
     try {
-      const loaded = await api.readArchiveDocument(recordId);
-      acceptDocument(loaded);
-      setRecords(await api.listRecords());
+      const loaded = await api.openArchivedDocument(entry.id);
+      applyLoadedDocument(loaded);
+      await refreshLibrary();
+      setNotice(loaded.sourceExists
+        ? `已从${entry.favorite ? "收藏" : "历史"}打开 · ${formatBytes(loaded.size)}`
+        : `源文件已删除 · 正在读取 LeafMark 保留副本`);
     } catch (error) {
       setNotice(`打开保留文档失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
-  }, [acceptDocument, persistCurrent]);
-
-  useEffect(() => {
-    if (!api.isTauri()) return;
-    let active = true;
-    let stop: (() => void) | undefined;
-    void listen<string[]>("open-markdown", (event) => {
-      if (!active) return;
-      void (async () => {
-        for (const path of event.payload) await openExternalDocument(path);
-      })();
-    }).then((unlisten) => {
-      if (active) stop = unlisten;
-      else unlisten();
-    });
-    return () => {
-      active = false;
-      stop?.();
-    };
-  }, [openExternalDocument]);
+  }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   useEffect(() => {
     let active = true;
@@ -255,22 +276,35 @@ export default function App() {
       .then(async (payload) => {
         if (!active) return;
         setSettings(payload.settings);
-        setRecords(payload.records);
+        setAssociationStatus(payload.associationStatus);
+        setArchiveEntries(payload.library);
         settingsReady.current = true;
         setEntries(payload.entries);
         setExpanded(new Set(payload.entries.filter((entry) => entry.kind === "directory" && entry.depth < 2).map((entry) => entry.path)));
-        if (payload.pendingOpenPaths.length) {
-          for (const path of payload.pendingOpenPaths) await openExternalDocument(path);
-        } else {
-          const first = payload.entries.find((entry) => entry.kind === "file");
-          if (first) await openDocument(first.path);
-          else setNotice("文档库为空");
+        const external = payload.pendingOpenPaths.at(-1);
+        if (external) {
+          await openExternalDocument(external);
+          return;
         }
+        const first = payload.entries.find((entry) => entry.kind === "file");
+        if (first) await openDocument(first.path);
+        else setNotice("文档库为空");
       })
       .catch((error: unknown) => setNotice(`启动失败：${String(error)}`))
       .finally(() => active && setBusy(false));
     return () => { active = false; };
   }, [openDocument, openExternalDocument]);
+
+  useEffect(() => {
+    if (!api.isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("open-markdown", (event) => {
+      void openExternalDocument(event.payload);
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => unlisten?.();
+  }, [openExternalDocument]);
 
   useEffect(() => {
     if (!settingsReady.current) return;
@@ -279,6 +313,15 @@ export default function App() {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [settings]);
+
+  useEffect(() => {
+    if (!settingsOpen || !associationStatus.supported || !api.isTauri()) return;
+    const refreshAssociation = () => {
+      void api.getAssociationStatus().then(setAssociationStatus);
+    };
+    window.addEventListener("focus", refreshAssociation);
+    return () => window.removeEventListener("focus", refreshAssociation);
+  }, [associationStatus.supported, settingsOpen]);
 
   useEffect(() => {
     if (!dirty || busy) return;
@@ -327,10 +370,6 @@ export default function App() {
   }, [persistCurrent]);
 
   const switchMode = async (next: ViewMode) => {
-    if (next === "live" && !documentRef.current?.writable) {
-      setNotice("保留副本为只读，可先导出为 Markdown 后再编辑");
-      return;
-    }
     if (next === "live" && !settings.liveEditing) {
       setSettingsOpen(true);
       return;
@@ -398,6 +437,7 @@ export default function App() {
         const selectedWasInside = selectedRef.current === entryDialog.source.path || selectedRef.current.startsWith(`${entryDialog.source.path}/`);
         const nextPath = selectedWasInside ? `${target}${selectedRef.current.slice(entryDialog.source.path.length)}` : selectedRef.current;
         await refresh(nextPath);
+        await refreshLibrary();
         if (selectedWasInside && entryDialog.kind === "file") await openDocument(target, true);
         else setSelectedEntryPath(target);
         setNotice(`已重命名为 ${name}`);
@@ -418,15 +458,17 @@ export default function App() {
       const selectedRemoved = selectedRef.current === deleteEntry.path || selectedRef.current.startsWith(`${deleteEntry.path}/`);
       if (selectedRemoved) {
         selectedRef.current = "";
-        documentRef.current = null;
-        setCurrentDocument(null);
+        archiveIdRef.current = "";
         setSelectedPath("");
         setSelectedEntryPath("");
+        setArchiveId("");
+        setSourcePath("");
         setContent("");
         setSavedContent("");
         setRenderedHtml("");
       }
       const target = await refresh();
+      await refreshLibrary();
       if (selectedRemoved && target) await openDocument(target, true);
       setNotice(`已删除 ${deleteEntry.name}`);
       setDeleteEntry(null);
@@ -456,13 +498,16 @@ export default function App() {
   };
 
   const exportCurrent = async () => {
-    const document = documentRef.current;
-    if (!api.isTauri() || !document) return;
+    if (!api.isTauri() || !selectedPath) return;
     await persistCurrent(true);
-    const target = await saveDialog({ defaultPath: document.name, filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
+    const target = await saveDialog({ defaultPath: nativeFileName(selectedPath), filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
     if (!target) return;
     try {
-      await api.exportFile(document.origin, document.path, target);
+      if (documentOrigin === "archive") {
+        await api.exportArchivedDocument(archiveId, target);
+      } else {
+        await api.exportFile(selectedPath, target);
+      }
       setNotice(`已导出到 ${target}`);
     } catch (error) {
       setNotice(`导出失败：${String(error)}`);
@@ -473,13 +518,18 @@ export default function App() {
     await persistCurrent(true);
     const payload = await api.setWorkspace(path);
     selectedRef.current = "";
-    documentRef.current = null;
+    archiveIdRef.current = "";
+    originRef.current = "workspace";
     setSettings(payload.settings);
     setEntries(payload.entries);
-    setRecords(payload.records);
-    setCurrentDocument(null);
+    setArchiveEntries(payload.library);
+    setAssociationStatus(payload.associationStatus);
     setSelectedPath("");
     setSelectedEntryPath("");
+    setDocumentOrigin("workspace");
+    setArchiveId("");
+    setSourcePath("");
+    setSourceExists(true);
     setContent("");
     setSavedContent("");
     setRenderedHtml("");
@@ -497,35 +547,55 @@ export default function App() {
       .map((entry) => ({ entry: { ...entry, depth: 0 }, children: [] }));
   }, [files, query, tree]);
 
-  const visibleRecords = useMemo(() => {
+  const visibleArchiveEntries = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
-    return records.filter((record) => {
-      if (sidebarView === "favorites" && !record.favorite) return false;
-      return !needle || record.name.toLocaleLowerCase().includes(needle) || record.sourcePath.toLocaleLowerCase().includes(needle);
+    return archiveEntries.filter((entry) => {
+      if (sidebarView === "favorites" && !entry.favorite) return false;
+      return !needle
+        || entry.name.toLocaleLowerCase().includes(needle)
+        || entry.sourcePath.toLocaleLowerCase().includes(needle);
     });
-  }, [query, records, sidebarView]);
+  }, [archiveEntries, query, sidebarView]);
 
-  const currentRecord = currentDocument
-    ? records.find((record) => record.id === currentDocument.recordId)
-    : undefined;
-
-  const toggleFavorite = async () => {
-    if (!currentDocument) return;
+  const toggleFavorite = async (entry: ArchiveEntry, favorite: boolean) => {
     try {
-      const next = !currentRecord?.favorite;
-      setRecords(await api.setFavorite(currentDocument.recordId, next));
-      setNotice(next ? `已收藏 ${currentDocument.name}` : `已取消收藏 ${currentDocument.name}`);
+      const next = await api.setFavorite(entry.id, favorite);
+      setArchiveEntries(next);
+      setNotice(favorite ? `已收藏并保留 ${entry.name}` : `已取消收藏 ${entry.name}`);
     } catch (error) {
       setNotice(`收藏操作失败：${String(error)}`);
     }
   };
 
+  const removeHistoryEntry = async (entry: ArchiveEntry) => {
+    try {
+      const next = await api.removeArchiveEntry(entry.id);
+      setArchiveEntries(next);
+      setNotice(`已移除 ${entry.name} 的历史记录和保留副本`);
+    } catch (error) {
+      setNotice(`移除历史失败：${String(error)}`);
+    }
+  };
+
   const clearHistory = async () => {
     try {
-      setRecords(await api.clearHistory());
-      setNotice("历史记录已清空，收藏的文档仍被保留");
+      const next = await api.clearHistory();
+      setArchiveEntries(next);
+      setNotice("已清除未收藏的历史记录，收藏文档及副本均已保留");
     } catch (error) {
-      setNotice(`清空历史失败：${String(error)}`);
+      setNotice(`清除历史失败：${String(error)}`);
+    }
+  };
+
+  const changeAssociation = async (requestDefault: boolean) => {
+    try {
+      const status = requestDefault
+        ? await api.requestDefaultAssociation()
+        : await api.getAssociationStatus();
+      setAssociationStatus(status);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(`文件关联设置失败：${String(error)}`);
     }
   };
 
@@ -536,8 +606,10 @@ export default function App() {
     setMenu({ x: event.clientX, y: event.clientY, entry: node.entry });
   };
 
-  const documentDirectory = currentDocument
-    ? nativeParentPath(currentDocument.sourcePath)
+  const documentDirectory = selectedPath
+    ? documentOrigin === "archive"
+      ? nativeParentPath(sourcePath)
+      : joinNativePath(settings.workspacePath, parentPath(selectedPath))
     : settings.workspacePath;
 
   return (
@@ -553,14 +625,22 @@ export default function App() {
             <button className="icon-button" type="button" onClick={() => setSidebarOpen(false)} title="收起目录"><PanelLeftClose size={16} /></button>
           </div>
         </div>
-        <nav className="sidebar-tabs" aria-label="文档视图">
-          <button type="button" className={sidebarView === "files" ? "active" : ""} onClick={() => { setSidebarView("files"); setQuery(""); }}><FileCode2 size={13} /> 文档</button>
-          <button type="button" className={sidebarView === "history" ? "active" : ""} onClick={() => { setSidebarView("history"); setQuery(""); }}><Clock3 size={13} /> 历史</button>
-          <button type="button" className={sidebarView === "favorites" ? "active" : ""} onClick={() => { setSidebarView("favorites"); setQuery(""); }}><Star size={13} /> 收藏</button>
-        </nav>
-        <div className="sidebar-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={sidebarView === "files" ? "搜索文档…" : "搜索保留文档…"} /><kbd>⌘P</kbd></div>
+        <div className="sidebar-views" aria-label="文档来源">
+          <button className={sidebarView === "workspace" ? "active" : ""} type="button" onClick={() => setSidebarView("workspace")} title="文档库"><Files size={14} /> 文档</button>
+          <button className={sidebarView === "history" ? "active" : ""} type="button" onClick={() => setSidebarView("history")} title="打开历史"><Clock3 size={14} /> 历史</button>
+          <button className={sidebarView === "favorites" ? "active" : ""} type="button" onClick={() => setSidebarView("favorites")} title="收藏"><Star size={14} /> 收藏</button>
+        </div>
+        <div className="sidebar-search">
+          <Search size={14} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={sidebarView === "workspace" ? "搜索文档…" : sidebarView === "history" ? "搜索历史…" : "搜索收藏…"}
+          />
+          <kbd>⌘P</kbd>
+        </div>
         <div className="library-label">
-          {sidebarView === "files" ? (
+          {sidebarView === "workspace" ? (
             <>
               <span title={settings.workspacePath}>{lastDirectory(settings.workspacePath) || "文档库"}</span>
               <button className="icon-button compact" type="button" onClick={() => void refresh().then((target) => {
@@ -569,61 +649,55 @@ export default function App() {
             </>
           ) : (
             <>
-              <span>{sidebarView === "history" ? "最近打开" : "已收藏"}</span>
-              {sidebarView === "history" && records.some((record) => !record.favorite) && <button className="text-mini-button" type="button" onClick={() => setClearHistoryConfirm(true)}>清空</button>}
+              <span>{sidebarView === "history" ? "最近打开 · 自动保留副本" : "收藏文档 · 永久保留"}</span>
+              {sidebarView === "history" && archiveEntries.some((entry) => !entry.favorite) && (
+                <button className="text-icon-button" type="button" onClick={() => void clearHistory()} title="清除未收藏历史">
+                  <Trash2 size={12} /> 清除
+                </button>
+              )}
             </>
           )}
         </div>
-        <div className="tree" role="tree" aria-label="文档目录" onContextMenu={(event) => {
-          if (sidebarView !== "files") return;
-          if ((event.target as HTMLElement).closest(".tree-row")) return;
-          event.preventDefault();
-          setMenu({ x: event.clientX, y: event.clientY, entry: null });
-        }}>
-          {sidebarView === "files" ? (
-            visibleTree.length > 0
-              ? <FileTree nodes={visibleTree} selectedPath={selectedEntryPath} expanded={expanded} onOpen={(path) => void openDocument(path)} onToggle={toggleDirectory} onMenu={handleTreeMenu} />
-              : <div className="tree-empty"><FileCode2 size={24} /><strong>{query ? "没有匹配文档" : "文档库为空"}</strong><span>{query ? "换一个关键词试试" : "新建或导入 Markdown"}</span></div>
-          ) : visibleRecords.length > 0 ? (
-            <div className="archive-list">
-              {visibleRecords.map((record) => (
-                <div className={`archive-row${currentDocument?.recordId === record.id ? " selected" : ""}`} key={record.id}>
-                  <button className="archive-main" type="button" onClick={() => void openArchiveDocument(record.id)} title={record.sourcePath}>
-                    <span className="archive-icon">{record.sourceExists ? <FileArchive size={14} /> : <FileWarning size={14} />}</span>
-                    <span className="archive-copy">
-                      <strong>{record.name}</strong>
-                      <small>{record.sourceExists ? formatRelativeTime(record.lastOpenedMs) : "源文件已删除 · 副本可用"}</small>
-                    </span>
-                  </button>
-                  <button className={`archive-favorite${record.favorite ? " active" : ""}`} type="button" title={record.favorite ? "取消收藏" : "收藏"} onClick={() => void api.setFavorite(record.id, !record.favorite).then(setRecords).catch((error: unknown) => setNotice(`收藏操作失败：${String(error)}`))}>
-                    <Star size={13} fill={record.favorite ? "currentColor" : "none"} />
-                  </button>
-                </div>
-              ))}
+        <div className="tree">
+          {sidebarView === "workspace" ? (
+            <div role="tree" aria-label="文档目录" onContextMenu={(event) => {
+              if ((event.target as HTMLElement).closest(".tree-row")) return;
+              event.preventDefault();
+              setMenu({ x: event.clientX, y: event.clientY, entry: null });
+            }}>
+              {visibleTree.length > 0
+                ? <FileTree nodes={visibleTree} selectedPath={selectedEntryPath} expanded={expanded} onOpen={(path) => void openDocument(path)} onToggle={toggleDirectory} onMenu={handleTreeMenu} />
+                : <div className="tree-empty"><FileCode2 size={24} /><strong>{query ? "没有匹配文档" : "文档库为空"}</strong><span>{query ? "换一个关键词试试" : "新建或导入 Markdown"}</span></div>}
             </div>
           ) : (
-            <div className="tree-empty"><FileArchive size={24} /><strong>{query ? "没有匹配记录" : sidebarView === "history" ? "还没有历史记录" : "还没有收藏"}</strong><span>打开文档后会自动保留内容副本</span></div>
+            <DocumentLibrary
+              entries={visibleArchiveEntries}
+              selectedId={archiveId}
+              emptyTitle={query ? "没有匹配文档" : sidebarView === "favorites" ? "还没有收藏" : "还没有打开历史"}
+              emptyDetail={query ? "换一个关键词试试" : sidebarView === "favorites" ? "打开文档后点击星标收藏" : "从资源管理器或文档库打开 Markdown"}
+              onOpen={(entry) => void openArchivedDocument(entry)}
+              onFavorite={(entry, favorite) => void toggleFavorite(entry, favorite)}
+              onRemove={(entry) => void removeHistoryEntry(entry)}
+            />
           )}
         </div>
-        <footer className="sidebar-footer"><span>{sidebarView === "files" ? `${files.length} 篇文档` : `${visibleRecords.length} 篇保留文档`}</span><button type="button" onClick={() => setSettingsOpen(true)}><Settings size={14} /> 设置</button></footer>
+        <footer className="sidebar-footer">
+          <span>{sidebarView === "workspace" ? `${files.length} 篇文档` : sidebarView === "history" ? `${archiveEntries.length} 条历史` : `${archiveEntries.filter((entry) => entry.favorite).length} 个收藏`}</span>
+          <button type="button" onClick={() => setSettingsOpen(true)}><Settings size={14} /> 设置</button>
+        </footer>
       </aside>
 
       <main className="workspace">
         <header className="document-toolbar">
           <div className="document-leading">
             {!sidebarOpen && <button className="icon-button" type="button" onClick={() => setSidebarOpen(true)} title="展开目录"><PanelLeftOpen size={17} /></button>}
-            <div className="breadcrumbs" title={currentDocument?.sourcePath}>
-              {currentDocument ? currentDocument.sourcePath.split(/[\\/]/).filter(Boolean).slice(-3).map((part, index) => (
+            <div className="breadcrumbs" title={sourcePath || selectedPath}>
+              {selectedPath ? displayPathParts(documentOrigin === "archive" ? sourcePath : selectedPath).map((part, index) => (
                 <span key={`${part}-${index}`}>{index > 0 && <ChevronRight size={11} />}{part}</span>
               )) : <span>未选择文档</span>}
             </div>
-            {dirty
-              ? <span className="save-state saving"><span /> 保存中</span>
-              : currentDocument?.sourceExists
-                ? <span className="save-state"><Check size={12} /> 已保存</span>
-                : currentDocument
-                  ? <span className="save-state snapshot"><FileArchive size={12} /> 保留副本</span>
-                  : null}
+            {selectedPath && !sourceExists && <span className="retained-badge">保留副本</span>}
+            {dirty ? <span className="save-state saving"><span /> 保存中</span> : selectedPath ? <span className="save-state"><Check size={12} /> 已保存</span> : null}
           </div>
 
           <div className="document-actions">
@@ -642,12 +716,18 @@ export default function App() {
               <ModeButton active={mode === "split"} title="分栏" onClick={() => void switchMode("split")}><SplitSquareHorizontal size={15} /></ModeButton>
               {settings.liveEditing && <ModeButton active={mode === "live"} title="实时编译" onClick={() => void switchMode("live")}><PencilLine size={15} /></ModeButton>}
             </div>
-            <button className={`icon-button${outlineOpen ? " active" : ""}`} type="button" onClick={() => setOutlineOpen((open) => !open)} title="文章大纲" disabled={!selectedPath}><LayoutPanelLeft size={16} /></button>
-            <button className={`icon-button${currentRecord?.favorite ? " active favorite" : ""}`} type="button" onClick={() => void toggleFavorite()} title={currentRecord?.favorite ? "取消收藏" : "收藏并保留副本"} disabled={!currentDocument}>
-              <Star size={16} fill={currentRecord?.favorite ? "currentColor" : "none"} />
+            <button
+              className={`icon-button${currentArchiveEntry?.favorite ? " active favorite" : ""}`}
+              type="button"
+              onClick={() => currentArchiveEntry && void toggleFavorite(currentArchiveEntry, !currentArchiveEntry.favorite)}
+              title={currentArchiveEntry?.favorite ? "取消收藏" : "收藏并保留副本"}
+              disabled={!archiveId}
+            >
+              <Star size={16} fill={currentArchiveEntry?.favorite ? "currentColor" : "none"} />
             </button>
+            <button className={`icon-button${outlineOpen ? " active" : ""}`} type="button" onClick={() => setOutlineOpen((open) => !open)} title="文章大纲" disabled={!selectedPath}><LayoutPanelLeft size={16} /></button>
             <button className="icon-button" type="button" onClick={() => void persistCurrent()} title="保存 (Ctrl+S)" disabled={!dirty}><Save size={16} /></button>
-            <button className="icon-button" type="button" onClick={() => void exportCurrent()} title="导出" disabled={!currentDocument || !api.isTauri()}><Download size={15} /></button>
+            <button className="icon-button" type="button" onClick={() => void exportCurrent()} title="导出" disabled={!selectedPath || !api.isTauri()}><Download size={15} /></button>
             <button className="icon-button" type="button" onClick={() => setSettingsOpen(true)} title="设置 (Ctrl+,)"><Settings size={16} /></button>
           </div>
         </header>
@@ -662,7 +742,6 @@ export default function App() {
                   className="source-editor"
                   aria-label="Markdown 源码编辑器"
                   spellCheck={false}
-                  readOnly={!currentDocument?.writable}
                   value={content}
                   onChange={(event) => setContent(event.target.value)}
                 />
@@ -671,7 +750,7 @@ export default function App() {
                 <DocumentSurface
                   key={`${selectedPath}-${mode}`}
                   html={renderedHtml}
-                  live={mode === "live" && Boolean(currentDocument?.writable)}
+                  live={mode === "live"}
                   settings={settings}
                   documentDirectory={documentDirectory}
                   editorRef={liveEditorRef}
@@ -687,13 +766,15 @@ export default function App() {
                       else window.open(href, "_blank", "noopener");
                       return;
                     }
-                    if (currentDocument?.origin === "workspace") {
-                      const target = resolveMarkdownLink(selectedPath, href);
-                      if (entryMap.has(target)) void openDocument(target);
-                      else setNotice(`找不到本地文档：${target}`);
-                    } else {
-                      setNotice("外部文档中的相对链接需要从文档库打开");
+                    if (documentOrigin === "archive") {
+                      const externalTarget = resolveExternalMarkdownPath(documentDirectory, href);
+                      if (externalTarget) void openExternalDocument(externalTarget);
+                      else setNotice(`找不到本地文档：${href}`);
+                      return;
                     }
+                    const target = resolveMarkdownLink(selectedPath, href);
+                    if (entryMap.has(target)) void openDocument(target);
+                    else setNotice(`找不到本地文档：${target}`);
                   }}
                 />
               )}
@@ -705,7 +786,7 @@ export default function App() {
         {settings.showStatusBar && (
           <footer className="statusbar">
             <span className={notice.includes("失败") ? "error" : ""}>{notice}</span>
-            {currentDocument && <div><span>{currentDocument.sourceExists ? "原文" : "保留副本"}</span><span>Markdown</span><span>{countWords(content).toLocaleString()} 字</span><span>{formatBytes(new Blob([content]).size)}</span></div>}
+            {selectedPath && <div>{!sourceExists && <span>LeafMark 副本</span>}<span>UTF-8</span><span>Markdown</span><span>{countWords(content).toLocaleString()} 字</span><span>{formatBytes(new Blob([content]).size)}</span></div>}
           </footer>
         )}
       </main>
@@ -749,19 +830,16 @@ export default function App() {
         />
       )}
 
-      {clearHistoryConfirm && (
-        <ConfirmDialog
-          title="清空历史记录？"
-          description="未收藏文档的历史记录与保留副本会被删除；收藏内容不会受影响。"
-          onCancel={() => setClearHistoryConfirm(false)}
-          onConfirm={() => {
-            setClearHistoryConfirm(false);
-            void clearHistory();
-          }}
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          associationStatus={associationStatus}
+          onChange={setSettings}
+          onWorkspaceChange={changeWorkspace}
+          onAssociationChange={changeAssociation}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
-
-      {settingsOpen && <SettingsPanel settings={settings} onChange={setSettings} onWorkspaceChange={changeWorkspace} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
@@ -870,17 +948,37 @@ function lastDirectory(path: string) {
   return path.replace(/[\\/]$/, "").split(/[\\/]/).at(-1) ?? path;
 }
 
-function nativeParentPath(path: string) {
-  const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return index > 0 ? path.slice(0, index) : path;
+function nativeFileName(path: string) {
+  return path.replace(/[\\/]$/, "").split(/[\\/]/).at(-1) ?? path;
 }
 
-function formatRelativeTime(timestamp: number) {
-  const elapsed = Math.max(0, Date.now() - timestamp);
-  const minute = 60_000;
-  if (elapsed < minute) return "刚刚打开";
-  if (elapsed < 60 * minute) return `${Math.floor(elapsed / minute)} 分钟前`;
-  if (elapsed < 24 * 60 * minute) return `${Math.floor(elapsed / 60 / minute)} 小时前`;
-  if (elapsed < 30 * 24 * 60 * minute) return `${Math.floor(elapsed / 24 / 60 / minute)} 天前`;
-  return new Date(timestamp).toLocaleDateString();
+function nativeParentPath(path: string) {
+  const normalized = path.replace(/[\\/]$/, "");
+  const separator = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return separator >= 0 ? normalized.slice(0, separator) : "";
+}
+
+function displayPathParts(path: string) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 4 ? ["…", ...parts.slice(-3)] : parts;
+}
+
+function joinNativePath(root: string, relative: string) {
+  if (!relative) return root;
+  const separator = root.includes("\\") ? "\\" : "/";
+  return `${root.replace(/[\\/]$/, "")}${separator}${relative.replaceAll("/", separator)}`;
+}
+
+function resolveExternalMarkdownPath(directory: string, href: string) {
+  let decoded = href.split(/[?#]/, 1)[0];
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    return "";
+  }
+  if (!/\.(md|markdown)$/i.test(decoded)) return "";
+  if (/^[a-z]:[\\/]/i.test(decoded) || decoded.startsWith("/") || decoded.startsWith("\\\\")) {
+    return decoded;
+  }
+  return joinNativePath(directory, decoded);
 }

@@ -1,7 +1,7 @@
 export type EntryKind = "file" | "directory";
 export type ViewMode = "read" | "source" | "split" | "live";
 export type ThemeMode = "system" | "light" | "dark";
-export type DocumentOrigin = "workspace" | "external" | "snapshot";
+export type DocumentOrigin = "workspace" | "archive";
 
 export interface DocumentEntry {
   path: string;
@@ -14,29 +14,33 @@ export interface DocumentEntry {
 
 export interface LoadedDocument {
   path: string;
+  origin: DocumentOrigin;
+  archiveId: string;
   sourcePath: string;
-  name: string;
+  sourceExists: boolean;
   content: string;
   html: string;
   size: number;
   modifiedMs: number;
   cached: boolean;
-  origin: DocumentOrigin;
-  recordId: string;
-  sourceExists: boolean;
-  writable: boolean;
 }
 
-export interface ArchiveRecord {
+export interface ArchiveEntry {
   id: string;
-  sourcePath: string;
   name: string;
-  snapshotPath: string;
+  sourcePath: string;
   lastOpenedMs: number;
-  modifiedMs: number;
-  size: number;
   favorite: boolean;
   sourceExists: boolean;
+  size: number;
+  modifiedMs: number;
+}
+
+export interface AssociationStatus {
+  supported: boolean;
+  registered: boolean;
+  isDefault: boolean;
+  message: string;
 }
 
 export interface AppSettings {
@@ -56,8 +60,9 @@ export interface AppSettings {
 export interface BootstrapPayload {
   settings: AppSettings;
   entries: DocumentEntry[];
-  records: ArchiveRecord[];
+  library: ArchiveEntry[];
   pendingOpenPaths: string[];
+  associationStatus: AssociationStatus;
 }
 
 export interface TreeNode {

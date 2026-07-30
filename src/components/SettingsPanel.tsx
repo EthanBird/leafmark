@@ -1,26 +1,48 @@
-import { Check, ChevronRight, FileKey2, FolderOpen, Monitor, Moon, RotateCcw, Sun, X } from "lucide-react";
+import {
+  AppWindow,
+  Check,
+  ChevronRight,
+  ExternalLink,
+  FolderOpen,
+  Monitor,
+  Moon,
+  RefreshCw,
+  RotateCcw,
+  Sun,
+  X,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppSettings, ThemeMode } from "../types";
+import type { AppSettings, AssociationStatus, ThemeMode } from "../types";
 import { api } from "../api";
 
 interface SettingsPanelProps {
   settings: AppSettings;
+  associationStatus: AssociationStatus;
   onChange: (settings: AppSettings) => void;
   onWorkspaceChange: (path: string) => Promise<void>;
+  onAssociationChange: (requestDefault: boolean) => Promise<void>;
   onClose: () => void;
 }
 
-type Section = "editor" | "appearance" | "workspace" | "performance";
+type Section = "editor" | "appearance" | "workspace" | "integration" | "performance";
 
-export function SettingsPanel({ settings, onChange, onWorkspaceChange, onClose }: SettingsPanelProps) {
+export function SettingsPanel({
+  settings,
+  associationStatus,
+  onChange,
+  onWorkspaceChange,
+  onAssociationChange,
+  onClose,
+}: SettingsPanelProps) {
   const [section, setSection] = useState<Section>("editor");
   const [working, setWorking] = useState(false);
-  const [associationNotice, setAssociationNotice] = useState("");
+  const [associationWorking, setAssociationWorking] = useState(false);
   const sections = useMemo(() => [
     { id: "editor" as const, label: "编辑与保存", detail: "编译模式、自动保存" },
     { id: "appearance" as const, label: "外观", detail: "主题、字号与版心" },
     { id: "workspace" as const, label: "文档库", detail: "本地目录" },
+    { id: "integration" as const, label: "系统集成", detail: "打开方式、默认应用" },
     { id: "performance" as const, label: "渲染", detail: "Mermaid 与公式" },
   ], []);
 
@@ -38,14 +60,12 @@ export function SettingsPanel({ settings, onChange, onWorkspaceChange, onClose }
     }
   };
 
-  const chooseDefaultApplication = async () => {
-    setWorking(true);
+  const changeAssociation = async (requestDefault: boolean) => {
+    setAssociationWorking(true);
     try {
-      setAssociationNotice(await api.openDefaultApps());
-    } catch (error) {
-      setAssociationNotice(`无法打开系统设置：${String(error)}`);
+      await onAssociationChange(requestDefault);
     } finally {
-      setWorking(false);
+      setAssociationWorking(false);
     }
   };
 
@@ -115,12 +135,44 @@ export function SettingsPanel({ settings, onChange, onWorkspaceChange, onClose }
                 <div className="settings-note">
                   目录扫描遵守 <code>.gitignore</code>、<code>.ignore</code> 和 <code>.markignore</code>，并自动跳过隐藏目录与常见构建产物。
                 </div>
-                <SettingRow title="默认打开 Markdown" description="安装版 LeafMark 已注册 .md 与 .markdown。点击后在 Windows 默认应用设置中将 LeafMark 选为默认应用。">
-                  <button className="secondary-button" type="button" onClick={() => void chooseDefaultApplication()} disabled={working || !api.isTauri()}>
-                    <FileKey2 size={14} /> 设置为默认
+              </>
+            )}
+
+            {section === "integration" && (
+              <>
+                <SettingsIntro title="系统集成" description="从资源管理器右键菜单、打开方式或双击直接进入 LeafMark。" />
+                <div className="association-card">
+                  <div className={`association-icon${associationStatus.isDefault ? " ready" : ""}`}>
+                    {associationStatus.isDefault ? <Check size={20} /> : <AppWindow size={20} />}
+                  </div>
+                  <div>
+                    <small>.MD / .MARKDOWN</small>
+                    <strong>{associationStatus.isDefault ? "LeafMark 是默认应用" : "Markdown 文件关联"}</strong>
+                    <p>{associationStatus.message}</p>
+                  </div>
+                </div>
+                <div className="association-buttons">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={!associationStatus.supported || associationWorking || !api.isTauri()}
+                    onClick={() => void changeAssociation(true)}
+                  >
+                    <ExternalLink size={14} />
+                    {associationWorking ? "正在打开…" : associationStatus.registered ? "打开 Windows 默认应用设置" : "注册并打开默认应用设置"}
                   </button>
-                </SettingRow>
-                {associationNotice && <div className="settings-note">{associationNotice}</div>}
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!associationStatus.supported || associationWorking || !api.isTauri()}
+                    onClick={() => void changeAssociation(false)}
+                  >
+                    <RefreshCw size={13} /> 刷新状态
+                  </button>
+                </div>
+                <div className="settings-note">
+                  Windows 会阻止应用静默篡改默认程序。LeafMark 会先注册为 Markdown 打开方式，再带你进入系统确认页；确认后，右键“打开方式”和双击都会交给 LeafMark。
+                </div>
               </>
             )}
 

@@ -1,23 +1,27 @@
+mod library;
+mod system_integration;
+
 use atomicwrites::{AllowOverwrite, AtomicFile};
 use ignore::WalkBuilder;
+use library::{ArchiveEntry, ArchivedContent, DocumentArchive};
 use parking_lot::Mutex;
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashSet, VecDeque},
-    env, fs,
-    hash::{DefaultHasher, Hash, Hasher},
+    fs,
     io::Write,
     path::{Component, Path, PathBuf},
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
+};
+use system_integration::{
+    association_status, configure_markdown_association, markdown_paths_from_args, AssociationStatus,
 };
 use tauri::{Emitter, Manager, State};
 
 const CACHE_DOCUMENTS: usize = 12;
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
-const OPEN_MARKDOWN_EVENT: &str = "open-markdown";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,33 +83,15 @@ struct DocumentEntry {
 #[serde(rename_all = "camelCase")]
 struct LoadedDocument {
     path: String,
+    origin: &'static str,
+    archive_id: String,
     source_path: String,
-    name: String,
+    source_exists: bool,
     content: String,
     html: String,
     size: u64,
     modified_ms: u64,
     cached: bool,
-    origin: &'static str,
-    record_id: String,
-    source_exists: bool,
-    writable: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ArchiveRecord {
-    id: String,
-    source_path: String,
-    name: String,
-    snapshot_path: String,
-    last_opened_ms: u64,
-    modified_ms: u64,
-    size: u64,
-    #[serde(default)]
-    favorite: bool,
-    #[serde(skip, default)]
-    source_exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,8 +99,9 @@ struct ArchiveRecord {
 struct BootstrapPayload {
     settings: AppSettings,
     entries: Vec<DocumentEntry>,
-    records: Vec<ArchiveRecord>,
+    library: Vec<ArchiveEntry>,
     pending_open_paths: Vec<String>,
+    association_status: AssociationStatus,
 }
 
 #[derive(Clone)]
@@ -181,12 +168,10 @@ impl RenderCache {
 struct InnerState {
     settings: AppSettings,
     settings_path: PathBuf,
-    archive_index_path: PathBuf,
-    archive_dir: PathBuf,
-    records: Vec<ArchiveRecord>,
-    pending_open_paths: Vec<String>,
     workspace: PathBuf,
     cache: RenderCache,
+    library: DocumentArchive,
+    pending_open_paths: Vec<String>,
 }
 
 struct AppState(Mutex<InnerState>);
@@ -194,13 +179,14 @@ struct AppState(Mutex<InnerState>);
 #[tauri::command]
 fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapPayload, String> {
     let mut inner = state.0.lock();
-    let records = records_with_source_status(&inner.records);
-    let pending_open_paths = std::mem::take(&mut inner.pending_open_paths);
+    let workspace = inner.workspace.clone();
+    let library = inner.library.entries()?;
     Ok(BootstrapPayload {
         settings: inner.settings.clone(),
-        entries: scan_entries(&inner.workspace)?,
-        records,
-        pending_open_paths,
+        entries: scan_entries(&workspace)?,
+        library,
+        pending_open_paths: std::mem::take(&mut inner.pending_open_paths),
+        association_status: association_status(),
     })
 }
 
@@ -218,105 +204,143 @@ fn read_document(
     let relative = validate_markdown_path(&relative_path)?;
     let mut inner = state.0.lock();
     let target = secure_existing_path(&inner.workspace, &relative)?;
+    let metadata = fs::metadata(&target).map_err(error_string)?;
+    if !metadata.is_file() {
+        return Err("目标不是文件".into());
+    }
+    let size = metadata.len();
+    let modified_ms = modified_ms(&metadata);
     let normalized = path_to_slash(&relative);
-    load_source_document(&mut inner, &target, normalized, "workspace", true)
-}
 
-#[tauri::command]
-fn read_external_document(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<LoadedDocument, String> {
-    let requested = validate_external_markdown_path(&path)?;
-    let target = requested.canonicalize().map_err(error_string)?;
-    let mut inner = state.0.lock();
-    load_source_document(
-        &mut inner,
-        &target,
-        target.to_string_lossy().into_owned(),
-        "external",
-        false,
-    )
-}
-
-#[tauri::command]
-fn read_archive_document(
-    record_id: String,
-    state: State<'_, AppState>,
-) -> Result<LoadedDocument, String> {
-    let mut inner = state.0.lock();
-    let record = inner
-        .records
-        .iter()
-        .find(|record| record.id == record_id)
-        .cloned()
-        .ok_or_else(|| "历史记录不存在".to_string())?;
-    let source = PathBuf::from(&record.source_path);
-
-    if source.is_file() && is_markdown(&source) {
-        return load_source_document(&mut inner, &source, record.source_path, "external", false);
+    if let Some(cached) = inner.cache.get(&normalized, size, modified_ms) {
+        let archive = inner
+            .library
+            .record(&target, &cached.content, size, modified_ms, true)?;
+        return Ok(LoadedDocument {
+            path: normalized,
+            origin: "workspace",
+            archive_id: archive.id,
+            source_path: archive.source_path,
+            source_exists: true,
+            content: cached.content,
+            html: cached.html,
+            size,
+            modified_ms,
+            cached: true,
+        });
     }
 
-    let snapshot = archive_snapshot_path(&inner.archive_dir, &record.snapshot_path)?;
-    let bytes = fs::read(&snapshot).map_err(|_| "源文件与保留副本均不存在".to_string())?;
+    let bytes = fs::read(&target).map_err(error_string)?;
     let content = decode_text(&bytes);
-    let html = render_markdown_impl(&content);
+    let rendered = render_markdown_impl(&content);
+    let archive = inner
+        .library
+        .record(&target, &content, size, modified_ms, true)?;
+    inner.cache.insert(CachedDocument {
+        relative_path: normalized.clone(),
+        content: content.clone(),
+        html: rendered.clone(),
+        size,
+        modified_ms,
+    });
     Ok(LoadedDocument {
-        path: record.id.clone(),
-        source_path: record.source_path,
-        name: record.name,
-        size: bytes.len() as u64,
-        modified_ms: record.modified_ms,
+        path: normalized,
+        origin: "workspace",
+        archive_id: archive.id,
+        source_path: archive.source_path,
+        source_exists: true,
         content,
-        html,
+        html: rendered,
+        size,
+        modified_ms,
         cached: false,
-        origin: "snapshot",
-        record_id: record.id,
-        source_exists: false,
-        writable: false,
     })
 }
 
 #[tauri::command]
-fn list_archive_records(state: State<'_, AppState>) -> Vec<ArchiveRecord> {
-    let inner = state.0.lock();
-    records_with_source_status(&inner.records)
+fn open_external_document(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<LoadedDocument, String> {
+    let requested = PathBuf::from(path);
+    if !requested.is_absolute() {
+        return Err("外部文档必须使用绝对路径".into());
+    }
+    ensure_markdown_extension(&requested)?;
+    let mut inner = state.0.lock();
+    let archived = inner.library.open_source(&requested)?;
+    Ok(loaded_from_archive(archived))
 }
 
 #[tauri::command]
-fn set_favorite(
-    record_id: String,
+fn open_archived_document(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<LoadedDocument, String> {
+    let mut inner = state.0.lock();
+    let archived = inner.library.open(&id)?;
+    Ok(loaded_from_archive(archived))
+}
+
+#[tauri::command]
+fn list_archive_entries(state: State<'_, AppState>) -> Result<Vec<ArchiveEntry>, String> {
+    state.0.lock().library.entries()
+}
+
+#[tauri::command]
+fn write_archived_document(
+    id: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> Result<ArchiveEntry, String> {
+    let mut inner = state.0.lock();
+    let entry = inner.library.write(&id, &content)?;
+    let source = PathBuf::from(&entry.source_path);
+    if let Ok(relative) = source.strip_prefix(&inner.workspace) {
+        inner.cache.invalidate(&path_to_slash(relative));
+    }
+    Ok(entry)
+}
+
+#[tauri::command]
+fn set_document_favorite(
+    id: String,
     favorite: bool,
     state: State<'_, AppState>,
-) -> Result<Vec<ArchiveRecord>, String> {
-    let mut inner = state.0.lock();
-    let record = inner
-        .records
-        .iter_mut()
-        .find(|record| record.id == record_id)
-        .ok_or_else(|| "历史记录不存在".to_string())?;
-    record.favorite = favorite;
-    persist_archive_index(&inner.archive_index_path, &inner.records)?;
-    Ok(records_with_source_status(&inner.records))
+) -> Result<Vec<ArchiveEntry>, String> {
+    state.0.lock().library.set_favorite(&id, favorite)
 }
 
 #[tauri::command]
-fn clear_history(state: State<'_, AppState>) -> Result<Vec<ArchiveRecord>, String> {
-    let mut inner = state.0.lock();
-    let removed: Vec<String> = inner
-        .records
-        .iter()
-        .filter(|record| !record.favorite)
-        .map(|record| record.snapshot_path.clone())
-        .collect();
-    inner.records.retain(|record| record.favorite);
-    persist_archive_index(&inner.archive_index_path, &inner.records)?;
-    for snapshot in removed {
-        if let Ok(path) = archive_snapshot_path(&inner.archive_dir, &snapshot) {
-            let _ = fs::remove_file(path);
-        }
-    }
-    Ok(records_with_source_status(&inner.records))
+fn remove_archive_entry(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ArchiveEntry>, String> {
+    state.0.lock().library.remove(&id)
+}
+
+#[tauri::command]
+fn clear_document_history(state: State<'_, AppState>) -> Result<Vec<ArchiveEntry>, String> {
+    state.0.lock().library.clear_history()
+}
+
+#[tauri::command]
+fn export_archived_document(
+    id: String,
+    target_path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.0.lock().library.export(&id, Path::new(&target_path))
+}
+
+#[tauri::command]
+fn get_markdown_association_status() -> AssociationStatus {
+    association_status()
+}
+
+#[tauri::command]
+fn request_default_markdown_association() -> Result<AssociationStatus, String> {
+    configure_markdown_association()
 }
 
 #[tauri::command]
@@ -326,32 +350,24 @@ fn render_markdown(source: String) -> String {
 
 #[tauri::command]
 fn write_document(
-    origin: String,
-    path: String,
+    relative_path: String,
     content: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let relative = validate_markdown_path(&relative_path)?;
     let mut inner = state.0.lock();
-    let (target, cache_key) = match origin.as_str() {
-        "workspace" => {
-            let relative = validate_markdown_path(&path)?;
-            let target = secure_target_path(&inner.workspace, &relative)?;
-            (target, Some(path_to_slash(&relative)))
-        }
-        "external" => {
-            let requested = validate_external_markdown_path(&path)?;
-            let canonical = requested.canonicalize().map_err(error_string)?;
-            (canonical, None)
-        }
-        "snapshot" => return Err("保留副本为只读，请先导出后再编辑".into()),
-        _ => return Err("未知文档来源".into()),
-    };
-    atomic_write(&target, content.as_bytes())?;
-    if let Some(cache_key) = cache_key {
-        inner.cache.invalidate(&cache_key);
+    let target = secure_target_path(&inner.workspace, &relative)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(error_string)?;
     }
-    let archived_target = target.canonicalize().map_err(error_string)?;
-    archive_source(&mut inner, &archived_target, &content, now_ms_u64())?;
+    atomic_write(&target, content.as_bytes())?;
+    inner.cache.invalidate(&path_to_slash(&relative));
+    let metadata = fs::metadata(&target).map_err(error_string)?;
+    let size = metadata.len();
+    let modified = modified_ms(&metadata);
+    inner
+        .library
+        .record(&target, &content, size, modified, false)?;
     Ok(())
 }
 
@@ -405,7 +421,9 @@ fn rename_entry(
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(error_string)?;
     }
+    let previous_root = source.clone();
     fs::rename(&source, &target).map_err(error_string)?;
+    inner.library.rename_sources(&previous_root, &target)?;
     inner.cache.invalidate(&path_to_slash(&source_relative));
     Ok(())
 }
@@ -421,6 +439,7 @@ fn delete_entry(relative_path: String, state: State<'_, AppState>) -> Result<(),
     } else {
         fs::remove_file(&target).map_err(error_string)?;
     }
+    inner.library.mark_missing_under(&target)?;
     inner.cache.invalidate(&path_to_slash(&relative));
     Ok(())
 }
@@ -464,30 +483,13 @@ fn import_files(
 
 #[tauri::command]
 fn export_file(
-    origin: String,
-    path: String,
+    relative_path: String,
     target_path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let inner = state.0.lock();
-    let source = match origin.as_str() {
-        "workspace" => {
-            let relative = validate_markdown_path(&path)?;
-            secure_existing_path(&inner.workspace, &relative)?
-        }
-        "external" => validate_external_markdown_path(&path)?
-            .canonicalize()
-            .map_err(error_string)?,
-        "snapshot" => {
-            let record = inner
-                .records
-                .iter()
-                .find(|record| record.id == path)
-                .ok_or_else(|| "历史记录不存在".to_string())?;
-            archive_snapshot_path(&inner.archive_dir, &record.snapshot_path)?
-        }
-        _ => return Err("未知文档来源".into()),
-    };
+    let relative = validate_markdown_path(&relative_path)?;
+    let workspace = state.0.lock().workspace.clone();
+    let source = secure_existing_path(&workspace, &relative)?;
     fs::copy(source, PathBuf::from(target_path))
         .map(|_| ())
         .map_err(error_string)
@@ -509,11 +511,13 @@ fn set_workspace(path: String, state: State<'_, AppState>) -> Result<BootstrapPa
     inner.settings.workspace_path = workspace.to_string_lossy().into_owned();
     inner.cache.clear();
     persist_settings(&inner.settings_path, &inner.settings)?;
+    let library = inner.library.entries()?;
     Ok(BootstrapPayload {
         settings: inner.settings.clone(),
         entries: scan_entries(&workspace)?,
-        records: records_with_source_status(&inner.records),
+        library,
         pending_open_paths: Vec::new(),
+        association_status: association_status(),
     })
 }
 
@@ -528,200 +532,20 @@ fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<Ap
     Ok(normalized)
 }
 
-#[tauri::command]
-fn open_default_app_settings() -> Result<String, String> {
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("explorer.exe")
-            .arg("ms-settings:defaultapps")
-            .spawn()
-            .map_err(error_string)?;
-        return Ok("系统设置已打开。搜索“.md”，然后选择 LeafMark。".into());
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Ok("当前安装包仅在 Windows 注册 Markdown 文件关联。".into())
-    }
-}
-
-fn load_source_document(
-    inner: &mut InnerState,
-    target: &Path,
-    path: String,
-    origin: &'static str,
-    use_cache: bool,
-) -> Result<LoadedDocument, String> {
-    ensure_markdown_extension(target)?;
-    let canonical = target.canonicalize().map_err(error_string)?;
-    let metadata = fs::metadata(&canonical).map_err(error_string)?;
-    if !metadata.is_file() {
-        return Err("目标不是文件".into());
-    }
-    let size = metadata.len();
-    let modified_ms = modified_ms(&metadata);
-    let cached = if use_cache {
-        inner.cache.get(&path, size, modified_ms)
-    } else {
-        None
-    };
-    let (content, html, was_cached) = if let Some(cached) = cached {
-        (cached.content, cached.html, true)
-    } else {
-        let bytes = fs::read(&canonical).map_err(error_string)?;
-        let content = decode_text(&bytes);
-        let html = render_markdown_impl(&content);
-        if use_cache {
-            inner.cache.insert(CachedDocument {
-                relative_path: path.clone(),
-                content: content.clone(),
-                html: html.clone(),
-                size,
-                modified_ms,
-            });
-        }
-        (content, html, false)
-    };
-    let record = archive_source(inner, &canonical, &content, modified_ms)?;
-    Ok(LoadedDocument {
-        path,
-        source_path: canonical.to_string_lossy().into_owned(),
-        name: record.name,
-        content,
+fn loaded_from_archive(archived: ArchivedContent) -> LoadedDocument {
+    let html = render_markdown_impl(&archived.content);
+    LoadedDocument {
+        path: archived.entry.source_path.clone(),
+        origin: "archive",
+        archive_id: archived.entry.id,
+        source_path: archived.entry.source_path,
+        source_exists: archived.entry.source_exists,
+        size: archived.entry.size,
+        modified_ms: archived.entry.modified_ms,
+        content: archived.content,
         html,
-        size,
-        modified_ms,
-        cached: was_cached,
-        origin,
-        record_id: record.id,
-        source_exists: true,
-        writable: true,
-    })
-}
-
-fn archive_source(
-    inner: &mut InnerState,
-    source: &Path,
-    content: &str,
-    modified_ms: u64,
-) -> Result<ArchiveRecord, String> {
-    let source_path = source.to_string_lossy().into_owned();
-    let position = inner
-        .records
-        .iter()
-        .position(|record| record.source_path == source_path);
-    let index = if let Some(position) = position {
-        position
-    } else {
-        let id = unique_record_id(&source_path, &inner.records);
-        let name = source
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        inner.records.push(ArchiveRecord {
-            snapshot_path: format!("{id}.md"),
-            id,
-            source_path: source_path.clone(),
-            name,
-            last_opened_ms: 0,
-            modified_ms: 0,
-            size: 0,
-            favorite: false,
-            source_exists: true,
-        });
-        inner.records.len() - 1
-    };
-
-    let snapshot_path =
-        archive_snapshot_path(&inner.archive_dir, &inner.records[index].snapshot_path)?;
-    atomic_write(&snapshot_path, content.as_bytes())?;
-    let record = &mut inner.records[index];
-    record.name = source
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
-    record.last_opened_ms = now_ms_u64();
-    record.modified_ms = modified_ms;
-    record.size = content.len() as u64;
-    record.source_exists = true;
-    let result = record.clone();
-    persist_archive_index(&inner.archive_index_path, &inner.records)?;
-    Ok(result)
-}
-
-fn unique_record_id(source_path: &str, records: &[ArchiveRecord]) -> String {
-    let mut hasher = DefaultHasher::new();
-    source_path.hash(&mut hasher);
-    let base = format!("{:016x}", hasher.finish());
-    if records
-        .iter()
-        .all(|record| record.id != base || record.source_path == source_path)
-    {
-        return base;
+        cached: false,
     }
-    for suffix in 1..10_000 {
-        let candidate = format!("{base}-{suffix}");
-        if records.iter().all(|record| record.id != candidate) {
-            return candidate;
-        }
-    }
-    format!("{base}-{}", now_ms_u64())
-}
-
-fn records_with_source_status(records: &[ArchiveRecord]) -> Vec<ArchiveRecord> {
-    let mut records = records.to_vec();
-    for record in &mut records {
-        record.source_exists = Path::new(&record.source_path).is_file();
-    }
-    records.sort_by(|left, right| right.last_opened_ms.cmp(&left.last_opened_ms));
-    records
-}
-
-fn persist_archive_index(path: &Path, records: &[ArchiveRecord]) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(records).map_err(error_string)?;
-    atomic_write(path, &bytes)
-}
-
-fn validate_external_markdown_path(value: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(value.trim());
-    if !path.is_absolute() {
-        return Err("外部文档必须使用绝对路径".into());
-    }
-    ensure_markdown_extension(&path)?;
-    Ok(path)
-}
-
-fn archive_snapshot_path(root: &Path, name: &str) -> Result<PathBuf, String> {
-    let relative = Path::new(name);
-    if relative.components().count() != 1
-        || !matches!(relative.components().next(), Some(Component::Normal(_)))
-        || !is_markdown(relative)
-    {
-        return Err("保留副本路径无效".into());
-    }
-    Ok(root.join(relative))
-}
-
-fn markdown_args(args: &[String], cwd: &Path) -> Vec<String> {
-    let mut seen = HashSet::new();
-    args.iter()
-        .filter_map(|argument| {
-            let requested = PathBuf::from(argument);
-            let candidate = if requested.is_absolute() {
-                requested
-            } else {
-                cwd.join(requested)
-            };
-            if !is_markdown(&candidate) || !candidate.is_file() {
-                return None;
-            }
-            let canonical = candidate.canonicalize().ok()?;
-            let value = canonical.to_string_lossy().into_owned();
-            seen.insert(value.clone()).then_some(value)
-        })
-        .collect()
 }
 
 fn render_markdown_impl(source: &str) -> String {
@@ -1068,10 +892,6 @@ fn now_ms() -> u128 {
         .map_or(0, |value| value.as_millis())
 }
 
-fn now_ms_u64() -> u64 {
-    now_ms().min(u64::MAX as u128) as u64
-}
-
 fn path_to_slash(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
@@ -1093,16 +913,15 @@ fn error_string(error: impl std::fmt::Display) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            let paths = markdown_args(&args, Path::new(&cwd));
-            if paths.is_empty() {
-                return;
-            }
+            let paths = markdown_paths_from_args(args, Path::new(&cwd));
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
-            let _ = app.emit(OPEN_MARKDOWN_EVENT, paths);
+            for path in paths {
+                let _ = app.emit("open-markdown", path);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1110,15 +929,6 @@ pub fn run() {
             let config_dir = app.path().app_config_dir().map_err(error_string)?;
             fs::create_dir_all(&config_dir).map_err(error_string)?;
             let settings_path = config_dir.join("settings.json");
-            let archive_dir = config_dir.join("archive");
-            fs::create_dir_all(&archive_dir).map_err(error_string)?;
-            let archive_index_path = config_dir.join("history.json");
-            let records = fs::read(&archive_index_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Vec<ArchiveRecord>>(&bytes).ok())
-                .unwrap_or_default();
-            let current_dir = env::current_dir().unwrap_or_else(|_| config_dir.clone());
-            let pending_open_paths = markdown_args(&env::args().collect::<Vec<_>>(), &current_dir);
             let default_workspace = app
                 .path()
                 .document_dir()
@@ -1143,15 +953,21 @@ pub fn run() {
             };
             settings.workspace_path = workspace.to_string_lossy().into_owned();
             persist_settings(&settings_path, &settings)?;
+            let archive_root = app
+                .path()
+                .app_data_dir()
+                .map_err(error_string)?
+                .join("document-library");
+            let library = DocumentArchive::load(archive_root)?;
+            let cwd = std::env::current_dir().unwrap_or_else(|_| workspace.clone());
+            let pending_open_paths = markdown_paths_from_args(std::env::args_os(), &cwd);
             app.manage(AppState(Mutex::new(InnerState {
                 settings,
                 settings_path,
-                archive_index_path,
-                archive_dir,
-                records,
-                pending_open_paths,
                 workspace,
                 cache: RenderCache::default(),
+                library,
+                pending_open_paths,
             })));
             Ok(())
         })
@@ -1159,11 +975,16 @@ pub fn run() {
             bootstrap,
             list_entries,
             read_document,
-            read_external_document,
-            read_archive_document,
-            list_archive_records,
-            set_favorite,
-            clear_history,
+            open_external_document,
+            open_archived_document,
+            list_archive_entries,
+            write_archived_document,
+            set_document_favorite,
+            remove_archive_entry,
+            clear_document_history,
+            export_archived_document,
+            get_markdown_association_status,
+            request_default_markdown_association,
             render_markdown,
             write_document,
             create_entry,
@@ -1173,7 +994,6 @@ pub fn run() {
             export_file,
             set_workspace,
             save_settings,
-            open_default_app_settings,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LeafMark");
@@ -1217,36 +1037,5 @@ mod tests {
         assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'o', b'k']), "ok");
         assert_eq!(decode_text(&[0xFF, 0xFE, b'o', 0, b'k', 0]), "ok");
         assert_eq!(decode_text(&[0xFE, 0xFF, 0, b'o', 0, b'k']), "ok");
-    }
-
-    #[test]
-    fn archive_snapshot_paths_stay_inside_archive_directory() {
-        let root = Path::new("/tmp/archive");
-        assert_eq!(
-            archive_snapshot_path(root, "a1b2.md").unwrap(),
-            root.join("a1b2.md")
-        );
-        assert!(archive_snapshot_path(root, "../outside.md").is_err());
-        assert!(archive_snapshot_path(root, "nested/file.md").is_err());
-        assert!(archive_snapshot_path(root, "snapshot.txt").is_err());
-    }
-
-    #[test]
-    fn record_ids_are_stable_and_collision_aware() {
-        let source = "/documents/guide.md";
-        let first = unique_record_id(source, &[]);
-        assert_eq!(first, unique_record_id(source, &[]));
-        let collision = ArchiveRecord {
-            id: first.clone(),
-            source_path: "/another/guide.md".into(),
-            name: "guide.md".into(),
-            snapshot_path: format!("{first}.md"),
-            last_opened_ms: 0,
-            modified_ms: 0,
-            size: 0,
-            favorite: false,
-            source_exists: true,
-        };
-        assert_ne!(first, unique_record_id(source, &[collision]));
     }
 }
