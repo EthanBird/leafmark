@@ -26,6 +26,10 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - 最近打开历史与收藏；打开时自动保存独立文档副本，并可一键保存到我的文档库
 - 文档库、历史和收藏均提供右键菜单，可直接在系统文件管理器中定位源文档或保留副本
 - 源文件被移动或删除后，仍可从历史/收藏读取、编辑和导出保留副本
+- 类 VS Code 多文档标签栏；可在已打开文档间即时切换、查看未保存状态并单独关闭
+- 桌面端柔性 Dock 布局；文档库、历史、收藏、Agent 与大纲可拖到上下左右、合并为页签并拖动调整尺寸
+- 内置按需启动的流式文档 Agent；支持 OpenAI 兼容服务、文档读写工具、并行只读子 Agent、会话检索、长期记忆、内置/自定义 Skills、网页读取和 Streamable HTTP MCP
+- Agent 的模型、服务地址、API Key、采样参数、上下文、工具轮数、推理强度、写入权限、记忆、Skills 与 MCP 均可在设置中配置
 
 ## 系统打开与文档保留
 
@@ -43,6 +47,7 @@ Android 从其他应用收到的是临时 `content://` URI。LeafMark 会先把�
 - 目录扫描遵守 `.gitignore`、`.ignore` 与 `.markignore`，跳过隐藏目录和常见构建产物
 - Mermaid 和 KaTeX JavaScript 都是独立动态分块；普通文档不会下载或执行它们
 - Mermaid 使用 `IntersectionObserver` 提前 500px 懒渲染
+- Agent 不捆绑模型、向量数据库或后台服务；只有用户发送消息时才连接配置的服务，轻量记忆索引保存在本机
 - 保存使用串行队列与同目录临时文件替换；遇到 Windows 索引器或杀毒软件瞬时占用会短退避重试
 - PDF 与 PNG 在独立 Worker 中排版/绘制/压缩，导出面板显示阶段进度并支持取消
 - PNG 只序列化一次页面，随后在后台分片绘制并流式压缩，避免重复排版或申请整页超大画布
@@ -77,7 +82,7 @@ npm run tauri -- android build --apk --target aarch64 --split-per-abi
 
 GitHub Release 只发布适用于现代 Android 手机的 `arm64-v8a` 优化 APK。发布构建会启用
 Rust LTO/strip、R8、资源裁剪和原生库压缩，并在上传后自动验证 APK 只包含 ARM64
-动态库且不超过 64 MiB。
+动态库且不超过 16 MiB。
 
 ## 下载
 
@@ -97,10 +102,14 @@ SmartScreen 可能显示未知发布者提示。证书配置见 [Windows 发布�
 
 ```text
 src/
-  App.tsx                 应用状态、文件操作和四种模式
+  App.tsx                 应用状态、文件操作、Dock 与多文档标签
+  agent-runtime.ts        流式 Agent 循环、文档工具与 MCP 客户端
+  agent-storage.ts        本机会话检索与轻量语义记忆
+  dock-layout.ts          桌面柔性 Dock 布局状态
+  document-tabs.ts        多文档标签状态
   rendering.ts            KaTeX / Mermaid 按需增强
   wysiwyg.ts              实时编辑 HTML → Markdown
-  components/             文件树、历史收藏与设置页
+  components/             文件树、历史收藏、Agent、Dock 与设置页
 src-tauri/src/
   lib.rs                  扫描、渲染、缓存、文件系统与设置
   library.rs              历史/收藏索引与独立文档快照

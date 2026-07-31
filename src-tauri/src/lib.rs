@@ -30,7 +30,7 @@ const MAX_IMPORTED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
-const SETTINGS_SCHEMA_VERSION: u32 = 3;
+const SETTINGS_SCHEMA_VERSION: u32 = 4;
 
 fn default_font_family() -> String {
     "system".into()
@@ -38,6 +38,46 @@ fn default_font_family() -> String {
 
 fn default_theme_palette() -> String {
     "leaf".into()
+}
+
+fn default_desktop_layout() -> serde_json::Value {
+    serde_json::json!({
+        "zones": {
+            "left": { "panels": ["workspace", "history", "favorites", "agent"], "active": "workspace" },
+            "right": { "panels": ["outline"], "active": "outline" },
+            "top": { "panels": [], "active": null },
+            "bottom": { "panels": [], "active": null }
+        },
+        "hidden": ["outline"],
+        "leftSize": 276,
+        "rightSize": 244,
+        "topSize": 210,
+        "bottomSize": 240
+    })
+}
+
+fn default_agent_settings() -> serde_json::Value {
+    serde_json::json!({
+        "enabled": false,
+        "provider": "deepseek",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiKey": "",
+        "model": "deepseek-chat",
+        "temperature": 0.3,
+        "topP": 0.95,
+        "maxTokens": 8192,
+        "contextChars": 32000,
+        "maxToolRounds": 8,
+        "maxParallelAgents": 3,
+        "reasoningEffort": "none",
+        "systemPrompt": "你是一叶 LeafMark 内置的文档 Agent。先理解目标，再使用工具；保持 Markdown、公式、链接和代码完整。",
+        "allowDocumentEdits": false,
+        "memoryEnabled": true,
+        "webToolsEnabled": true,
+        "enabledSkills": ["writing", "proofread", "summarize", "structure"],
+        "customSkills": "",
+        "mcpServersJson": ""
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +100,10 @@ struct AppSettings {
     reduce_motion: bool,
     mermaid_enabled: bool,
     math_enabled: bool,
+    #[serde(default = "default_desktop_layout")]
+    desktop_layout: serde_json::Value,
+    #[serde(default = "default_agent_settings")]
+    agent: serde_json::Value,
 }
 
 impl AppSettings {
@@ -79,6 +123,8 @@ impl AppSettings {
             reduce_motion: false,
             mermaid_enabled: true,
             math_enabled: true,
+            desktop_layout: default_desktop_layout(),
+            agent: default_agent_settings(),
         }
     }
 
@@ -88,6 +134,10 @@ impl AppSettings {
         }
         if self.settings_schema_version < 3 {
             self.theme_palette = default_theme_palette();
+        }
+        if self.settings_schema_version < 4 {
+            self.desktop_layout = default_desktop_layout();
+            self.agent = default_agent_settings();
         }
         if self.settings_schema_version < SETTINGS_SCHEMA_VERSION {
             self.settings_schema_version = SETTINGS_SCHEMA_VERSION;
@@ -1472,6 +1522,7 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config_dir = app.path().app_config_dir().map_err(error_string)?;
@@ -1633,6 +1684,8 @@ mod tests {
         assert!(migrated.live_editing);
         assert_eq!(migrated.font_family, "system");
         assert_eq!(migrated.theme_palette, "leaf");
+        assert_eq!(migrated.desktop_layout["zones"]["left"]["panels"][3], "agent");
+        assert_eq!(migrated.agent["provider"], "deepseek");
     }
 
     #[test]

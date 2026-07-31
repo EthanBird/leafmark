@@ -11,6 +11,13 @@
     "core:window:allow-start-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://*" },
+        { "url": "http://*" }
+      ]
+    },
     "opener:allow-open-url"
   ]
 }

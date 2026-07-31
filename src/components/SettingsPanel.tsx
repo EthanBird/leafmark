@@ -15,6 +15,8 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AppSettings, AssociationStatus, ThemeMode, ThemePalette } from "../types";
 import { api } from "../api";
+import { PROVIDER_DEFAULTS } from "../agent-runtime";
+import { defaultDesktopDockLayout } from "../dock-layout";
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -25,7 +27,7 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type Section = "editor" | "appearance" | "workspace" | "integration" | "performance";
+type Section = "editor" | "agent" | "appearance" | "layout" | "workspace" | "integration" | "performance";
 
 export function SettingsPanel({
   settings,
@@ -43,13 +45,16 @@ export function SettingsPanel({
   const fontListId = useId();
   const sections = useMemo(() => [
     { id: "editor" as const, label: "编辑与保存", detail: "编译模式、自动保存" },
+    { id: "agent" as const, label: "AI Agent", detail: "模型、工具与记忆" },
     { id: "appearance" as const, label: "外观", detail: "主题、字号与版心" },
+    { id: "layout" as const, label: "桌面布局", detail: "停靠面板、尺寸" },
     { id: "workspace" as const, label: "文档库", detail: "本地目录" },
     { id: "integration" as const, label: "系统集成", detail: "打开方式、默认应用" },
     { id: "performance" as const, label: "渲染", detail: "Mermaid 与公式" },
   ], []);
 
   const patch = (next: Partial<AppSettings>) => onChange({ ...settings, ...next });
+  const patchAgent = (next: Partial<AppSettings["agent"]>) => patch({ agent: { ...settings.agent, ...next } });
 
   useEffect(() => {
     if (section !== "appearance" || fontFamilies !== null) return;
@@ -125,6 +130,70 @@ export function SettingsPanel({
               </>
             )}
 
+            {section === "agent" && (
+              <>
+                <SettingsIntro title="AI Agent" description="按需启动的完整 Agent 循环：流式响应、多轮工具、长期记忆、会话恢复、Skills 与 Streamable HTTP MCP。未打开 Agent 时不会建立模型连接。" />
+                <SettingRow title="启用一叶 Agent" description="启用后，Agent 会出现在桌面 Dock 与 Android 侧栏的第四个页签。模型请求只在你发送消息时发生。">
+                  <Switch checked={settings.agent.enabled} onChange={(enabled) => patchAgent({ enabled })} />
+                </SettingRow>
+                <SettingRow title="Provider" description="预设只负责填充兼容端点；仍可自由修改 Base URL 和模型。">
+                  <Select
+                    value={settings.agent.provider}
+                    onChange={(provider) => {
+                      const next = provider as AppSettings["agent"]["provider"];
+                      patchAgent({ provider: next, ...PROVIDER_DEFAULTS[next] });
+                    }}
+                    options={[
+                      ["deepseek", "DeepSeek"], ["openai", "OpenAI"], ["openrouter", "OpenRouter"],
+                      ["ollama", "Ollama"], ["lmstudio", "LM Studio"], ["custom", "自定义兼容服务"],
+                    ]}
+                  />
+                </SettingRow>
+                <AgentTextField title="Base URL" description="OpenAI Chat Completions 兼容地址；可填写到 /v1，Agent 会自动补齐 /chat/completions。" value={settings.agent.baseUrl} placeholder="https://api.example.com/v1" onChange={(baseUrl) => patchAgent({ baseUrl })} />
+                <AgentTextField title="API Key" description="留空可连接无需鉴权的 Ollama、LM Studio 或局域网服务。" value={settings.agent.apiKey} placeholder="sk-…" secret onChange={(apiKey) => patchAgent({ apiKey })} />
+                <AgentTextField title="模型" description="使用服务端显示的精确模型 ID。" value={settings.agent.model} placeholder="deepseek-chat" onChange={(model) => patchAgent({ model })} />
+                <SettingSlider title="Temperature" value={settings.agent.temperature} min={0} max={2} step={0.05} unit="" onChange={(temperature) => patchAgent({ temperature })} />
+                <SettingSlider title="Top P" value={settings.agent.topP} min={0.05} max={1} step={0.05} unit="" onChange={(topP) => patchAgent({ topP })} />
+                <SettingRow title="推理强度" description="兼容支持 reasoning_effort 的模型；普通模型会忽略该参数。">
+                  <Select value={settings.agent.reasoningEffort} onChange={(reasoningEffort) => patchAgent({ reasoningEffort: reasoningEffort as AppSettings["agent"]["reasoningEffort"] })} options={[
+                    ["none", "关闭"], ["low", "低"], ["medium", "中"], ["high", "高"], ["xhigh", "极高"],
+                  ]} />
+                </SettingRow>
+                <SettingRow title="最大输出" description="单次模型响应的 token 上限。">
+                  <NumberField value={settings.agent.maxTokens} min={512} max={131072} step={512} onChange={(maxTokens) => patchAgent({ maxTokens })} />
+                </SettingRow>
+                <SettingRow title="文档上下文" description="自动放入提示词的当前文档字符数；超出后由 Agent 使用 read_document 按需读取。">
+                  <NumberField value={settings.agent.contextChars} min={4000} max={200000} step={4000} onChange={(contextChars) => patchAgent({ contextChars })} />
+                </SettingRow>
+                <SettingRow title="最大工具轮数" description="防止模型在工具循环中无限执行。">
+                  <NumberField value={settings.agent.maxToolRounds} min={1} max={16} step={1} onChange={(maxToolRounds) => patchAgent({ maxToolRounds })} />
+                </SettingRow>
+                <SettingRow title="并行子 Agent" description="主 Agent 可把审阅、核查或改写方案并行委派给多个只读子 Agent，再统一汇总；设为 0 可关闭。">
+                  <NumberField value={settings.agent.maxParallelAgents} min={0} max={4} step={1} onChange={(maxParallelAgents) => patchAgent({ maxParallelAgents })} />
+                </SettingRow>
+                <SettingRow title="允许修改文档" description="关闭时 Agent 仍可阅读、检索和给建议，但写入类工具会被运行时拒绝。">
+                  <Switch checked={settings.agent.allowDocumentEdits} onChange={(allowDocumentEdits) => patchAgent({ allowDocumentEdits })} />
+                </SettingRow>
+                <SettingRow title="长期记忆" description="使用本地、无模型依赖的语义特征索引；跨会话检索，不加载嵌入模型。">
+                  <Switch checked={settings.agent.memoryEnabled} onChange={(memoryEnabled) => patchAgent({ memoryEnabled })} />
+                </SettingRow>
+                <SettingRow title="Web 工具" description="允许 Agent 使用原生 HTTP 客户端读取 HTTP/HTTPS 页面文字。">
+                  <Switch checked={settings.agent.webToolsEnabled} onChange={(webToolsEnabled) => patchAgent({ webToolsEnabled })} />
+                </SettingRow>
+                <div className="agent-settings-block">
+                  <strong>内置 Skills</strong><p>Skills 只向模型注入所需的方法约束，不引入额外运行库。</p>
+                  <div className="skill-options">
+                    {[["writing", "写作"], ["proofread", "校对"], ["translate", "翻译"], ["summarize", "总结"], ["structure", "结构化"], ["research", "研究"]].map(([id, label]) => (
+                      <label key={id}><input type="checkbox" checked={settings.agent.enabledSkills.includes(id)} onChange={(event) => patchAgent({ enabledSkills: event.target.checked ? [...settings.agent.enabledSkills, id] : settings.agent.enabledSkills.filter((item) => item !== id) })} />{label}</label>
+                    ))}
+                  </div>
+                </div>
+                <AgentTextArea title="自定义 Skills" description="写入你希望 Agent 长期遵循的领域方法、格式规范或工作流。" value={settings.agent.customSkills} placeholder="例如：处理数学文档时，所有公式必须保持 LaTeX 原文…" onChange={(customSkills) => patchAgent({ customSkills })} />
+                <AgentTextArea title="系统提示词" description="定义 Agent 的基础角色；文档上下文、记忆和已启用 Skills 会在运行时追加。" value={settings.agent.systemPrompt} onChange={(systemPrompt) => patchAgent({ systemPrompt })} />
+                <AgentTextArea title="MCP 服务器" description={'Streamable HTTP MCP 配置，JSON 数组格式：[{"name":"docs","url":"https://…/mcp","headers":{"Authorization":"Bearer …"}}]'} value={settings.agent.mcpServersJson} placeholder="[]" mono onChange={(mcpServersJson) => patchAgent({ mcpServersJson })} />
+              </>
+            )}
+
             {section === "appearance" && (
               <>
                 <SettingsIntro title="外观" description="保持安静的阅读界面，同时让长文档拥有舒适的密度。" />
@@ -149,6 +218,17 @@ export function SettingsPanel({
                 <SettingRow title="减少动态效果" description="关闭面板和模式切换动画。">
                   <Switch checked={settings.reduceMotion} onChange={(checked) => patch({ reduceMotion: checked })} />
                 </SettingRow>
+              </>
+            )}
+
+            {section === "layout" && (
+              <>
+                <SettingsIntro title="桌面柔性布局" description={isAndroid ? "Android 保持抽屉式单栏布局，不启用桌面 Dock。" : "拖动文档、历史、收藏、Agent 或大纲标签到窗口四边。放入已有区域会合并成标签组；拖动分隔条可调整尺寸。"} />
+                <SettingSlider title="左侧面板宽度" value={settings.desktopLayout.leftSize} min={190} max={520} step={10} unit="px" onChange={(leftSize) => patch({ desktopLayout: { ...settings.desktopLayout, leftSize } })} />
+                <SettingSlider title="右侧面板宽度" value={settings.desktopLayout.rightSize} min={190} max={520} step={10} unit="px" onChange={(rightSize) => patch({ desktopLayout: { ...settings.desktopLayout, rightSize } })} />
+                <SettingSlider title="上方面板高度" value={settings.desktopLayout.topSize} min={130} max={420} step={10} unit="px" onChange={(topSize) => patch({ desktopLayout: { ...settings.desktopLayout, topSize } })} />
+                <SettingSlider title="下方面板高度" value={settings.desktopLayout.bottomSize} min={130} max={420} step={10} unit="px" onChange={(bottomSize) => patch({ desktopLayout: { ...settings.desktopLayout, bottomSize } })} />
+                <div className="layout-reset-card"><div><strong>恢复默认工作区</strong><p>左侧合并文档、历史、收藏与 Agent，大纲恢复到右侧并保持隐藏。</p></div><button className="secondary-button" type="button" disabled={isAndroid} onClick={() => patch({ desktopLayout: defaultDesktopDockLayout() })}><RotateCcw size={13} /> 重置布局</button></div>
               </>
             )}
 
@@ -250,6 +330,22 @@ function SettingSlider({ title, value, min, max, step = 1, unit, onChange }: {
   title: string; value: number; min: number; max: number; step?: number; unit: string; onChange: (value: number) => void;
 }) {
   return <div className="setting-slider"><div><strong>{title}</strong><output>{value}{unit}</output></div><input type="range" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></div>;
+}
+
+function AgentTextField({ title, description, value, placeholder, secret = false, onChange }: {
+  title: string; description: string; value: string; placeholder?: string; secret?: boolean; onChange: (value: string) => void;
+}) {
+  return <div className="agent-setting-field"><div><strong>{title}</strong><p>{description}</p></div><input type={secret ? "password" : "text"} value={value} placeholder={placeholder} autoComplete={secret ? "off" : undefined} onChange={(event) => onChange(event.target.value)} /></div>;
+}
+
+function AgentTextArea({ title, description, value, placeholder, mono = false, onChange }: {
+  title: string; description: string; value: string; placeholder?: string; mono?: boolean; onChange: (value: string) => void;
+}) {
+  return <div className="agent-setting-area"><strong>{title}</strong><p>{description}</p><textarea className={mono ? "mono" : ""} value={value} placeholder={placeholder} rows={5} onChange={(event) => onChange(event.target.value)} /></div>;
+}
+
+function NumberField({ value, min, max, step, onChange }: { value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
+  return <input className="number-field" type="number" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Math.min(max, Math.max(min, Number(event.target.value) || min)))} />;
 }
 
 function Switch({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {

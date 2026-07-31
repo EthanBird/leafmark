@@ -1,8 +1,8 @@
 import {
   Bold,
+  Bot,
   BookOpen,
   Check,
-  ChevronRight,
   CircleAlert,
   Clock3,
   Download,
@@ -20,6 +20,7 @@ import {
   Minus,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelsTopLeft,
   PencilLine,
   RefreshCw,
   Save,
@@ -42,6 +43,8 @@ import { api } from "./api";
 import { DocumentLibrary } from "./components/DocumentLibrary";
 import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { AgentPanel, type AgentDocumentHost } from "./components/AgentPanel";
+import { DockDropTargets, DockRegion } from "./components/DockRegion";
 import {
   buildStandaloneHtml,
   exportExtension,
@@ -69,6 +72,22 @@ import {
   htmlToMarkdown,
   runFormat,
 } from "./wysiwyg";
+import { defaultAppSettings } from "./settings-defaults";
+import {
+  activateDockPanel,
+  hideDockPanel,
+  moveDockPanel,
+  normalizeDesktopDockLayout,
+  resizeDockZone,
+  visibleDockPanels,
+} from "./dock-layout";
+import {
+  nextTabAfterClose,
+  tabFromLoadedDocument,
+  upsertDocumentTab,
+  type OpenDocumentTab,
+} from "./document-tabs";
+import type { DockPanelId, DockZone } from "./types";
 
 interface EntryDialogState {
   action: "create" | "rename";
@@ -93,7 +112,7 @@ interface ArchiveMenuState {
 }
 
 type MenuState = WorkspaceMenuState | ArchiveMenuState;
-type SidebarView = "workspace" | "history" | "favorites";
+type SidebarView = "workspace" | "history" | "favorites" | "agent";
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 type AndroidBackWindow = Window & {
   __LEAFMARK_ANDROID_BACK__?: () => boolean;
@@ -102,22 +121,7 @@ type AndroidBackWindow = Window & {
 
 const isCompactLayout = () => window.matchMedia("(max-width: 620px)").matches;
 
-const EMPTY_SETTINGS: AppSettings = {
-  settingsSchemaVersion: 3,
-  workspacePath: "",
-  theme: "system",
-  themePalette: "leaf",
-  liveEditing: true,
-  autosaveDelayMs: 600,
-  contentWidth: 860,
-  fontFamily: "system",
-  fontSize: 16,
-  lineHeight: 1.75,
-  showStatusBar: true,
-  reduceMotion: false,
-  mermaidEnabled: true,
-  mathEnabled: true,
-};
+const EMPTY_SETTINGS: AppSettings = defaultAppSettings();
 
 const EMPTY_ASSOCIATION_STATUS: AssociationStatus = {
   supported: false,
@@ -141,6 +145,8 @@ export default function App() {
   const [savedContent, setSavedContent] = useState("");
   const [renderedHtml, setRenderedHtml] = useState("");
   const [mode, setMode] = useState<ViewMode>("live");
+  const [openTabs, setOpenTabs] = useState<OpenDocumentTab[]>([]);
+  const [activeTabKey, setActiveTabKey] = useState("");
   const [sidebarView, setSidebarView] = useState<SidebarView>("workspace");
   const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactLayout());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -160,6 +166,8 @@ export default function App() {
   const [deleteEntry, setDeleteEntry] = useState<DocumentEntry | null>(null);
   const [rendering, setRendering] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [draggedPanel, setDraggedPanel] = useState<DockPanelId | null>(null);
+  const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   const contentRef = useRef(content);
   const savedRef = useRef(savedContent);
   const selectedRef = useRef(selectedPath);
@@ -177,6 +185,8 @@ export default function App() {
   } | null>(null);
   const cancelExportRef = useRef<(() => void) | null>(null);
   const openIntentQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const tabsRef = useRef<OpenDocumentTab[]>(openTabs);
+  const activeTabKeyRef = useRef(activeTabKey);
   const android = api.isAndroid();
 
   const dirty = Boolean(selectedPath) && content !== savedContent;
@@ -192,6 +202,8 @@ export default function App() {
   useEffect(() => { selectedRef.current = selectedPath; }, [selectedPath]);
   useEffect(() => { originRef.current = documentOrigin; }, [documentOrigin]);
   useEffect(() => { archiveIdRef.current = archiveId; }, [archiveId]);
+  useEffect(() => { tabsRef.current = openTabs; }, [openTabs]);
+  useEffect(() => { activeTabKeyRef.current = activeTabKey; }, [activeTabKey]);
 
   const applyTheme = useCallback((next: AppSettings) => {
     const mediaDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -269,6 +281,8 @@ export default function App() {
       ) {
         savedRef.current = value;
         setSavedContent(value);
+        const tabKey = origin === "archive" ? `archive:${archive}` : `workspace:${path}`;
+        setOpenTabs((tabs) => tabs.map((tab) => tab.key === tabKey ? { ...tab, content: value, savedContent: value } : tab));
         setSaveStatus(contentRef.current === value ? "saved" : "saving");
         if (!quiet) setNotice(`已保存 ${nativeFileName(path)}`);
       }
@@ -307,29 +321,65 @@ export default function App() {
     return target;
   }, []);
 
-  const applyLoadedDocument = useCallback((loaded: LoadedDocument) => {
+  const applyTabSnapshot = useCallback((tab: OpenDocumentTab) => {
     documentVersionRef.current += 1;
     queuedSaveRef.current = null;
-    selectedRef.current = loaded.path;
-    originRef.current = loaded.origin;
-    archiveIdRef.current = loaded.archiveId;
-    contentRef.current = loaded.content;
-    savedRef.current = loaded.content;
-    setSelectedPath(loaded.path);
-    setSelectedEntryPath(loaded.origin === "workspace" ? loaded.path : "");
-    setDocumentOrigin(loaded.origin);
-    setArchiveId(loaded.archiveId);
-    setSourcePath(loaded.sourcePath);
-    setSourceExists(loaded.sourceExists);
-    setContent(loaded.content);
-    setSavedContent(loaded.content);
-    setSaveStatus("saved");
-    setRenderedHtml(loaded.html);
-    if (isCompactLayout()) setSidebarOpen(false);
+    selectedRef.current = tab.path;
+    originRef.current = tab.origin;
+    archiveIdRef.current = tab.archiveId;
+    contentRef.current = tab.content;
+    savedRef.current = tab.savedContent;
+    activeTabKeyRef.current = tab.key;
+    setActiveTabKey(tab.key);
+    setSelectedPath(tab.path);
+    setSelectedEntryPath(tab.origin === "workspace" ? tab.path : "");
+    setDocumentOrigin(tab.origin);
+    setArchiveId(tab.archiveId);
+    setSourcePath(tab.sourcePath);
+    setSourceExists(tab.sourceExists);
+    setContent(tab.content);
+    setSavedContent(tab.savedContent);
+    setSaveStatus(tab.content === tab.savedContent ? "saved" : "saving");
+    setRenderedHtml(tab.renderedHtml);
   }, []);
+
+  const applyLoadedDocument = useCallback((loaded: LoadedDocument) => {
+    const tab = tabFromLoadedDocument(loaded);
+    setOpenTabs((current) => upsertDocumentTab(current, loaded));
+    applyTabSnapshot(tab);
+    if (isCompactLayout()) setSidebarOpen(false);
+  }, [applyTabSnapshot]);
+
+  useEffect(() => {
+    if (!activeTabKey) return;
+    setOpenTabs((current) => current.map((tab) => tab.key === activeTabKey ? {
+      ...tab,
+      path: selectedPath,
+      origin: documentOrigin,
+      archiveId,
+      sourcePath,
+      sourceExists,
+      content,
+      savedContent,
+      renderedHtml,
+      size: new Blob([content]).size,
+    } : tab));
+  }, [activeTabKey, archiveId, content, documentOrigin, renderedHtml, savedContent, selectedPath, sourceExists, sourcePath]);
+
+  const activateDocumentTab = useCallback(async (tab: OpenDocumentTab) => {
+    if (tab.key === activeTabKeyRef.current) return;
+    if (!await persistCurrent(true)) return;
+    applyTabSnapshot(tab);
+    if (isCompactLayout()) setSidebarOpen(false);
+  }, [applyTabSnapshot, persistCurrent]);
 
   const openDocument = useCallback(async (path: string, force = false) => {
     if (!force && path === selectedRef.current) return;
+    const existing = !force ? tabsRef.current.find((tab) => tab.origin === "workspace" && tab.path === path) : null;
+    if (existing) {
+      await activateDocumentTab(existing);
+      return;
+    }
     if (!await persistCurrent(true)) return;
     setBusy(true);
     try {
@@ -342,7 +392,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
+  }, [activateDocumentTab, applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   const openExternalDocument = useCallback(async (path: string) => {
     if (!await persistCurrent(true)) return;
@@ -361,6 +411,11 @@ export default function App() {
   }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   const openArchivedDocument = useCallback(async (entry: ArchiveEntry) => {
+    const existing = tabsRef.current.find((tab) => tab.key === `archive:${entry.id}`);
+    if (existing) {
+      await activateDocumentTab(existing);
+      return;
+    }
     if (!await persistCurrent(true)) return;
     setBusy(true);
     try {
@@ -375,7 +430,46 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
+  }, [activateDocumentTab, applyLoadedDocument, persistCurrent, refreshLibrary]);
+
+  const clearCurrentDocument = useCallback(() => {
+    documentVersionRef.current += 1;
+    queuedSaveRef.current = null;
+    selectedRef.current = "";
+    archiveIdRef.current = "";
+    originRef.current = "workspace";
+    contentRef.current = "";
+    savedRef.current = "";
+    activeTabKeyRef.current = "";
+    setActiveTabKey("");
+    setSelectedPath("");
+    setSelectedEntryPath("");
+    setDocumentOrigin("workspace");
+    setArchiveId("");
+    setSourcePath("");
+    setSourceExists(true);
+    setContent("");
+    setSavedContent("");
+    setSaveStatus("idle");
+    setRenderedHtml("");
+    setOutline([]);
+  }, []);
+
+  const closeDocumentTab = useCallback(async (key: string) => {
+    const tabs = tabsRef.current;
+    const closing = tabs.find((tab) => tab.key === key);
+    if (!closing) return;
+    const isActive = key === activeTabKeyRef.current;
+    if (isActive && !await persistCurrent(true)) return;
+    const nextActive = isActive ? nextTabAfterClose(tabs, key) : null;
+    const nextTabs = tabs.filter((tab) => tab.key !== key);
+    tabsRef.current = nextTabs;
+    setOpenTabs(nextTabs);
+    if (isActive) {
+      if (nextActive) applyTabSnapshot(nextActive);
+      else clearCurrentDocument();
+    }
+  }, [applyTabSnapshot, clearCurrentDocument, persistCurrent]);
 
   useEffect(() => {
     let active = true;
@@ -438,6 +532,14 @@ export default function App() {
   }, [settings]);
 
   useEffect(() => {
+    if (android || !settingsReady.current) return;
+    setSettings((current) => ({
+      ...current,
+      desktopLayout: activateDockPanel(normalizeDesktopDockLayout(current.desktopLayout), sidebarView),
+    }));
+  }, [android, sidebarView]);
+
+  useEffect(() => {
     if (!settings.liveEditing && mode === "live") setMode("read");
   }, [mode, settings.liveEditing]);
 
@@ -484,17 +586,30 @@ export default function App() {
       }
       if (command && event.key.toLowerCase() === "p") {
         event.preventDefault();
-        setSidebarOpen(true);
+        if (android) setSidebarOpen(true);
+        setSidebarView("workspace");
         window.setTimeout(() => document.querySelector<HTMLInputElement>(".sidebar-search input")?.focus(), 0);
+      }
+      if (command && event.key.toLowerCase() === "w" && activeTabKey) {
+        event.preventDefault();
+        void closeDocumentTab(activeTabKey);
+      }
+      if (command && event.key === "Tab" && openTabs.length > 1) {
+        event.preventDefault();
+        const index = openTabs.findIndex((tab) => tab.key === activeTabKey);
+        const direction = event.shiftKey ? -1 : 1;
+        const target = openTabs[(index + direction + openTabs.length) % openTabs.length];
+        if (target) void activateDocumentTab(target);
       }
       if (event.key === "Escape") {
         setMenu(null);
+        setLayoutMenuOpen(false);
         setOutlineOpen(false);
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [persistCurrent]);
+  }, [activateDocumentTab, activeTabKey, android, closeDocumentTab, openTabs, persistCurrent]);
 
   useEffect(() => {
     if (!android) return;
@@ -611,6 +726,11 @@ export default function App() {
         await api.rename(entryDialog.source.path, target);
         const selectedWasInside = selectedRef.current === entryDialog.source.path || selectedRef.current.startsWith(`${entryDialog.source.path}/`);
         const nextPath = selectedWasInside ? `${target}${selectedRef.current.slice(entryDialog.source.path.length)}` : selectedRef.current;
+        setOpenTabs((current) => current.map((tab) => {
+          if (tab.origin !== "workspace" || !(tab.path === entryDialog.source!.path || tab.path.startsWith(`${entryDialog.source!.path}/`))) return tab;
+          const path = `${target}${tab.path.slice(entryDialog.source!.path.length)}`;
+          return { ...tab, key: `workspace:${path}`, path, sourcePath: path };
+        }));
         await refresh(nextPath);
         await refreshLibrary();
         if (selectedWasInside && entryDialog.kind === "file") await openDocument(target, true);
@@ -631,23 +751,16 @@ export default function App() {
     try {
       await api.remove(deleteEntry.path);
       const selectedRemoved = selectedRef.current === deleteEntry.path || selectedRef.current.startsWith(`${deleteEntry.path}/`);
+      const nextTabs = tabsRef.current.filter((tab) => tab.origin !== "workspace" || !(tab.path === deleteEntry.path || tab.path.startsWith(`${deleteEntry.path}/`)));
+      tabsRef.current = nextTabs;
+      setOpenTabs(nextTabs);
       if (selectedRemoved) {
-        documentVersionRef.current += 1;
-        queuedSaveRef.current = null;
-        selectedRef.current = "";
-        archiveIdRef.current = "";
-        setSelectedPath("");
-        setSelectedEntryPath("");
-        setArchiveId("");
-        setSourcePath("");
-        setContent("");
-        setSavedContent("");
-        setSaveStatus("idle");
-        setRenderedHtml("");
+        const nextActive = nextTabs.at(-1);
+        if (nextActive) applyTabSnapshot(nextActive); else clearCurrentDocument();
       }
       const target = await refresh();
       await refreshLibrary();
-      if (selectedRemoved && target) await openDocument(target, true);
+      if (selectedRemoved && !nextTabs.length && target) await openDocument(target, true);
       setNotice(`已删除 ${deleteEntry.name}`);
       setDeleteEntry(null);
     } catch (error) {
@@ -835,6 +948,9 @@ export default function App() {
     setSavedContent("");
     setSaveStatus("idle");
     setRenderedHtml("");
+    setOpenTabs([]);
+    tabsRef.current = [];
+    setActiveTabKey("");
     setExpanded(new Set(payload.entries.filter((entry) => entry.kind === "directory" && entry.depth < 2).map((entry) => entry.path)));
     const first = payload.entries.find((entry) => entry.kind === "file");
     if (first) await openDocument(first.path, true);
@@ -848,16 +964,6 @@ export default function App() {
       .filter((entry) => entry.path.toLocaleLowerCase().includes(needle))
       .map((entry) => ({ entry: { ...entry, depth: 0 }, children: [] }));
   }, [files, query, tree]);
-
-  const visibleArchiveEntries = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    return archiveEntries.filter((entry) => {
-      if (sidebarView === "favorites" && !entry.favorite) return false;
-      return !needle
-        || entry.name.toLocaleLowerCase().includes(needle)
-        || entry.sourcePath.toLocaleLowerCase().includes(needle);
-    });
-  }, [archiveEntries, query, sidebarView]);
 
   const toggleFavorite = async (entry: ArchiveEntry, favorite: boolean) => {
     try {
@@ -873,6 +979,15 @@ export default function App() {
     try {
       const next = await api.removeArchiveEntry(entry.id);
       setArchiveEntries(next);
+      const key = `archive:${entry.id}`;
+      const neighbor = nextTabAfterClose(tabsRef.current, key);
+      const remaining = tabsRef.current.filter((tab) => tab.key !== key);
+      tabsRef.current = remaining;
+      setOpenTabs(remaining);
+      if (activeTabKey === key) {
+        const target = neighbor ?? remaining.at(-1) ?? null;
+        if (target) applyTabSnapshot(target); else clearCurrentDocument();
+      }
       setNotice(`已移除 ${entry.name} 的历史记录和保留副本`);
     } catch (error) {
       setNotice(`移除历史失败：${String(error)}`);
@@ -899,6 +1014,16 @@ export default function App() {
     try {
       const next = await api.clearHistory();
       setArchiveEntries(next);
+      const retainedArchiveIds = new Set(next.map((entry) => entry.id));
+      const activeBefore = activeTabKeyRef.current;
+      const activeIndex = tabsRef.current.findIndex((tab) => tab.key === activeBefore);
+      const remaining = tabsRef.current.filter((tab) => tab.origin !== "archive" || retainedArchiveIds.has(tab.archiveId));
+      tabsRef.current = remaining;
+      setOpenTabs(remaining);
+      if (activeBefore && !remaining.some((tab) => tab.key === activeBefore)) {
+        const target = remaining[Math.min(activeIndex, remaining.length - 1)] ?? remaining.at(-1) ?? null;
+        if (target) applyTabSnapshot(target); else clearCurrentDocument();
+      }
       setNotice("已清除未收藏的历史记录，收藏文档及副本均已保留");
     } catch (error) {
       setNotice(`清除历史失败：${String(error)}`);
@@ -956,94 +1081,217 @@ export default function App() {
       : joinNativePath(settings.workspacePath, parentPath(selectedPath))
     : settings.workspacePath;
 
+  const dockLayout = normalizeDesktopDockLayout(settings.desktopLayout);
+  const updateDockLayout = (layout: AppSettings["desktopLayout"]) => setSettings((current) => ({ ...current, desktopLayout: normalizeDesktopDockLayout(layout) }));
+  const activatePanel = (panel: DockPanelId) => {
+    updateDockLayout(activateDockPanel(dockLayout, panel));
+    if (panel === "workspace" || panel === "history" || panel === "favorites" || panel === "agent") setSidebarView(panel);
+    if (panel === "outline") setOutlineOpen(true);
+  };
+  const hidePanel = (panel: DockPanelId) => {
+    updateDockLayout(hideDockPanel(dockLayout, panel));
+    if (panel === "outline") setOutlineOpen(false);
+  };
+  const dropPanel = (zone: DockZone) => {
+    if (draggedPanel) updateDockLayout(moveDockPanel(dockLayout, draggedPanel, zone));
+    setDraggedPanel(null);
+  };
+  const toggleOutlinePanel = () => {
+    if (android) {
+      setOutlineOpen((open) => !open);
+      return;
+    }
+    if (dockLayout.hidden.includes("outline")) activatePanel("outline");
+    else hidePanel("outline");
+  };
+
+  const agentHost: AgentDocumentHost = {
+    current: selectedPath ? { path: selectedPath, content } : null,
+    documents: entries,
+    readDocument: async (path) => {
+      if (!path || path === selectedRef.current) return contentRef.current;
+      return (await api.readDocument(path)).content;
+    },
+    replaceCurrentDocument: async (next) => {
+      if (!selectedRef.current) throw new Error("当前没有打开文档");
+      setContent(next);
+      contentRef.current = next;
+      setRenderedHtml(await api.render(next));
+    },
+    replaceText: async (path, searchText, replacement, all) => {
+      if (!searchText) throw new Error("search 不能为空");
+      const target = path || selectedRef.current;
+      if (!target) throw new Error("当前没有打开文档");
+      const current = target === selectedRef.current ? contentRef.current : (await api.readDocument(target)).content;
+      const matches = current.split(searchText).length - 1;
+      if (!matches) throw new Error(`没有找到要替换的文字：${searchText.slice(0, 80)}`);
+      const next = all ? current.split(searchText).join(replacement) : current.replace(searchText, replacement);
+      if (target === selectedRef.current) {
+        contentRef.current = next;
+        setContent(next);
+        setRenderedHtml(await api.render(next));
+      } else {
+        await api.write(target, next);
+        setOpenTabs((tabs) => tabs.map((tab) => tab.origin === "workspace" && tab.path === target ? { ...tab, content: next, savedContent: next, renderedHtml: "" } : tab));
+      }
+      return `已在 ${target} 替换 ${all ? matches : 1} 处`;
+    },
+    createDocument: async (requestedPath, nextContent) => {
+      let path = requestedPath.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!path || path.split("/").some((part) => !part || part === "." || part === "..")) throw new Error("文档路径无效");
+      if (!/\.(md|markdown)$/i.test(path)) path += ".md";
+      await api.create(path, "file");
+      await api.write(path, nextContent);
+      await refresh(path);
+      await openDocument(path, true);
+      return `已创建并打开 ${path}`;
+    },
+    openDocument: async (path) => openDocument(path),
+    searchDocuments: async (searchText, limit) => {
+      const needle = searchText.trim().toLocaleLowerCase();
+      if (!needle) return [];
+      const results: Array<{ path: string; excerpt: string }> = [];
+      for (const entry of files.slice(0, 120)) {
+        if (results.length >= limit) break;
+        try {
+          const value = entry.path === selectedRef.current ? contentRef.current : (await api.readDocument(entry.path)).content;
+          const index = value.toLocaleLowerCase().indexOf(needle);
+          if (index >= 0 || entry.path.toLocaleLowerCase().includes(needle)) {
+            results.push({ path: entry.path, excerpt: index >= 0 ? value.slice(Math.max(0, index - 120), index + needle.length + 240) : "文件名匹配" });
+          }
+        } catch { /* one inaccessible document must not abort the search */ }
+      }
+      return results;
+    },
+  };
+
+  const renderSidebarToolbar = () => <div className="sidebar-toolbar">
+    <div className="brand-mark" aria-label="LeafMark"><BookOpen size={17} /></div>
+    <div className="sidebar-actions">
+      <button className="icon-button" type="button" onClick={() => startCreate("file")} title="新建文档"><FilePlus2 size={16} /></button>
+      <button className="icon-button" type="button" onClick={() => startCreate("directory")} title="新建文件夹"><FolderPlus size={16} /></button>
+      <button className="icon-button" type="button" onClick={() => setImportOpen(true)} title={android ? "导入 Markdown 文件" : "导入文件或文件夹"}><Upload size={15} /></button>
+      {android && <button className="icon-button" type="button" onClick={() => setSidebarOpen(false)} title="收起目录"><PanelLeftClose size={16} /></button>}
+    </div>
+  </div>;
+
+  const renderLibraryContent = (view: Exclude<SidebarView, "agent">) => {
+    const needle = query.trim().toLocaleLowerCase();
+    const panelEntries = archiveEntries.filter((entry) => {
+      if (view === "favorites" && !entry.favorite) return false;
+      return !needle || entry.name.toLocaleLowerCase().includes(needle) || entry.sourcePath.toLocaleLowerCase().includes(needle);
+    });
+    return <div className="dock-library-pane">
+      <div className="sidebar-search">
+        <Search size={14} />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={view === "workspace" ? "搜索文档…" : view === "history" ? "搜索历史…" : "搜索收藏…"} />
+        <kbd>⌘P</kbd>
+      </div>
+      <div className="library-label">
+        {view === "workspace" ? <>
+          <span title={settings.workspacePath}>{lastDirectory(settings.workspacePath) || "文档库"}</span>
+          <button className="icon-button compact" type="button" onClick={() => void refresh().then((target) => target ? openDocument(target, true) : undefined)} title="刷新目录"><RefreshCw size={13} /></button>
+        </> : <>
+          <span>{view === "history" ? "最近打开 · 自动保留副本" : "收藏文档 · 永久保留"}</span>
+          {view === "history" && archiveEntries.some((entry) => !entry.favorite) && <button className="text-icon-button" type="button" onClick={() => void clearHistory()} title="清除未收藏历史"><Trash2 size={12} /> 清除</button>}
+        </>}
+      </div>
+      <div className="tree">
+        {view === "workspace" ? <div role="tree" aria-label="文档目录" onContextMenu={(event) => {
+          if ((event.target as HTMLElement).closest(".tree-row")) return;
+          event.preventDefault();
+          setMenu({ kind: "workspace", x: event.clientX, y: event.clientY, entry: null });
+        }}>
+          {visibleTree.length > 0
+            ? <FileTree nodes={visibleTree} selectedPath={selectedEntryPath} expanded={expanded} onOpen={(path) => void openDocument(path)} onToggle={toggleDirectory} onMenu={handleTreeMenu} />
+            : <div className="tree-empty"><FileCode2 size={24} /><strong>{query ? "没有匹配文档" : "文档库为空"}</strong><span>{query ? "换一个关键词试试" : "新建或导入 Markdown"}</span></div>}
+        </div> : <DocumentLibrary
+          entries={panelEntries}
+          selectedId={archiveId}
+          emptyTitle={query ? "没有匹配文档" : view === "favorites" ? "还没有收藏" : "还没有打开历史"}
+          emptyDetail={query ? "换一个关键词试试" : view === "favorites" ? "打开文档后点击星标收藏" : "从资源管理器或文档库打开 Markdown"}
+          onOpen={(entry) => void openArchivedDocument(entry)}
+          onFavorite={(entry, favorite) => void toggleFavorite(entry, favorite)}
+          onSaveToWorkspace={(entry) => void saveHistoryToWorkspace(entry)}
+          onRemove={(entry) => void removeHistoryEntry(entry)}
+          onMenu={handleArchiveMenu}
+        />}
+      </div>
+      <footer className="sidebar-footer">
+        <span>{view === "workspace" ? `${files.length} 篇文档` : view === "history" ? `${archiveEntries.length} 条历史` : `${archiveEntries.filter((entry) => entry.favorite).length} 个收藏`}</span>
+        <button type="button" onClick={() => setSettingsOpen(true)}><Settings size={14} /> 设置</button>
+      </footer>
+    </div>;
+  };
+
+  const renderOutlinePanel = () => <div className="dock-outline-pane">
+    <nav>{outline.length ? outline.map((item) => <button key={item.id} type="button" style={{ "--outline-depth": Math.max(0, item.level - 1) } as React.CSSProperties} onClick={() => document.getElementById(item.id)?.scrollIntoView({ behavior: settings.reduceMotion ? "auto" : "smooth" })}>{item.text}</button>) : <span>这篇文档没有标题</span>}</nav>
+  </div>;
+
+  const renderDockPanel = (panel: DockPanelId) => {
+    if (panel === "agent") return <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} />;
+    if (panel === "outline") return renderOutlinePanel();
+    return <div className="dock-library-shell">{renderSidebarToolbar()}{renderLibraryContent(panel)}</div>;
+  };
+
   return (
-    <div className={`app-shell${sidebarOpen ? "" : " sidebar-closed"}${outlineOpen ? " outline-visible" : ""}${android ? " platform-android" : ""}`} onClick={() => setMenu(null)}>
+    <div className={`app-shell${android ? `${sidebarOpen ? "" : " sidebar-closed"}${outlineOpen ? " outline-visible" : ""} platform-android` : " desktop-dock"}`} onClick={() => { setMenu(null); setLayoutMenuOpen(false); }}>
       {!android && <TitleBar />}
       {busy && <div className="top-progress" />}
-      <aside className="sidebar">
-        <div className="sidebar-toolbar">
-          <div className="brand-mark" aria-label="LeafMark"><BookOpen size={17} /></div>
-          <div className="sidebar-actions">
-            <button className="icon-button" type="button" onClick={() => startCreate("file")} title="新建文档"><FilePlus2 size={16} /></button>
-            <button className="icon-button" type="button" onClick={() => startCreate("directory")} title="新建文件夹"><FolderPlus size={16} /></button>
-            <button className="icon-button" type="button" onClick={() => setImportOpen(true)} title={android ? "导入 Markdown 文件" : "导入文件或文件夹"}><Upload size={15} /></button>
-            <button className="icon-button" type="button" onClick={() => setSidebarOpen(false)} title="收起目录"><PanelLeftClose size={16} /></button>
-          </div>
-        </div>
-        <div className="sidebar-views" aria-label="文档来源">
+      {android && <aside className={`sidebar${sidebarView === "agent" ? " agent-sidebar" : ""}`}>
+        {renderSidebarToolbar()}
+        <div className="sidebar-views" aria-label="功能页">
           <button className={sidebarView === "workspace" ? "active" : ""} type="button" onClick={() => setSidebarView("workspace")} title="文档库"><Files size={14} /> 文档</button>
           <button className={sidebarView === "history" ? "active" : ""} type="button" onClick={() => setSidebarView("history")} title="打开历史"><Clock3 size={14} /> 历史</button>
           <button className={sidebarView === "favorites" ? "active" : ""} type="button" onClick={() => setSidebarView("favorites")} title="收藏"><Star size={14} /> 收藏</button>
+          <button className={sidebarView === "agent" ? "active" : ""} type="button" onClick={() => setSidebarView("agent")} title="AI Agent"><Bot size={14} /> Agent</button>
         </div>
-        <div className="sidebar-search">
-          <Search size={14} />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={sidebarView === "workspace" ? "搜索文档…" : sidebarView === "history" ? "搜索历史…" : "搜索收藏…"}
-          />
-          <kbd>⌘P</kbd>
-        </div>
-        <div className="library-label">
-          {sidebarView === "workspace" ? (
-            <>
-              <span title={settings.workspacePath}>{lastDirectory(settings.workspacePath) || "文档库"}</span>
-              <button className="icon-button compact" type="button" onClick={() => void refresh().then((target) => {
-                if (target) return openDocument(target, true);
-              })} title="刷新目录"><RefreshCw size={13} /></button>
-            </>
-          ) : (
-            <>
-              <span>{sidebarView === "history" ? "最近打开 · 自动保留副本" : "收藏文档 · 永久保留"}</span>
-              {sidebarView === "history" && archiveEntries.some((entry) => !entry.favorite) && (
-                <button className="text-icon-button" type="button" onClick={() => void clearHistory()} title="清除未收藏历史">
-                  <Trash2 size={12} /> 清除
-                </button>
-              )}
-            </>
-          )}
-        </div>
-        <div className="tree">
-          {sidebarView === "workspace" ? (
-            <div role="tree" aria-label="文档目录" onContextMenu={(event) => {
-              if ((event.target as HTMLElement).closest(".tree-row")) return;
-              event.preventDefault();
-              setMenu({ kind: "workspace", x: event.clientX, y: event.clientY, entry: null });
-            }}>
-              {visibleTree.length > 0
-                ? <FileTree nodes={visibleTree} selectedPath={selectedEntryPath} expanded={expanded} onOpen={(path) => void openDocument(path)} onToggle={toggleDirectory} onMenu={handleTreeMenu} />
-                : <div className="tree-empty"><FileCode2 size={24} /><strong>{query ? "没有匹配文档" : "文档库为空"}</strong><span>{query ? "换一个关键词试试" : "新建或导入 Markdown"}</span></div>}
-            </div>
-          ) : (
-            <DocumentLibrary
-              entries={visibleArchiveEntries}
-              selectedId={archiveId}
-              emptyTitle={query ? "没有匹配文档" : sidebarView === "favorites" ? "还没有收藏" : "还没有打开历史"}
-              emptyDetail={query ? "换一个关键词试试" : sidebarView === "favorites" ? "打开文档后点击星标收藏" : "从资源管理器或文档库打开 Markdown"}
-              onOpen={(entry) => void openArchivedDocument(entry)}
-              onFavorite={(entry, favorite) => void toggleFavorite(entry, favorite)}
-              onSaveToWorkspace={(entry) => void saveHistoryToWorkspace(entry)}
-              onRemove={(entry) => void removeHistoryEntry(entry)}
-              onMenu={handleArchiveMenu}
-            />
-          )}
-        </div>
-        <footer className="sidebar-footer">
-          <span>{sidebarView === "workspace" ? `${files.length} 篇文档` : sidebarView === "history" ? `${archiveEntries.length} 条历史` : `${archiveEntries.filter((entry) => entry.favorite).length} 个收藏`}</span>
-          <button type="button" onClick={() => setSettingsOpen(true)}><Settings size={14} /> 设置</button>
-        </footer>
-      </aside>
-      {sidebarOpen && <button className="sidebar-scrim" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭文档抽屉" />}
+        {sidebarView === "agent"
+          ? <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} />
+          : renderLibraryContent(sidebarView)}
+      </aside>}
+      {android && sidebarOpen && <button className="sidebar-scrim" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭文档抽屉" />}
+
+      {!android && (["left", "right", "top", "bottom"] as DockZone[]).map((zone) => {
+        const panels = visibleDockPanels(dockLayout, zone);
+        const active = panels.includes(dockLayout.zones[zone].active as DockPanelId) ? dockLayout.zones[zone].active as DockPanelId : panels[0];
+        if (!active) return null;
+        const size = zone === "left" ? dockLayout.leftSize : zone === "right" ? dockLayout.rightSize : zone === "top" ? dockLayout.topSize : dockLayout.bottomSize;
+        return <DockRegion
+          key={zone}
+          zone={zone}
+          panels={panels}
+          active={active}
+          size={size}
+          renderPanel={renderDockPanel}
+          onActivate={activatePanel}
+          onHide={hidePanel}
+          onDragStart={setDraggedPanel}
+          onDragEnd={() => setDraggedPanel(null)}
+          onResize={(nextSize) => updateDockLayout(resizeDockZone(dockLayout, zone, nextSize))}
+        />;
+      })}
 
       <main className="workspace">
+        <div className="document-tabs" role="tablist" aria-label="打开的文档">
+          {!android && dockLayout.hidden.includes("workspace") && <button className="open-panel-button" type="button" onClick={() => activatePanel("workspace")} title="显示文档面板"><PanelLeftOpen size={14} /></button>}
+          <div>
+            {openTabs.map((tab) => {
+              const active = tab.key === activeTabKey;
+              const tabDirty = tab.content !== tab.savedContent;
+              return <div key={tab.key} className={`document-tab${active ? " active" : ""}`}>
+                <button type="button" role="tab" aria-selected={active} onClick={() => void activateDocumentTab(tab)} title={tab.sourcePath || tab.path}>
+                  <FileCode2 size={12} /><span>{nativeFileName(tab.sourcePath || tab.path)}</span>{tabDirty && <i title="未保存" />}
+                </button>
+                <button type="button" className="tab-close" aria-label={`关闭 ${nativeFileName(tab.sourcePath || tab.path)}`} onClick={() => void closeDocumentTab(tab.key)}><X size={12} /></button>
+              </div>;
+            })}
+          </div>
+          {!openTabs.length && <span className="no-tabs">未打开文档</span>}
+        </div>
         <header className="document-toolbar">
           <div className="document-leading">
-            {!sidebarOpen && <button className="icon-button" type="button" onClick={() => setSidebarOpen(true)} title="展开目录"><PanelLeftOpen size={17} /></button>}
-            <div className="breadcrumbs" title={sourcePath || selectedPath}>
-              {selectedPath ? displayPathParts(documentOrigin === "archive" ? sourcePath : selectedPath).map((part, index) => (
-                <span key={`${part}-${index}`}>{index > 0 && <ChevronRight size={11} />}{part}</span>
-              )) : <span>未选择文档</span>}
-            </div>
+            {android && !sidebarOpen && <button className="icon-button" type="button" onClick={() => setSidebarOpen(true)} title="展开目录"><PanelLeftOpen size={17} /></button>}
             {selectedPath && !sourceExists && <span className="retained-badge">保留副本</span>}
             {saveStatus === "error"
               ? <span className="save-state error"><CircleAlert size={12} /> 保存失败</span>
@@ -1079,7 +1327,8 @@ export default function App() {
             >
               <Star size={16} fill={currentArchiveEntry?.favorite ? "currentColor" : "none"} />
             </button>
-            <button className={`icon-button${outlineOpen ? " active" : ""}`} type="button" onClick={() => setOutlineOpen((open) => !open)} title="文章大纲" disabled={!selectedPath}><LayoutPanelLeft size={16} /></button>
+            <button className={`icon-button${android ? outlineOpen : !dockLayout.hidden.includes("outline") ? " active" : ""}`} type="button" onClick={toggleOutlinePanel} title="文章大纲" disabled={!selectedPath}><LayoutPanelLeft size={16} /></button>
+            {!android && <button className={`icon-button${layoutMenuOpen ? " active" : ""}`} type="button" onClick={(event) => { event.stopPropagation(); setLayoutMenuOpen((open) => !open); }} title="管理停靠面板"><PanelsTopLeft size={16} /></button>}
             <button className="icon-button" type="button" onClick={() => void persistCurrent()} title="保存 (Ctrl+S)" disabled={!dirty}><Save size={16} /></button>
             <button className="icon-button" type="button" onClick={() => setExportOpen(true)} title="导出" disabled={!selectedPath || !api.isTauri()}><Download size={15} /></button>
             <button className="icon-button" type="button" onClick={() => setSettingsOpen(true)} title="设置 (Ctrl+,)"><Settings size={16} /></button>
@@ -1145,9 +1394,20 @@ export default function App() {
             {selectedPath && <div>{!sourceExists && <span>LeafMark 副本</span>}<span>UTF-8</span><span>Markdown</span><span>{countWords(content).toLocaleString()} 字</span><span>{formatBytes(new Blob([content]).size)}</span></div>}
           </footer>
         )}
+        {layoutMenuOpen && <div className="dock-panel-menu" onClick={(event) => event.stopPropagation()}>
+          <strong>功能面板</strong>
+          {([[
+            "workspace", "文档"
+          ], ["history", "历史"], ["favorites", "收藏"], ["agent", "Agent"], ["outline", "大纲"]] as Array<[DockPanelId, string]>).map(([panel, label]) => {
+            const visible = !dockLayout.hidden.includes(panel);
+            return <button key={panel} type="button" className={visible ? "active" : ""} onClick={() => visible ? hidePanel(panel) : activatePanel(panel)}><Check size={12} opacity={visible ? 1 : 0} />{label}</button>;
+          })}
+          <hr />
+          <button type="button" onClick={() => updateDockLayout(defaultAppSettings().desktopLayout)}><RefreshCw size={12} />恢复默认布局</button>
+        </div>}
       </main>
 
-      {outlineOpen && (
+      {android && outlineOpen && (
         <aside className="outline-panel">
           <header><strong>文章大纲</strong><button className="icon-button compact" type="button" onClick={() => setOutlineOpen(false)}><X size={14} /></button></header>
           <nav>
@@ -1155,6 +1415,8 @@ export default function App() {
           </nav>
         </aside>
       )}
+
+      <DockDropTargets active={!android && Boolean(draggedPanel)} onDrop={dropPanel} />
 
       {menu && (
         <div className="context-menu" style={contextMenuPosition(menu.x, menu.y, android)} onClick={(event) => event.stopPropagation()}>
@@ -1472,11 +1734,6 @@ function nativeParentPath(path: string) {
   const normalized = path.replace(/[\\/]$/, "");
   const separator = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
   return separator >= 0 ? normalized.slice(0, separator) : "";
-}
-
-function displayPathParts(path: string) {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length > 4 ? ["…", ...parts.slice(-3)] : parts;
 }
 
 function nextFrame() {

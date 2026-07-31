@@ -127,14 +127,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 修复 Android 从微信、文件管理器、网盘“打开方式”接收 Markdown 失败的问题
-            - 完整支持 Android ACTION_VIEW、ACTION_EDIT、ACTION_SEND 与 ACTION_SEND_MULTIPLE，并兼容把 Markdown 标成 text/plain 的应用
-            - 其他应用直接分享纯文本时会自动建立一篇 Markdown 保留副本，不再提示不支持 data 地址
-            - 多文件分享会逐篇建立历史保留副本，热启动时串行打开，不再丢文档或互相抢占
-            - Android 返回键会依次关闭菜单、对话框、设置、侧栏和大纲；未保存内容会先完成保存
-            - 修复中文输入法组合输入时实时编辑可能打断候选文字的问题
-            - 手机布局改用动态视口并完善软键盘、安全区、滚动与触控菜单适配
-            - 移除误加的 Android TV Launcher 声明，继续仅发布手机 ARM64 优化 APK
+            - 新增类 VS Code 多文档标签栏，可快速切换、查看未保存状态并单独关闭文档
+            - 桌面端新增柔性 Dock：文档库、历史、收藏、Agent 与大纲可拖动到上下左右、合并为页签并调整尺寸
+            - 新增轻量流式文档 Agent，支持 OpenAI 兼容服务、文档读写工具、并行只读子 Agent、会话检索与本地长期记忆
+            - Agent 支持内置/自定义 Skills、网页读取、Streamable HTTP MCP，以及完整的模型和权限设置
+            - Agent 按需联网且不内置模型或向量数据库；Android 保持适合手机的抽屉导航和 ARM64 单架构构建
+            - 移除编辑区上方的完整文档路径，界面只显示简洁的文档标签
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
             Android APK 是使用开发密钥签名的优化 release 构建；Windows 未签名构建可能触发 SmartScreen 提示。

@@ -9,23 +9,9 @@ import type {
   ImportDirectoryResult,
   LoadedDocument,
 } from "./types";
+import { defaultAppSettings } from "./settings-defaults";
 
-const browserSettings: AppSettings = {
-  settingsSchemaVersion: 3,
-  workspacePath: "浏览器预览",
-  theme: "system",
-  themePalette: "leaf",
-  liveEditing: true,
-  autosaveDelayMs: 600,
-  contentWidth: 860,
-  fontFamily: "system",
-  fontSize: 16,
-  lineHeight: 1.75,
-  showStatusBar: true,
-  reduceMotion: false,
-  mermaidEnabled: true,
-  mathEnabled: true,
-};
+const browserSettings: AppSettings = defaultAppSettings("浏览器预览");
 
 const sample = `# 欢迎使用 LeafMark
 

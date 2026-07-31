@@ -3,6 +3,45 @@ export type ViewMode = "read" | "source" | "split" | "live";
 export type ThemeMode = "system" | "light" | "dark";
 export type ThemePalette = "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria";
 export type DocumentOrigin = "workspace" | "archive";
+export type DockPanelId = "workspace" | "history" | "favorites" | "agent" | "outline";
+export type DockZone = "left" | "right" | "top" | "bottom";
+export type AgentProvider = "openai" | "deepseek" | "openrouter" | "ollama" | "lmstudio" | "custom";
+
+export interface DockZoneState {
+  panels: DockPanelId[];
+  active: DockPanelId | null;
+}
+
+export interface DesktopDockLayout {
+  zones: Record<DockZone, DockZoneState>;
+  hidden: DockPanelId[];
+  leftSize: number;
+  rightSize: number;
+  topSize: number;
+  bottomSize: number;
+}
+
+export interface AgentSettings {
+  enabled: boolean;
+  provider: AgentProvider;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  temperature: number;
+  topP: number;
+  maxTokens: number;
+  contextChars: number;
+  maxToolRounds: number;
+  maxParallelAgents: number;
+  reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh";
+  systemPrompt: string;
+  allowDocumentEdits: boolean;
+  memoryEnabled: boolean;
+  webToolsEnabled: boolean;
+  enabledSkills: string[];
+  customSkills: string;
+  mcpServersJson: string;
+}
 
 export interface DocumentEntry {
   path: string;
@@ -65,6 +104,8 @@ export interface AppSettings {
   reduceMotion: boolean;
   mermaidEnabled: boolean;
   mathEnabled: boolean;
+  desktopLayout: DesktopDockLayout;
+  agent: AgentSettings;
 }
 
 export interface BootstrapPayload {
