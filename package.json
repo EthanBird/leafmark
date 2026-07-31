@@ -1,6 +1,6 @@
 {
   "name": "leafmark",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "LeafMark（一叶）— 高性能、轻量、本地优先的 Markdown 阅读与写作应用",
   "private": true,
   "type": "module",

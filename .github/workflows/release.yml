@@ -108,6 +108,17 @@ jobs:
       - name: Check frontend
         run: npm run typecheck
 
+      - name: Test native Windows integration
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml
+          $regExeCalls = Select-String `
+            -Path src-tauri/src/*.rs `
+            -SimpleMatch 'Command::new("reg.exe")'
+          if ($regExeCalls) {
+            throw "Windows integration must not spawn reg.exe."
+          }
+
       - name: Build and publish NSIS installer
         uses: tauri-apps/tauri-action@v1
         env:
@@ -121,6 +132,7 @@ jobs:
             - Android 外部文档会复制到私有资料库，并继续进入历史、收藏与防删除快照
             - 默认进入接近 Typora 的实时渲染编辑，设置页可扫描和切换系统字体
             - v0.3.1 改为仅面向现代手机的 ARM64 优化构建，移除调试符号与 32 位库并显著缩小 APK
+            - v0.3.2 使用原生 Windows 注册表 API，并禁止所有辅助进程创建命令行窗口
 
             Android 请下载 APK；Windows 请下载 NSIS 安装程序。
             Android APK 是使用开发密钥签名的优化 release 构建；Windows 未签名构建可能触发 SmartScreen 提示。
@@ -135,6 +147,14 @@ jobs:
       - name: Verify installer
         shell: pwsh
         run: |
+          $app = Get-Item src-tauri/target/release/leafmark.exe
+          $bytes = [IO.File]::ReadAllBytes($app.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
+          if ($subsystem -ne 2) {
+            throw "LeafMark executable is not a Windows GUI subsystem binary: $subsystem"
+          }
+
           $installer = Get-ChildItem `
             -Path src-tauri/target/release/bundle/nsis `
             -Filter *.exe |

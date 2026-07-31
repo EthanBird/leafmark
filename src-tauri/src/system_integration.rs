@@ -1,12 +1,19 @@
 use serde::Serialize;
 #[cfg(windows)]
-use std::process::Command;
+use std::{
+    os::windows::process::CommandExt,
+    process::{Command, Stdio},
+};
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
 };
+#[cfg(windows)]
+use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,11 +152,11 @@ pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, Stri
         r"Software\LeafMark\Capabilities",
     )?;
 
-    let targeted = Command::new("explorer.exe")
+    let targeted = hidden_command("explorer.exe")
         .arg("ms-settings:defaultapps?registeredAppUser=LeafMark")
         .spawn();
     if targeted.is_err() {
-        Command::new("explorer.exe")
+        hidden_command("explorer.exe")
             .arg("ms-settings:defaultapps")
             .spawn()
             .map_err(error_string)?;
@@ -177,43 +184,39 @@ fn is_markdown(path: &Path) -> bool {
 
 #[cfg(windows)]
 fn reg_add(key: &str, value_name: Option<&str>, data: &str) -> Result<(), String> {
-    let mut command = Command::new("reg.exe");
-    command.args(["add", key]);
-    if let Some(value_name) = value_name {
-        command.args(["/v", value_name]);
-    } else {
-        command.arg("/ve");
-    }
-    let output = command
-        .args(["/t", "REG_SZ", "/d", data, "/f"])
-        .output()
-        .map_err(error_string)?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+    let root = RegKey::predef(HKEY_CURRENT_USER);
+    let path = hkcu_subkey_path(key)?;
+    let (subkey, _) = root.create_subkey(path).map_err(error_string)?;
+    subkey
+        .set_value(value_name.unwrap_or_default(), &data)
+        .map_err(error_string)
 }
 
 #[cfg(windows)]
 fn reg_query(key: &str, value_name: Option<&str>) -> Option<String> {
-    let mut command = Command::new("reg.exe");
-    command.args(["query", key]);
-    if let Some(value_name) = value_name {
-        command.args(["/v", value_name]);
-    } else {
-        command.arg("/ve");
-    }
-    let output = command.output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .find(|line| line.contains("REG_SZ"))
-        .and_then(|line| line.split_once("REG_SZ"))
-        .map(|(_, value)| value.trim().to_string())
+    let root = RegKey::predef(HKEY_CURRENT_USER);
+    let path = hkcu_subkey_path(key).ok()?;
+    root.open_subkey(path)
+        .ok()?
+        .get_value(value_name.unwrap_or_default())
+        .ok()
+}
+
+#[cfg(windows)]
+fn hkcu_subkey_path(key: &str) -> Result<&str, String> {
+    key.strip_prefix("HKCU\\")
+        .ok_or_else(|| format!("仅支持 HKCU 注册表路径：{key}"))
+}
+
+#[cfg(windows)]
+fn hidden_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
 }
 
 #[cfg(windows)]
@@ -239,5 +242,15 @@ mod tests {
         assert_eq!(paths.len(), 1);
         assert!(paths[0].ends_with("open.md"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validates_hkcu_registry_paths_without_spawning_reg_exe() {
+        assert_eq!(
+            hkcu_subkey_path(r"HKCU\Software\LeafMark").unwrap(),
+            r"Software\LeafMark"
+        );
+        assert!(hkcu_subkey_path(r"HKLM\Software\LeafMark").is_err());
     }
 }
