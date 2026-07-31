@@ -1,11 +1,11 @@
-use atomicwrites::{AllowOverwrite, AtomicFile};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use super::atomic_write;
 
 const INDEX_VERSION: u32 = 1;
 
@@ -386,12 +386,6 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    AtomicFile::new(path, AllowOverwrite)
-        .write(|file| file.write_all(bytes))
-        .map_err(error_string)
 }
 
 fn error_string(error: impl std::fmt::Display) -> String {

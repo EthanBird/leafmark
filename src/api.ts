@@ -130,6 +130,10 @@ export const api = {
     if (isTauri()) return invoke("write_archived_document", { id, content });
     return null;
   },
+  async saveArchivedToWorkspace(id: string): Promise<string> {
+    if (isTauri()) return invoke("save_archived_to_workspace", { id });
+    return "欢迎.md";
+  },
   async setFavorite(id: string, favorite: boolean): Promise<ArchiveEntry[]> {
     if (isTauri()) return invoke("set_document_favorite", { id, favorite });
     return [];
@@ -169,6 +173,14 @@ export const api = {
       "Segoe UI",
       "SimSun",
     ];
+  },
+  async loadExportFont(preferredFamily: string, containsCjk: boolean): Promise<Uint8Array> {
+    if (!isTauri()) throw new Error("浏览器预览无法读取系统字体");
+    const payload = await invoke<ArrayBuffer | Uint8Array>("load_export_font", {
+      preferredFamily,
+      containsCjk,
+    });
+    return payload instanceof Uint8Array ? payload : new Uint8Array(payload);
   },
   async render(source: string): Promise<string> {
     if (isTauri()) return invoke("render_markdown", { source });

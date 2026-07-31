@@ -1,5 +1,3 @@
-import { toCanvas } from "html-to-image";
-
 export type ExportFormat = "markdown" | "html" | "png" | "pdf-long" | "pdf-pages";
 
 const CSS_VARIABLES = [
@@ -65,48 +63,6 @@ export function buildStandaloneHtml(root: HTMLElement, title: string) {
 </html>`;
 }
 
-export async function renderExportCanvas(root: HTMLElement) {
-  const width = Math.ceil(root.scrollWidth);
-  const height = Math.ceil(root.scrollHeight);
-  return toCanvas(root, {
-    backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#ffffff",
-    cacheBust: true,
-    pixelRatio: 2,
-    width,
-    height,
-    canvasWidth: width * 2,
-    canvasHeight: height * 2,
-    style: {
-      height: `${height}px`,
-      position: "static",
-      left: "auto",
-      top: "auto",
-      zIndex: "auto",
-      maxHeight: "none",
-      overflow: "visible",
-    },
-  });
-}
-
-export function canvasToPngBytes(canvas: HTMLCanvasElement) {
-  return dataUrlToBytes(canvas.toDataURL("image/png"));
-}
-
-export async function canvasToLongPdfBytes(canvas: HTMLCanvasElement) {
-  const { jsPDF } = await import("jspdf");
-  const pageWidth = 595.28;
-  const unclampedHeight = canvas.height * pageWidth / canvas.width;
-  const pageHeight = Math.min(14_400, Math.max(72, unclampedHeight));
-  const pdf = new jsPDF({
-    orientation: pageHeight >= pageWidth ? "portrait" : "landscape",
-    unit: "pt",
-    format: [pageWidth, pageHeight],
-    compress: true,
-  });
-  pdf.addImage(canvas, "PNG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
-  return new Uint8Array(pdf.output("arraybuffer"));
-}
-
 export interface PdfSlice {
   sourceY: number;
   sourceHeight: number;
@@ -129,39 +85,6 @@ export function calculatePdfSlices(
   return slices;
 }
 
-export async function canvasToPagedPdfBytes(canvas: HTMLCanvasElement) {
-  const { jsPDF } = await import("jspdf");
-  const pageWidth = 595.28;
-  const pageHeight = 841.89;
-  const margin = 32;
-  const printableWidth = pageWidth - margin * 2;
-  const slices = calculatePdfSlices(canvas.width, canvas.height, pageWidth, pageHeight, margin);
-  const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4", compress: true });
-
-  slices.forEach((slice, index) => {
-    if (index > 0) pdf.addPage("a4", "portrait");
-    const piece = document.createElement("canvas");
-    piece.width = canvas.width;
-    piece.height = Math.ceil(slice.sourceHeight);
-    const context = piece.getContext("2d");
-    if (!context) throw new Error("浏览器无法创建 PDF 画布");
-    context.drawImage(
-      canvas,
-      0,
-      slice.sourceY,
-      canvas.width,
-      slice.sourceHeight,
-      0,
-      0,
-      piece.width,
-      piece.height,
-    );
-    const renderedHeight = piece.height * printableWidth / piece.width;
-    pdf.addImage(piece, "PNG", margin, margin, printableWidth, renderedHeight, undefined, "FAST");
-  });
-  return new Uint8Array(pdf.output("arraybuffer"));
-}
-
 function readDocumentStyles() {
   const rules: string[] = [];
   for (const sheet of Array.from(document.styleSheets)) {
@@ -181,12 +104,6 @@ function blobToDataUrl(blob: Blob) {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
-}
-
-function dataUrlToBytes(value: string) {
-  const base64 = value.slice(value.indexOf(",") + 1);
-  const binary = atob(base64);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 function escapeHtml(value: string) {

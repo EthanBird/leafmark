@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, sync::OnceLock};
 
+use serde::Serialize;
+
 static SYSTEM_FONTS: OnceLock<Vec<String>> = OnceLock::new();
 
 pub(crate) fn system_font_families() -> Vec<String> {
@@ -7,15 +9,7 @@ pub(crate) fn system_font_families() -> Vec<String> {
 }
 
 fn load_system_font_families() -> Vec<String> {
-    let mut database = fontdb::Database::new();
-    #[cfg(target_os = "android")]
-    {
-        database.load_fonts_dir("/system/fonts");
-        database.load_fonts_dir("/product/fonts");
-    }
-    #[cfg(not(target_os = "android"))]
-    database.load_system_fonts();
-
+    let database = load_database();
     let mut families = BTreeMap::new();
     for face in database.faces() {
         for (family, _) in &face.families {
@@ -30,6 +24,147 @@ fn load_system_font_families() -> Vec<String> {
     }
 
     families.into_values().collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportFontMetadata {
+    family: String,
+    postscript_name: String,
+    collection: bool,
+}
+
+pub(crate) fn export_font_payload(
+    preferred_family: &str,
+    contains_cjk: bool,
+) -> Result<Vec<u8>, String> {
+    let database = load_database();
+    let preferred = preferred_family.trim();
+    let cjk_families = [
+        "Noto Serif CJK SC",
+        "Source Han Serif SC",
+        "Noto Sans CJK SC",
+        "Source Han Sans SC",
+        "Noto Serif SC",
+        "Noto Sans SC",
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "DengXian",
+        "SimSun",
+        "PingFang SC",
+        "Songti SC",
+        "Hiragino Sans GB",
+        "WenQuanYi Micro Hei",
+    ];
+    let latin_only_families = [
+        "Arial",
+        "Calibri",
+        "Cambria",
+        "Consolas",
+        "Courier New",
+        "DejaVu Sans",
+        "DejaVu Serif",
+        "Georgia",
+        "Roboto",
+        "Segoe UI",
+        "Times New Roman",
+    ];
+    let preferred_may_cover_cjk = cjk_families
+        .iter()
+        .any(|family| family.eq_ignore_ascii_case(preferred))
+        || preferred.to_lowercase().contains("cjk")
+        || preferred.to_lowercase().contains("han ")
+        || !latin_only_families
+            .iter()
+            .any(|family| family.eq_ignore_ascii_case(preferred));
+
+    let mut candidates = Vec::new();
+    if !preferred.is_empty()
+        && preferred != "system"
+        && (!contains_cjk || preferred_may_cover_cjk)
+    {
+        candidates.push(preferred);
+    }
+    if contains_cjk {
+        candidates.extend(cjk_families);
+    }
+    if !contains_cjk && (preferred.is_empty() || preferred == "system") {
+        candidates.extend(["Segoe UI", "Arial", "Roboto", "DejaVu Sans"]);
+    }
+
+    let find_family = |family: &str| {
+        database.faces().find(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(family))
+        })
+    };
+    let face = candidates
+        .iter()
+        .find_map(|family| find_family(family))
+        .or_else(|| {
+            contains_cjk
+                .then(|| {
+                    database.faces().find(|face| {
+                        face.families.iter().any(|(name, _)| {
+                            let lower = name.to_lowercase();
+                            lower.contains("cjk")
+                                || lower.contains("chinese")
+                                || lower.contains("yahei")
+                                || lower.contains("simsun")
+                        })
+                    })
+                })
+                .flatten()
+        })
+        .or_else(|| {
+            (!contains_cjk)
+                .then(|| database.faces().next())
+                .flatten()
+        })
+        .ok_or_else(|| {
+            if contains_cjk {
+                "系统中没有覆盖中文的字体，请先安装思源宋体、Noto CJK 或微软雅黑".to_string()
+            } else {
+                "系统中没有可用于 PDF 的字体".to_string()
+            }
+        })?;
+
+    let id = face.id;
+    let family = face
+        .families
+        .first()
+        .map(|(name, _)| name.clone())
+        .unwrap_or_else(|| "LeafMark Export".to_string());
+    let postscript_name = face.post_script_name.clone();
+    let bytes = database
+        .with_face_data(id, |data, _| data.to_vec())
+        .ok_or_else(|| format!("无法读取系统字体：{family}"))?;
+    let metadata = ExportFontMetadata {
+        family,
+        postscript_name,
+        collection: bytes.starts_with(b"ttcf"),
+    };
+    let metadata = serde_json::to_vec(&metadata).map_err(|error| error.to_string())?;
+    let metadata_len =
+        u32::try_from(metadata.len()).map_err(|_| "字体元数据过大".to_string())?;
+    let mut payload = Vec::with_capacity(4 + metadata.len() + bytes.len());
+    payload.extend_from_slice(&metadata_len.to_le_bytes());
+    payload.extend_from_slice(&metadata);
+    payload.extend_from_slice(&bytes);
+    Ok(payload)
+}
+
+fn load_database() -> fontdb::Database {
+    let mut database = fontdb::Database::new();
+    #[cfg(target_os = "android")]
+    {
+        database.load_fonts_dir("/system/fonts");
+        database.load_fonts_dir("/product/fonts");
+    }
+    #[cfg(not(target_os = "android"))]
+    database.load_system_fonts();
+    database
 }
 
 #[cfg(test)]

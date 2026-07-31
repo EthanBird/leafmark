@@ -1,4 +1,4 @@
-import { FileQuestion, Star, Trash2 } from "lucide-react";
+import { FileDown, FileQuestion, Star, Trash2 } from "lucide-react";
 import type { ArchiveEntry } from "../types";
 
 interface DocumentLibraryProps {
@@ -8,6 +8,7 @@ interface DocumentLibraryProps {
   emptyDetail: string;
   onOpen: (entry: ArchiveEntry) => void;
   onFavorite: (entry: ArchiveEntry, favorite: boolean) => void;
+  onSaveToWorkspace: (entry: ArchiveEntry) => void;
   onRemove: (entry: ArchiveEntry) => void;
 }
 
@@ -18,6 +19,7 @@ export function DocumentLibrary({
   emptyDetail,
   onOpen,
   onFavorite,
+  onSaveToWorkspace,
   onRemove,
 }: DocumentLibraryProps) {
   if (!entries.length) {
@@ -49,6 +51,13 @@ export function DocumentLibrary({
             </time>
           </button>
           <div className="archive-actions">
+            <button
+              type="button"
+              title="保存到我的文档库"
+              onClick={() => onSaveToWorkspace(entry)}
+            >
+              <FileDown size={13} />
+            </button>
             <button
               className={entry.favorite ? "favorite" : ""}
               type="button"

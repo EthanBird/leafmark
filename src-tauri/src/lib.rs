@@ -13,7 +13,8 @@ use std::{
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use system_integration::{
     association_status, configure_markdown_association, markdown_paths_from_args, AssociationStatus,
@@ -348,6 +349,45 @@ fn write_archived_document(
 }
 
 #[tauri::command]
+fn save_archived_to_workspace(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let mut inner = state.0.lock();
+    let archived = inner.library.open(&id)?;
+    let source = PathBuf::from(&archived.entry.source_path);
+    if let Ok(relative) = source.strip_prefix(&inner.workspace) {
+        if source.is_file() {
+            let normalized = path_to_slash(relative);
+            inner.cache.invalidate(&normalized);
+            return Ok(normalized);
+        }
+    }
+
+    let destination = unique_destination(
+        &inner.workspace,
+        Path::new(&archived.entry.name)
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("保留文档.md")),
+    );
+    atomic_write(&destination, archived.content.as_bytes())?;
+    let metadata = fs::metadata(&destination).map_err(error_string)?;
+    inner.library.record(
+        &destination,
+        &archived.content,
+        metadata.len(),
+        modified_ms(&metadata),
+        true,
+    )?;
+    let relative = destination
+        .strip_prefix(&inner.workspace)
+        .map_err(|_| "保存路径超出文档库".to_string())?;
+    let normalized = path_to_slash(relative);
+    inner.cache.invalidate(&normalized);
+    Ok(normalized)
+}
+
+#[tauri::command]
 fn set_document_favorite(
     id: String,
     favorite: bool,
@@ -395,6 +435,19 @@ async fn list_system_fonts() -> Vec<String> {
     tauri::async_runtime::spawn_blocking(system_fonts::system_font_families)
         .await
         .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn load_export_font(
+    preferred_family: String,
+    contains_cjk: bool,
+) -> Result<tauri::ipc::Response, String> {
+    let payload = tauri::async_runtime::spawn_blocking(move || {
+        system_fonts::export_font_payload(&preferred_family, contains_cjk)
+    })
+    .await
+    .map_err(error_string)??;
+    Ok(tauri::ipc::Response::new(payload))
 }
 
 #[tauri::command]
@@ -919,10 +972,21 @@ fn secure_target_path(root: &Path, relative: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    AtomicFile::new(path, AllowOverwrite)
-        .write(|file| file.write_all(bytes))
-        .map_err(error_string)
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    const RETRY_DELAYS_MS: [u64; 5] = [0, 25, 75, 160, 320];
+    let mut last_error = String::new();
+    for delay in RETRY_DELAYS_MS {
+        if delay > 0 {
+            thread::sleep(Duration::from_millis(delay));
+        }
+        match AtomicFile::new(path, AllowOverwrite).write(|file| file.write_all(bytes)) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = error_string(error),
+        }
+    }
+    Err(format!(
+        "安全写入多次重试后仍失败：{last_error}。请检查文件是否被其他程序占用"
+    ))
 }
 
 fn persist_settings(path: &Path, settings: &AppSettings) -> Result<(), String> {
@@ -1197,6 +1261,7 @@ pub fn run() {
             open_archived_document,
             list_archive_entries,
             write_archived_document,
+            save_archived_to_workspace,
             set_document_favorite,
             remove_archive_entry,
             clear_document_history,
@@ -1204,6 +1269,7 @@ pub fn run() {
             get_markdown_association_status,
             request_default_markdown_association,
             list_system_fonts,
+            load_export_font,
             render_markdown,
             write_document,
             create_entry,

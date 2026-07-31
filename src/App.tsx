@@ -43,14 +43,12 @@ import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
 import {
   buildStandaloneHtml,
-  canvasToLongPdfBytes,
-  canvasToPagedPdfBytes,
-  canvasToPngBytes,
   exportExtension,
   inlineExportImages,
-  renderExportCanvas,
   type ExportFormat,
 } from "./exporting";
+import { startPdfExport, type ExportProgress } from "./pdf-export";
+import { startPngExport } from "./png-export";
 import { collectOutline, enhanceDocument, type OutlineItem } from "./rendering";
 import { buildTree, joinPath, parentPath, resolveMarkdownLink } from "./tree";
 import type {
@@ -81,6 +79,7 @@ interface MenuState {
 }
 
 type SidebarView = "workspace" | "history" | "favorites";
+type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 const isCompactLayout = () => window.matchMedia("(max-width: 620px)").matches;
 
@@ -132,12 +131,14 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [entryDialog, setEntryDialog] = useState<EntryDialogState | null>(null);
   const [deleteEntry, setDeleteEntry] = useState<DocumentEntry | null>(null);
   const [rendering, setRendering] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const contentRef = useRef(content);
   const savedRef = useRef(savedContent);
   const selectedRef = useRef(selectedPath);
@@ -146,6 +147,14 @@ export default function App() {
   const liveEditorRef = useRef<HTMLElement>(null);
   const settingsReady = useRef(false);
   const renderRequest = useRef(0);
+  const documentVersionRef = useRef(0);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const queuedSaveRef = useRef<{
+    key: string;
+    value: string;
+    promise: Promise<boolean>;
+  } | null>(null);
+  const cancelExportRef = useRef<(() => void) | null>(null);
 
   const dirty = Boolean(selectedPath) && content !== savedContent;
   const files = useMemo(() => entries.filter((entry) => entry.kind === "file"), [entries]);
@@ -189,25 +198,68 @@ export default function App() {
     return next;
   }, []);
 
-  const persistCurrent = useCallback(async (quiet = false) => {
+  const persistCurrent = useCallback((quiet = false): Promise<boolean> => {
     const path = selectedRef.current;
     const value = contentRef.current;
-    if (!path || value === savedRef.current) return;
-    try {
-      if (originRef.current === "archive") {
-        const updated = await api.writeArchivedDocument(archiveIdRef.current, value);
-        if (updated) setSourceExists(updated.sourceExists);
-      } else {
-        await api.write(path, value);
-      }
-      savedRef.current = value;
-      setSavedContent(value);
-      void refreshLibrary();
-      if (!quiet) setNotice(`已保存 ${nativeFileName(path)}`);
-    } catch (error) {
-      setNotice(`保存失败：${String(error)}`);
-      throw error;
+    if (!path || value === savedRef.current) {
+      if (path) setSaveStatus("saved");
+      return Promise.resolve(true);
     }
+    const origin = originRef.current;
+    const archive = archiveIdRef.current;
+    const version = documentVersionRef.current;
+    const key = `${version}:${origin}:${origin === "archive" ? archive : path}`;
+    const queued = queuedSaveRef.current;
+    if (queued?.key === key && queued.value === value) return queued.promise;
+
+    setSaveStatus("saving");
+    const writeTask = saveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (origin === "archive") {
+          const updated = await api.writeArchivedDocument(archive, value);
+          if (
+            updated
+            && documentVersionRef.current === version
+            && archiveIdRef.current === archive
+          ) {
+            setSourceExists(updated.sourceExists);
+          }
+        } else {
+          await api.write(path, value);
+        }
+      });
+    saveQueueRef.current = writeTask;
+
+    const result = writeTask.then(() => {
+      if (
+        documentVersionRef.current === version
+        && selectedRef.current === path
+        && originRef.current === origin
+        && (origin !== "archive" || archiveIdRef.current === archive)
+      ) {
+        savedRef.current = value;
+        setSavedContent(value);
+        setSaveStatus(contentRef.current === value ? "saved" : "saving");
+        if (!quiet) setNotice(`已保存 ${nativeFileName(path)}`);
+      }
+      void refreshLibrary().catch(() => undefined);
+      return true;
+    }).catch((error: unknown) => {
+      if (
+        documentVersionRef.current === version
+        && selectedRef.current === path
+        && queuedSaveRef.current?.key === key
+        && queuedSaveRef.current.value === value
+      ) {
+        queuedSaveRef.current = null;
+        setSaveStatus("error");
+        setNotice(`保存失败：${String(error)}。内容仍保留在编辑器中，可点击保存重试`);
+      }
+      return false;
+    });
+    queuedSaveRef.current = { key, value, promise: result };
+    return result;
   }, [refreshLibrary]);
 
   const refresh = useCallback(async (preferredPath?: string) => {
@@ -227,6 +279,8 @@ export default function App() {
   }, []);
 
   const applyLoadedDocument = useCallback((loaded: LoadedDocument) => {
+    documentVersionRef.current += 1;
+    queuedSaveRef.current = null;
     selectedRef.current = loaded.path;
     originRef.current = loaded.origin;
     archiveIdRef.current = loaded.archiveId;
@@ -240,13 +294,14 @@ export default function App() {
     setSourceExists(loaded.sourceExists);
     setContent(loaded.content);
     setSavedContent(loaded.content);
+    setSaveStatus("saved");
     setRenderedHtml(loaded.html);
     if (isCompactLayout()) setSidebarOpen(false);
   }, []);
 
   const openDocument = useCallback(async (path: string, force = false) => {
     if (!force && path === selectedRef.current) return;
-    await persistCurrent(true);
+    if (!await persistCurrent(true)) return;
     setBusy(true);
     try {
       const loaded = await api.readDocument(path);
@@ -261,7 +316,7 @@ export default function App() {
   }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   const openExternalDocument = useCallback(async (path: string) => {
-    await persistCurrent(true);
+    if (!await persistCurrent(true)) return;
     setBusy(true);
     try {
       const loaded = await api.openExternalDocument(path);
@@ -277,7 +332,7 @@ export default function App() {
   }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   const openArchivedDocument = useCallback(async (entry: ArchiveEntry) => {
-    await persistCurrent(true);
+    if (!await persistCurrent(true)) return;
     setBusy(true);
     try {
       const loaded = await api.openArchivedDocument(entry.id);
@@ -465,7 +520,7 @@ export default function App() {
         }
         setNotice(`已创建 ${name}`);
       } else if (entryDialog.source) {
-        await persistCurrent(true);
+        if (!await persistCurrent(true)) return;
         await api.rename(entryDialog.source.path, target);
         const selectedWasInside = selectedRef.current === entryDialog.source.path || selectedRef.current.startsWith(`${entryDialog.source.path}/`);
         const nextPath = selectedWasInside ? `${target}${selectedRef.current.slice(entryDialog.source.path.length)}` : selectedRef.current;
@@ -490,6 +545,8 @@ export default function App() {
       await api.remove(deleteEntry.path);
       const selectedRemoved = selectedRef.current === deleteEntry.path || selectedRef.current.startsWith(`${deleteEntry.path}/`);
       if (selectedRemoved) {
+        documentVersionRef.current += 1;
+        queuedSaveRef.current = null;
         selectedRef.current = "";
         archiveIdRef.current = "";
         setSelectedPath("");
@@ -498,6 +555,7 @@ export default function App() {
         setSourcePath("");
         setContent("");
         setSavedContent("");
+        setSaveStatus("idle");
         setRenderedHtml("");
       }
       const target = await refresh();
@@ -532,7 +590,7 @@ export default function App() {
 
   const exportCurrent = async (format: ExportFormat) => {
     if (!api.isTauri() || !selectedPath) return;
-    await persistCurrent(true);
+    if (!await persistCurrent(true)) return;
     const extension = exportExtension(format);
     const name = nativeFileName(selectedPath).replace(/\.(md|markdown)$/i, "");
     const suffix = format === "pdf-long" ? "-长页" : format === "pdf-pages" ? "-标准分页" : "";
@@ -543,6 +601,7 @@ export default function App() {
     });
     if (!target) return;
     setExporting(true);
+    setExportProgress({ progress: 0.02, message: "正在准备导出…" });
     try {
       if (format === "markdown") {
         if (documentOrigin === "archive") {
@@ -550,8 +609,34 @@ export default function App() {
         } else {
           await api.exportFile(selectedPath, target);
         }
+      } else if (format === "pdf-long" || format === "pdf-pages") {
+        const styles = getComputedStyle(document.documentElement);
+        const color = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
+        const job = startPdfExport({
+          source: contentRef.current,
+          title: name,
+          mode: format === "pdf-long" ? "long" : "pages",
+          fontFamily: settings.fontFamily,
+          palette: {
+            text: color("--text", "#1d2922"),
+            secondary: color("--text-secondary", "#627068"),
+            accent: color("--accent-strong", "#297a4a"),
+            accentSoft: color("--accent-soft", "#e8f3ec"),
+            border: color("--border", "#d8e2dc"),
+            surface: color("--surface", "#ffffff"),
+            codeSurface: color("--surface-muted", "#f3f7f4"),
+          },
+          onProgress: setExportProgress,
+        });
+        cancelExportRef.current = job.cancel;
+        const bytes = await job.promise;
+        cancelExportRef.current = null;
+        setExportProgress({ progress: 0.98, message: "正在安全写入目标文件…" });
+        await api.writeExport(target, bytes);
       } else {
         const html = await api.render(contentRef.current);
+        setExportProgress({ progress: 0.16, message: "正在构建导出页面…" });
+        await nextFrame();
         const surface = document.createElement("article");
         surface.className = "markdown-body export-document";
         surface.innerHTML = html;
@@ -565,37 +650,54 @@ export default function App() {
         try {
           const result = await enhanceDocument(surface, settings, documentDirectory, { eager: true });
           cleanup = result.cleanup;
+          setExportProgress({ progress: 0.42, message: "正在载入图片、公式和图表…" });
           await inlineExportImages(surface);
           await document.fonts?.ready;
+          await nextFrame();
           let bytes: Uint8Array;
           if (format === "html") {
             bytes = new TextEncoder().encode(buildStandaloneHtml(surface, name));
           } else {
-            const canvas = await renderExportCanvas(surface);
-            bytes = format === "png"
-              ? canvasToPngBytes(canvas)
-              : format === "pdf-long"
-                ? await canvasToLongPdfBytes(canvas)
-                : await canvasToPagedPdfBytes(canvas);
+            setExportProgress({ progress: 0.46, message: "正在启动高清 PNG 后台编码…" });
+            const job = startPngExport(surface, setExportProgress);
+            cancelExportRef.current = job.cancel;
+            bytes = await job.promise;
+            cancelExportRef.current = null;
           }
+          setExportProgress({ progress: 0.95, message: "正在安全写入目标文件…" });
           await api.writeExport(target, bytes);
         } finally {
           cleanup();
           surface.remove();
         }
       }
+      setExportProgress({ progress: 1, message: "导出完成" });
       setExportOpen(false);
       setNotice(`已导出到 ${target}`);
     } catch (error) {
-      setNotice(`导出失败：${String(error)}`);
+      setNotice(String(error).includes("导出已取消")
+        ? "已取消导出，未写入不完整文件"
+        : `导出失败：${String(error)}`);
     } finally {
+      cancelExportRef.current = null;
       setExporting(false);
+      setExportProgress(null);
     }
   };
 
+  const cancelExport = () => {
+    if (!exporting) {
+      setExportOpen(false);
+      return;
+    }
+    cancelExportRef.current?.();
+  };
+
   const changeWorkspace = async (path: string) => {
-    await persistCurrent(true);
+    if (!await persistCurrent(true)) return;
     const payload = await api.setWorkspace(path);
+    documentVersionRef.current += 1;
+    queuedSaveRef.current = null;
     selectedRef.current = "";
     archiveIdRef.current = "";
     originRef.current = "workspace";
@@ -611,6 +713,7 @@ export default function App() {
     setSourceExists(true);
     setContent("");
     setSavedContent("");
+    setSaveStatus("idle");
     setRenderedHtml("");
     setExpanded(new Set(payload.entries.filter((entry) => entry.kind === "directory" && entry.depth < 2).map((entry) => entry.path)));
     const first = payload.entries.find((entry) => entry.kind === "file");
@@ -653,6 +756,22 @@ export default function App() {
       setNotice(`已移除 ${entry.name} 的历史记录和保留副本`);
     } catch (error) {
       setNotice(`移除历史失败：${String(error)}`);
+    }
+  };
+
+  const saveHistoryToWorkspace = async (entry: ArchiveEntry) => {
+    if (!await persistCurrent(true)) return;
+    setBusy(true);
+    try {
+      const path = await api.saveArchivedToWorkspace(entry.id);
+      await refresh(path);
+      setSidebarView("workspace");
+      await openDocument(path, true);
+      setNotice(`已保存到我的文档库 · ${path}`);
+    } catch (error) {
+      setNotice(`保存到文档库失败：${String(error)}`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -757,6 +876,7 @@ export default function App() {
               emptyDetail={query ? "换一个关键词试试" : sidebarView === "favorites" ? "打开文档后点击星标收藏" : "从资源管理器或文档库打开 Markdown"}
               onOpen={(entry) => void openArchivedDocument(entry)}
               onFavorite={(entry, favorite) => void toggleFavorite(entry, favorite)}
+              onSaveToWorkspace={(entry) => void saveHistoryToWorkspace(entry)}
               onRemove={(entry) => void removeHistoryEntry(entry)}
             />
           )}
@@ -778,7 +898,13 @@ export default function App() {
               )) : <span>未选择文档</span>}
             </div>
             {selectedPath && !sourceExists && <span className="retained-badge">保留副本</span>}
-            {dirty ? <span className="save-state saving"><span /> 保存中</span> : selectedPath ? <span className="save-state"><Check size={12} /> 已保存</span> : null}
+            {saveStatus === "error"
+              ? <span className="save-state error"><CircleAlert size={12} /> 保存失败</span>
+              : dirty
+                ? <span className="save-state saving"><span /> 保存中</span>
+                : selectedPath
+                  ? <span className="save-state"><Check size={12} /> 已保存</span>
+                  : null}
           </div>
 
           <div className="document-actions">
@@ -914,7 +1040,8 @@ export default function App() {
       {exportOpen && (
         <ExportDialog
           busy={exporting}
-          onCancel={() => !exporting && setExportOpen(false)}
+          progress={exportProgress}
+          onCancel={cancelExport}
           onExport={(format) => void exportCurrent(format)}
         />
       )}
@@ -957,8 +1084,9 @@ function TitleBar() {
   );
 }
 
-function ExportDialog({ busy, onCancel, onExport }: {
+function ExportDialog({ busy, progress, onCancel, onExport }: {
   busy: boolean;
+  progress: ExportProgress | null;
   onCancel: () => void;
   onExport: (format: ExportFormat) => void;
 }) {
@@ -967,13 +1095,13 @@ function ExportDialog({ busy, onCancel, onExport }: {
     { value: "markdown", title: "Markdown 原文", detail: "保留可继续编辑的 .md 文件" },
     { value: "html", title: "HTML 网页", detail: "带当前主题、公式与图表的独立页面" },
     { value: "png", title: "PNG 长图", detail: "整篇正文导出为高清图片" },
-    { value: "pdf-long", title: "PDF · 一页长页", detail: "连续阅读，不在段落中间分页" },
+    { value: "pdf-long", title: "PDF · 连续长页", detail: "保持字号与矢量清晰度，超长内容自动分段" },
     { value: "pdf-pages", title: "PDF · A4 标准分页", detail: "适合打印与文档归档" },
   ];
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
       <section className="export-dialog" role="dialog" aria-modal="true" aria-label="导出文档">
-        <header><div><small>EXPORT</small><h2>导出文档</h2></div><button className="icon-button" type="button" onClick={onCancel} disabled={busy}><X size={17} /></button></header>
+        <header><div><small>EXPORT</small><h2>导出文档</h2></div><button className="icon-button" type="button" onClick={onCancel}><X size={17} /></button></header>
         <div className="export-options">
           {options.map((option) => (
             <button key={option.value} type="button" className={format === option.value ? "active" : ""} onClick={() => setFormat(option.value)} disabled={busy}>
@@ -982,7 +1110,17 @@ function ExportDialog({ busy, onCancel, onExport }: {
             </button>
           ))}
         </div>
-        <footer><button className="secondary-button" type="button" onClick={onCancel} disabled={busy}>取消</button><button className="primary-button" type="button" onClick={() => onExport(format)} disabled={busy}>{busy ? "正在生成…" : `导出 ${exportLabel(format)}`}</button></footer>
+        {busy && progress && (
+          <div className="export-progress" role="status" aria-live="polite">
+            <div><span>{progress.message}</span><strong>{Math.round(progress.progress * 100)}%</strong></div>
+            <progress max={1} value={progress.progress} />
+            <small>导出在后台进行，可以继续查看当前进度或随时取消。</small>
+          </div>
+        )}
+        <footer>
+          <button className="secondary-button" type="button" onClick={onCancel}>{busy ? "取消导出" : "取消"}</button>
+          <button className="primary-button" type="button" onClick={() => onExport(format)} disabled={busy}>{busy ? "后台生成中…" : `导出 ${exportLabel(format)}`}</button>
+        </footer>
       </section>
     </div>
   );
@@ -1119,6 +1257,10 @@ function nativeParentPath(path: string) {
 function displayPathParts(path: string) {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.length > 4 ? ["…", ...parts.slice(-3)] : parts;
+}
+
+function nextFrame() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function joinNativePath(root: string, relative: string) {
