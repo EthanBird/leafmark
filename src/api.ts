@@ -86,6 +86,7 @@ export const api = {
       settings: browserSettings,
       entries: [{ path: "欢迎.md", name: "欢迎.md", kind: "file", depth: 0, size: sample.length, modifiedMs: Date.now() }],
       library: [],
+      initialDocument: null,
       pendingOpenPaths: [],
       associationStatus: {
         supported: false,
@@ -149,6 +150,12 @@ export const api = {
   },
   async exportArchivedDocument(id: string, target: string): Promise<void> {
     if (isTauri()) await invoke("export_archived_document", { id, targetPath: target });
+  },
+  async revealWorkspaceEntry(path: string): Promise<void> {
+    if (isTauri()) await invoke("reveal_workspace_entry", { relativePath: path });
+  },
+  async revealArchivedDocument(id: string): Promise<void> {
+    if (isTauri()) await invoke("reveal_archived_document", { id });
   },
   async getAssociationStatus(): Promise<AssociationStatus> {
     if (isTauri()) return invoke("get_markdown_association_status");
@@ -226,6 +233,7 @@ export const api = {
       settings: { ...browserSettings, workspacePath: path },
       entries: [],
       library: [],
+      initialDocument: null,
       pendingOpenPaths: [],
       associationStatus: await this.getAssociationStatus(),
     };

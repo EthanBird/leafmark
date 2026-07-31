@@ -71,6 +71,7 @@ export interface BootstrapPayload {
   settings: AppSettings;
   entries: DocumentEntry[];
   library: ArchiveEntry[];
+  initialDocument: LoadedDocument | null;
   pendingOpenPaths: string[];
   associationStatus: AssociationStatus;
 }

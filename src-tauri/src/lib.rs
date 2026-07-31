@@ -20,6 +20,7 @@ use system_integration::{
     association_status, configure_markdown_association, markdown_paths_from_args, AssociationStatus,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 #[cfg(target_os = "android")]
 use tauri_plugin_fs::FsExt;
 
@@ -155,6 +156,7 @@ struct BootstrapPayload {
     settings: AppSettings,
     entries: Vec<DocumentEntry>,
     library: Vec<ArchiveEntry>,
+    initial_document: Option<LoadedDocument>,
     pending_open_paths: Vec<String>,
     association_status: AssociationStatus,
 }
@@ -235,12 +237,21 @@ struct AppState(Mutex<InnerState>);
 fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapPayload, String> {
     let mut inner = state.0.lock();
     let workspace = inner.workspace.clone();
+    let mut pending_open_paths = std::mem::take(&mut inner.pending_open_paths);
+    let initial_path = pending_open_paths.last().cloned();
+    let initial_document = initial_path
+        .as_deref()
+        .and_then(|path| load_external_document(path, &mut inner).ok());
+    if initial_document.is_some() {
+        pending_open_paths.clear();
+    }
     let library = inner.library.entries()?;
     Ok(BootstrapPayload {
         settings: inner.settings.clone(),
         entries: scan_entries(&workspace)?,
         library,
-        pending_open_paths: std::mem::take(&mut inner.pending_open_paths),
+        initial_document,
+        pending_open_paths,
         association_status: association_status(),
     })
 }
@@ -317,12 +328,16 @@ fn open_external_document(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<LoadedDocument, String> {
+    let mut inner = state.0.lock();
+    load_external_document(&path, &mut inner)
+}
+
+fn load_external_document(path: &str, inner: &mut InnerState) -> Result<LoadedDocument, String> {
     let requested = PathBuf::from(path);
     if !requested.is_absolute() {
         return Err("外部文档必须使用绝对路径".into());
     }
     ensure_markdown_extension(&requested)?;
-    let mut inner = state.0.lock();
     let archived = inner.library.open_source(&requested)?;
     Ok(loaded_from_archive(archived))
 }
@@ -432,6 +447,37 @@ fn export_archived_document(
 ) -> Result<(), String> {
     let archived = state.0.lock().library.open(&id)?;
     write_export_target(&app, &target_path, archived.content.as_bytes())
+}
+
+#[tauri::command]
+fn reveal_workspace_entry(
+    relative_path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let inner = state.0.lock();
+    let target = if relative_path.trim().is_empty() {
+        inner.workspace.clone()
+    } else {
+        let relative = validate_relative(&relative_path)?;
+        secure_existing_path(&inner.workspace, &relative)?
+    };
+    drop(inner);
+    app.opener()
+        .reveal_item_in_dir(target)
+        .map_err(error_string)
+}
+
+#[tauri::command]
+fn reveal_archived_document(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let target = state.0.lock().library.reveal_path(&id)?;
+    app.opener()
+        .reveal_item_in_dir(target)
+        .map_err(error_string)
 }
 
 #[tauri::command]
@@ -704,6 +750,7 @@ fn set_workspace(path: String, state: State<'_, AppState>) -> Result<BootstrapPa
         settings: inner.settings.clone(),
         entries: scan_entries(&workspace)?,
         library,
+        initial_document: None,
         pending_open_paths: Vec::new(),
         association_status: association_status(),
     })
@@ -1446,6 +1493,8 @@ pub fn run() {
             remove_archive_entry,
             clear_document_history,
             export_archived_document,
+            reveal_workspace_entry,
+            reveal_archived_document,
             get_markdown_association_status,
             request_default_markdown_association,
             list_system_fonts,

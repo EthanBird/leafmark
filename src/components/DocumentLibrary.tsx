@@ -1,4 +1,5 @@
 import { FileDown, FileQuestion, Star, Trash2 } from "lucide-react";
+import type { MouseEvent } from "react";
 import type { ArchiveEntry } from "../types";
 
 interface DocumentLibraryProps {
@@ -10,6 +11,7 @@ interface DocumentLibraryProps {
   onFavorite: (entry: ArchiveEntry, favorite: boolean) => void;
   onSaveToWorkspace: (entry: ArchiveEntry) => void;
   onRemove: (entry: ArchiveEntry) => void;
+  onMenu: (event: MouseEvent, entry: ArchiveEntry) => void;
 }
 
 export function DocumentLibrary({
@@ -21,6 +23,7 @@ export function DocumentLibrary({
   onFavorite,
   onSaveToWorkspace,
   onRemove,
+  onMenu,
 }: DocumentLibraryProps) {
   if (!entries.length) {
     return (
@@ -39,6 +42,7 @@ export function DocumentLibrary({
           className={`archive-row${selectedId === entry.id ? " selected" : ""}`}
           key={entry.id}
           role="listitem"
+          onContextMenu={(event) => onMenu(event, entry)}
         >
           <button className="archive-open" type="button" onClick={() => onOpen(entry)}>
             <span className="archive-title">

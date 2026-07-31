@@ -21,6 +21,97 @@ export function matchLiveBlockShortcut(value: string): LiveBlockShortcut | null 
   return null;
 }
 
+export type LiveInlineShortcut = {
+  kind: "bold" | "italic" | "strike" | "code" | "link";
+  text: string;
+  href?: string;
+  start: number;
+  end: number;
+  contentStart: number;
+  contentEnd: number;
+};
+
+function isEscaped(value: string, index: number) {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) slashes += 1;
+  return slashes % 2 === 1;
+}
+
+function inlineCandidate(
+  kind: LiveInlineShortcut["kind"],
+  match: RegExpExecArray,
+  markerStart: number,
+  markerEnd: number,
+  contentStart: number,
+  contentEnd: number,
+  text: string,
+  href?: string,
+): LiveInlineShortcut | null {
+  if (!text.trim() || isEscaped(match.input, markerStart)) return null;
+  return {
+    kind,
+    text,
+    href,
+    start: markerStart,
+    end: markerEnd,
+    contentStart,
+    contentEnd,
+  };
+}
+
+export function matchLiveInlineShortcut(value: string, caret: number): LiveInlineShortcut | null {
+  const text = cleanText(value);
+  const candidates: LiveInlineShortcut[] = [];
+  const patterns: Array<{
+    kind: LiveInlineShortcut["kind"];
+    regex: RegExp;
+    opening: number;
+    closing: number;
+    textGroup: number;
+    hrefGroup?: number;
+    prefixGroup?: number;
+  }> = [
+    { kind: "link", regex: /(^|[^!])\[([^\]\n]+)\]\(([^)\n]+)\)/g, opening: 1, closing: 1, textGroup: 2, hrefGroup: 3, prefixGroup: 1 },
+    { kind: "code", regex: /`([^`\n]+)`/g, opening: 1, closing: 1, textGroup: 1 },
+    { kind: "bold", regex: /\*\*(?=\S)(.+?\S)\*\*/g, opening: 2, closing: 2, textGroup: 1 },
+    { kind: "bold", regex: /__(?=\S)(.+?\S)__/g, opening: 2, closing: 2, textGroup: 1 },
+    { kind: "strike", regex: /~~(?=\S)(.+?\S)~~/g, opening: 2, closing: 2, textGroup: 1 },
+    { kind: "italic", regex: /(^|[^*])\*(?!\*)(?=\S)([^*\n]*?\S)\*(?!\*)/g, opening: 1, closing: 1, textGroup: 2, prefixGroup: 1 },
+    { kind: "italic", regex: /(^|[^\w])_(?=\S)([^_\n]*?\S)_(?!\w)/g, opening: 1, closing: 1, textGroup: 2, prefixGroup: 1 },
+  ];
+
+  for (const pattern of patterns) {
+    pattern.regex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.regex.exec(text))) {
+      const prefixLength = pattern.prefixGroup ? match[pattern.prefixGroup].length : 0;
+      const start = match.index + prefixLength;
+      const end = match.index + match[0].length;
+      if (caret < start || caret > end) continue;
+      const contentStart = start + pattern.opening;
+      const contentEnd = pattern.kind === "link"
+        ? contentStart + match[pattern.textGroup].length
+        : end - pattern.closing;
+      const candidate = inlineCandidate(
+        pattern.kind,
+        match,
+        start,
+        end,
+        contentStart,
+        contentEnd,
+        match[pattern.textGroup],
+        pattern.hrefGroup ? match[pattern.hrefGroup].trim() : undefined,
+      );
+      if (candidate) candidates.push(candidate);
+    }
+  }
+
+  return candidates.sort((left, right) => {
+    const span = (left.end - left.start) - (right.end - right.start);
+    return span || right.start - left.start;
+  })[0] ?? null;
+}
+
 function placeCaret(element: HTMLElement) {
   const selection = window.getSelection();
   if (!selection) return;
@@ -69,6 +160,73 @@ export function applyLiveMarkdownShortcut(root: HTMLElement) {
   if (!caretTarget.textContent) caretTarget.append(document.createElement("br"));
   block.replaceWith(replacement);
   placeCaret(caretTarget);
+  return true;
+}
+
+function activeTextPosition(root: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection?.isCollapsed || !selection.anchorNode || !root.contains(selection.anchorNode)) return null;
+  const anchor = selection.anchorNode;
+  if (anchor.nodeType === Node.TEXT_NODE) {
+    return { node: anchor as Text, offset: selection.anchorOffset };
+  }
+  if (!(anchor instanceof Element)) return null;
+  const before = anchor.childNodes[selection.anchorOffset - 1];
+  if (before?.nodeType === Node.TEXT_NODE) {
+    return { node: before as Text, offset: before.textContent?.length ?? 0 };
+  }
+  const after = anchor.childNodes[selection.anchorOffset];
+  if (after?.nodeType === Node.TEXT_NODE) return { node: after as Text, offset: 0 };
+  return null;
+}
+
+export function applyLiveInlineMarkdownShortcut(root: HTMLElement) {
+  const position = activeTextPosition(root);
+  if (!position) return false;
+  const parent = position.node.parentElement;
+  if (!parent || parent.closest('strong, b, em, i, del, s, code, a, [contenteditable="false"], .math-source')) {
+    return false;
+  }
+  const value = position.node.textContent ?? "";
+  const shortcut = matchLiveInlineShortcut(value, position.offset);
+  if (!shortcut) return false;
+
+  const element = document.createElement(
+    shortcut.kind === "bold"
+      ? "strong"
+      : shortcut.kind === "italic"
+        ? "em"
+        : shortcut.kind === "strike"
+          ? "del"
+          : shortcut.kind === "code"
+            ? "code"
+            : "a",
+  );
+  if (shortcut.kind === "link") element.setAttribute("href", shortcut.href ?? "");
+  const contentNode = document.createTextNode(shortcut.text);
+  element.append(contentNode);
+
+  const before = value.slice(0, shortcut.start);
+  const after = value.slice(shortcut.end);
+  const fragment = document.createDocumentFragment();
+  if (before) fragment.append(document.createTextNode(before));
+  fragment.append(element);
+  if (after) fragment.append(document.createTextNode(after));
+  position.node.replaceWith(fragment);
+
+  const selection = window.getSelection();
+  if (!selection) return true;
+  const range = document.createRange();
+  if (position.offset <= shortcut.contentStart) {
+    range.setStart(contentNode, 0);
+  } else if (position.offset < shortcut.contentEnd) {
+    range.setStart(contentNode, Math.min(shortcut.text.length, position.offset - shortcut.contentStart));
+  } else {
+    range.setStartAfter(element);
+  }
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
   return true;
 }
 

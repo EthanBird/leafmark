@@ -270,6 +270,24 @@ impl DocumentArchive {
         self.entries()
     }
 
+    pub(crate) fn reveal_path(&self, id: &str) -> Result<PathBuf, String> {
+        let entry = self
+            .index
+            .documents
+            .iter()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| "历史记录不存在".to_string())?;
+        let source = PathBuf::from(&entry.source_path);
+        if source.is_file() {
+            return Ok(source);
+        }
+        let snapshot = self.snapshot_path(id);
+        if snapshot.is_file() {
+            return Ok(snapshot);
+        }
+        Err("源文档和 LeafMark 保留副本都不存在".into())
+    }
+
     pub(crate) fn rename_sources(
         &mut self,
         previous_root: &Path,
@@ -481,6 +499,30 @@ mod tests {
             .join("documents")
             .join(format!("{}.md", favorite_entry.id))
             .is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reveal_path_falls_back_to_the_retained_snapshot() {
+        let root = test_root("reveal-retained");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("wechat.md");
+        fs::write(&source, "# from WeChat").unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+        let opened = archive.open_source(&source).unwrap();
+
+        assert_eq!(
+            archive.reveal_path(&opened.entry.id).unwrap(),
+            source.canonicalize().unwrap()
+        );
+        fs::remove_file(&source).unwrap();
+        let retained = archive.reveal_path(&opened.entry.id).unwrap();
+        assert!(retained.is_file());
+        assert_eq!(
+            retained.file_name().unwrap().to_string_lossy(),
+            format!("{}.md", opened.entry.id)
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

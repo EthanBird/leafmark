@@ -10,6 +10,7 @@ import {
   FileCode2,
   FilePlus2,
   Files,
+  FolderOpen,
   FolderPlus,
   Italic,
   LayoutPanelLeft,
@@ -62,7 +63,12 @@ import type {
   TreeNode,
   ViewMode,
 } from "./types";
-import { applyLiveMarkdownShortcut, htmlToMarkdown, runFormat } from "./wysiwyg";
+import {
+  applyLiveInlineMarkdownShortcut,
+  applyLiveMarkdownShortcut,
+  htmlToMarkdown,
+  runFormat,
+} from "./wysiwyg";
 
 interface EntryDialogState {
   action: "create" | "rename";
@@ -72,12 +78,21 @@ interface EntryDialogState {
   value: string;
 }
 
-interface MenuState {
+interface WorkspaceMenuState {
+  kind: "workspace";
   x: number;
   y: number;
   entry: DocumentEntry | null;
 }
 
+interface ArchiveMenuState {
+  kind: "archive";
+  x: number;
+  y: number;
+  entry: ArchiveEntry;
+}
+
+type MenuState = WorkspaceMenuState | ArchiveMenuState;
 type SidebarView = "workspace" | "history" | "favorites";
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
@@ -128,6 +143,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState("正在启动…");
   const [busy, setBusy] = useState(true);
+  const [bootstrapped, setBootstrapped] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -361,6 +377,12 @@ export default function App() {
         settingsReady.current = true;
         setEntries(payload.entries);
         setExpanded(new Set(payload.entries.filter((entry) => entry.kind === "directory" && entry.depth < 2).map((entry) => entry.path)));
+        if (payload.initialDocument) {
+          applyLoadedDocument(payload.initialDocument);
+          setSidebarView("history");
+          setNotice(`已从系统打开 · 已保留副本 · ${formatBytes(payload.initialDocument.size)}`);
+          return;
+        }
         const external = payload.pendingOpenPaths.at(-1);
         if (external) {
           await openExternalDocument(external);
@@ -371,9 +393,13 @@ export default function App() {
         else setNotice("文档库为空");
       })
       .catch((error: unknown) => setNotice(`启动失败：${String(error)}`))
-      .finally(() => active && setBusy(false));
+      .finally(() => {
+        if (!active) return;
+        setBootstrapped(true);
+        setBusy(false);
+      });
     return () => { active = false; };
-  }, [openDocument, openExternalDocument]);
+  }, [applyLoadedDocument, openDocument, openExternalDocument]);
 
   useEffect(() => {
     if (!api.isTauri()) return;
@@ -476,7 +502,9 @@ export default function App() {
 
   const onLiveInput = () => {
     if (!liveEditorRef.current) return;
-    applyLiveMarkdownShortcut(liveEditorRef.current);
+    if (!applyLiveMarkdownShortcut(liveEditorRef.current)) {
+      applyLiveInlineMarkdownShortcut(liveEditorRef.current);
+    }
     setOutline(collectOutline(liveEditorRef.current));
     setContent(htmlToMarkdown(liveEditorRef.current));
   };
@@ -850,7 +878,33 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     setSelectedEntryPath(node.entry.path);
-    setMenu({ x: event.clientX, y: event.clientY, entry: node.entry });
+    setMenu({ kind: "workspace", x: event.clientX, y: event.clientY, entry: node.entry });
+  };
+
+  const handleArchiveMenu = (event: MouseEvent, entry: ArchiveEntry) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setMenu({ kind: "archive", x: event.clientX, y: event.clientY, entry });
+  };
+
+  const revealWorkspaceLocation = async (entry: DocumentEntry | null) => {
+    setMenu(null);
+    try {
+      await api.revealWorkspaceEntry(entry?.path ?? "");
+      setNotice(entry?.kind === "file" ? `已打开 ${entry.name} 所在目录` : "已在文件管理器中显示目录");
+    } catch (error) {
+      setNotice(`无法打开所在目录：${String(error)}`);
+    }
+  };
+
+  const revealArchiveLocation = async (entry: ArchiveEntry) => {
+    setMenu(null);
+    try {
+      await api.revealArchivedDocument(entry.id);
+      setNotice(entry.sourceExists ? `已打开 ${entry.name} 所在目录` : "源文档已删除，已打开 LeafMark 保留副本所在目录");
+    } catch (error) {
+      setNotice(`无法打开所在目录：${String(error)}`);
+    }
   };
 
   const documentDirectory = selectedPath
@@ -911,7 +965,7 @@ export default function App() {
             <div role="tree" aria-label="文档目录" onContextMenu={(event) => {
               if ((event.target as HTMLElement).closest(".tree-row")) return;
               event.preventDefault();
-              setMenu({ x: event.clientX, y: event.clientY, entry: null });
+              setMenu({ kind: "workspace", x: event.clientX, y: event.clientY, entry: null });
             }}>
               {visibleTree.length > 0
                 ? <FileTree nodes={visibleTree} selectedPath={selectedEntryPath} expanded={expanded} onOpen={(path) => void openDocument(path)} onToggle={toggleDirectory} onMenu={handleTreeMenu} />
@@ -927,6 +981,7 @@ export default function App() {
               onFavorite={(entry, favorite) => void toggleFavorite(entry, favorite)}
               onSaveToWorkspace={(entry) => void saveHistoryToWorkspace(entry)}
               onRemove={(entry) => void removeHistoryEntry(entry)}
+              onMenu={handleArchiveMenu}
             />
           )}
         </div>
@@ -989,7 +1044,9 @@ export default function App() {
         </header>
 
         <div className={`document-host mode-${mode}${settings.showStatusBar ? " with-status" : ""}`}>
-          {!selectedPath ? (
+          {!bootstrapped ? (
+            <StartupWorkspace />
+          ) : !selectedPath ? (
             <EmptyWorkspace onCreate={() => startCreate("file", "")} onImport={() => setImportOpen(true)} />
           ) : (
             <>
@@ -1057,11 +1114,24 @@ export default function App() {
       )}
 
       {menu && (
-        <div className="context-menu" style={{ left: Math.min(menu.x, window.innerWidth - 190), top: Math.min(menu.y, window.innerHeight - 180) }} onClick={(event) => event.stopPropagation()}>
-          {menu.entry?.kind === "file" && <button type="button" onClick={() => { void openDocument(menu.entry!.path); setMenu(null); }}><Eye size={14} /> 打开</button>}
-          <button type="button" onClick={() => startCreate("file", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FilePlus2 size={14} /> 新建文档</button>
-          <button type="button" onClick={() => startCreate("directory", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FolderPlus size={14} /> 新建文件夹</button>
-          {menu.entry && <><hr /><button type="button" onClick={() => startRename(menu.entry!)}><PencilLine size={14} /> 重命名</button><button className="danger" type="button" onClick={() => { setDeleteEntry(menu.entry); setMenu(null); }}><Trash2 size={14} /> 删除</button></>}
+        <div className="context-menu" style={{ left: Math.min(menu.x, window.innerWidth - 210), top: Math.min(menu.y, window.innerHeight - 220) }} onClick={(event) => event.stopPropagation()}>
+          {menu.kind === "workspace" ? (
+            <>
+              {menu.entry?.kind === "file" && <button type="button" onClick={() => { void openDocument(menu.entry!.path); setMenu(null); }}><Eye size={14} /> 打开</button>}
+              <button type="button" onClick={() => void revealWorkspaceLocation(menu.entry)}><FolderOpen size={14} /> {menu.entry?.kind === "file" ? "打开文档所在目录" : menu.entry ? "打开文件夹所在位置" : "打开文档库目录"}</button>
+              <button type="button" onClick={() => startCreate("file", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FilePlus2 size={14} /> 新建文档</button>
+              <button type="button" onClick={() => startCreate("directory", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FolderPlus size={14} /> 新建文件夹</button>
+              {menu.entry && <><hr /><button type="button" onClick={() => startRename(menu.entry!)}><PencilLine size={14} /> 重命名</button><button className="danger" type="button" onClick={() => { setDeleteEntry(menu.entry); setMenu(null); }}><Trash2 size={14} /> 删除</button></>}
+            </>
+          ) : (
+            <>
+              <button type="button" onClick={() => { void openArchivedDocument(menu.entry); setMenu(null); }}><Eye size={14} /> 打开</button>
+              <button type="button" onClick={() => void revealArchiveLocation(menu.entry)}><FolderOpen size={14} /> {menu.entry.sourceExists ? "打开文档所在目录" : "打开保留副本所在目录"}</button>
+              <button type="button" onClick={() => { void saveHistoryToWorkspace(menu.entry); setMenu(null); }}><FilePlus2 size={14} /> 保存到我的文档库</button>
+              <button type="button" onClick={() => { void toggleFavorite(menu.entry, !menu.entry.favorite); setMenu(null); }}><Star size={14} fill={menu.entry.favorite ? "currentColor" : "none"} /> {menu.entry.favorite ? "取消收藏" : "收藏并保留"}</button>
+              {!menu.entry.favorite && <><hr /><button className="danger" type="button" onClick={() => { void removeHistoryEntry(menu.entry); setMenu(null); }}><Trash2 size={14} /> 移除历史和保留副本</button></>}
+            </>
+          )}
         </div>
       )}
 
@@ -1267,6 +1337,15 @@ function EmptyWorkspace({ onCreate, onImport }: { onCreate: () => void; onImport
       <h1>从一篇 Markdown 开始</h1>
       <p>内容直接保存在本地目录。没有数据库、没有专有格式，也没有等待。</p>
       <div><button className="primary-button" type="button" onClick={onCreate}><FilePlus2 size={15} /> 新建文档</button><button className="secondary-button" type="button" onClick={onImport}><Upload size={15} /> 导入文档</button></div>
+    </div>
+  );
+}
+
+function StartupWorkspace() {
+  return (
+    <div className="startup-workspace" role="status" aria-live="polite">
+      <div className="startup-symbol"><BookOpen size={25} /></div>
+      <span>正在载入文档…</span>
     </div>
   );
 }
