@@ -11,6 +11,7 @@
     "prebuild": "npm run generate:katex-css",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
+    "pretest": "npm run generate:katex-css",
     "test": "vitest run",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
