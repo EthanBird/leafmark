@@ -1,6 +1,6 @@
 [package]
 name = "leafmark"
-version = "0.4.4"
+version = "0.4.5"
 description = "A fast, local-first Markdown workspace"
 authors = ["LeafMark contributors"]
 edition = "2021"

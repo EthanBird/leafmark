@@ -238,10 +238,13 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapPayload, String> {
     let mut inner = state.0.lock();
     let workspace = inner.workspace.clone();
     let mut pending_open_paths = std::mem::take(&mut inner.pending_open_paths);
-    let initial_path = pending_open_paths.last().cloned();
-    let initial_document = initial_path
-        .as_deref()
-        .and_then(|path| load_external_document(path, &mut inner).ok());
+    // Android may cold-start us with ACTION_SEND_MULTIPLE. Archive every shared
+    // document in order and present the last one, instead of silently dropping
+    // all but the final URI.
+    let initial_document = pending_open_paths
+        .iter()
+        .filter_map(|path| load_external_document(path, &mut inner).ok())
+        .last();
     if initial_document.is_some() {
         pending_open_paths.clear();
     }
@@ -1359,6 +1362,38 @@ fn local_path_from_opened_url(_app: &AppHandle, url: &tauri::Url) -> Result<Path
         let name = opened_url_filename(url);
         let destination = unique_destination(&incoming_dir, std::ffi::OsStr::new(&name));
         atomic_write(&destination, &bytes)?;
+        return destination.canonicalize().map_err(error_string);
+    }
+
+    #[cfg(target_os = "android")]
+    if url.scheme() == "data" {
+        let value = url
+            .as_str()
+            .strip_prefix("data:")
+            .and_then(|value| value.split_once(','))
+            .filter(|(metadata, _)| {
+                metadata
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.eq_ignore_ascii_case("text/plain"))
+                    && !metadata
+                        .split(';')
+                        .any(|part| part.eq_ignore_ascii_case("base64"))
+            })
+            .map(|(_, payload)| percent_encoding::percent_decode_str(payload).collect::<Vec<_>>())
+            .ok_or_else(|| "不支持的 Android 文本分享格式".to_string())?;
+        if value.len() > MAX_OPENED_DOCUMENT_BYTES {
+            return Err("分享的文本超过 32 MB，已拒绝导入".into());
+        }
+        let incoming_dir = _app
+            .path()
+            .app_data_dir()
+            .map_err(error_string)?
+            .join("opened-documents");
+        fs::create_dir_all(&incoming_dir).map_err(error_string)?;
+        let name = format!("分享的文本-{}.md", now_ms());
+        let destination = unique_destination(&incoming_dir, std::ffi::OsStr::new(&name));
+        atomic_write(&destination, &value)?;
         return destination.canonicalize().map_err(error_string);
     }
 

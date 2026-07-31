@@ -127,12 +127,14 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 文档库右键菜单新增“打开文档所在目录”，文件夹和文档库根目录也可直接定位
-            - 历史记录与收藏新增完整右键菜单：打开、定位、保存到文档库、收藏及移除
-            - 源文档已删除时，“打开所在目录”会自动定位 LeafMark 保留副本
-            - 微信或资源管理器冷启动文档随启动数据一次载入，不再先闪现新建文档页面
-            - 所见即所得新增 `**粗体**`、`*斜体*`、`~~删除线~~`、行内代码和链接即时渲染
-            - 行内渲染只替换当前标记范围并保持光标位置，保存时仍保留标准 Markdown
+            - 修复 Android 从微信、文件管理器、网盘“打开方式”接收 Markdown 失败的问题
+            - 完整支持 Android ACTION_VIEW、ACTION_EDIT、ACTION_SEND 与 ACTION_SEND_MULTIPLE，并兼容把 Markdown 标成 text/plain 的应用
+            - 其他应用直接分享纯文本时会自动建立一篇 Markdown 保留副本，不再提示不支持 data 地址
+            - 多文件分享会逐篇建立历史保留副本，热启动时串行打开，不再丢文档或互相抢占
+            - Android 返回键会依次关闭菜单、对话框、设置、侧栏和大纲；未保存内容会先完成保存
+            - 修复中文输入法组合输入时实时编辑可能打断候选文字的问题
+            - 手机布局改用动态视口并完善软键盘、安全区、滚动与触控菜单适配
+            - 移除误加的 Android TV Launcher 声明，继续仅发布手机 ARM64 优化 APK
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
             Android APK 是使用开发密钥签名的优化 release 构建；Windows 未签名构建可能触发 SmartScreen 提示。
@@ -258,10 +260,31 @@ jobs:
           fi
 
           size_bytes="$(stat -c '%s' "$apk")"
-          max_bytes="$((64 * 1024 * 1024))"
+          max_bytes="$((16 * 1024 * 1024))"
           if (( size_bytes > max_bytes )); then
             printf 'APK is still too large: %s bytes (limit %s)\n' \
               "$size_bytes" "$max_bytes"
+            exit 1
+          fi
+
+          manifest_dump="$(mktemp)"
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/apkanalyzer" \
+            manifest print "$apk" > "$manifest_dump"
+          for required in \
+            android.intent.action.VIEW \
+            android.intent.action.EDIT \
+            android.intent.action.SEND \
+            android.intent.action.SEND_MULTIPLE \
+            text/markdown \
+            text/plain; do
+            if ! grep -Fq "$required" "$manifest_dump"; then
+              printf 'Android manifest is missing required entry: %s\n' "$required"
+              cat "$manifest_dump"
+              exit 1
+            fi
+          done
+          if grep -Fq 'android.intent.category.LEANBACK_LAUNCHER' "$manifest_dump"; then
+            echo 'Phone build must not advertise an Android TV launcher.'
             exit 1
           fi
 

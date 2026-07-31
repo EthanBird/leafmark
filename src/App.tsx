@@ -95,6 +95,10 @@ interface ArchiveMenuState {
 type MenuState = WorkspaceMenuState | ArchiveMenuState;
 type SidebarView = "workspace" | "history" | "favorites";
 type SaveStatus = "idle" | "saving" | "saved" | "error";
+type AndroidBackWindow = Window & {
+  __LEAFMARK_ANDROID_BACK__?: () => boolean;
+  LeafMarkAndroid?: { setDarkMode: (dark: boolean) => void };
+};
 
 const isCompactLayout = () => window.matchMedia("(max-width: 620px)").matches;
 
@@ -172,6 +176,8 @@ export default function App() {
     promise: Promise<boolean>;
   } | null>(null);
   const cancelExportRef = useRef<(() => void) | null>(null);
+  const openIntentQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const android = api.isAndroid();
 
   const dirty = Boolean(selectedPath) && content !== savedContent;
   const files = useMemo(() => entries.filter((entry) => entry.kind === "file"), [entries]);
@@ -199,6 +205,12 @@ export default function App() {
     root.style.setProperty("--reader-font-family", readerFontStack(next.fontFamily));
     root.style.setProperty("--reader-font-size", `${next.fontSize}px`);
     root.style.setProperty("--reader-line-height", String(next.lineHeight));
+    root.style.colorScheme = resolved;
+    (window as AndroidBackWindow).LeafMarkAndroid?.setDarkMode(resolved === "dark");
+    const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (themeColor) {
+      themeColor.content = resolved === "dark" ? "#171b18" : "#f5f6f2";
+    }
   }, []);
 
   useEffect(() => {
@@ -406,7 +418,9 @@ export default function App() {
     const cleanups: Array<() => void> = [];
     void Promise.all([
       listen<string>("open-markdown", (event) => {
-        void openExternalDocument(event.payload);
+        openIntentQueueRef.current = openIntentQueueRef.current
+          .catch(() => undefined)
+          .then(() => openExternalDocument(event.payload));
       }),
       listen<string>("open-markdown-error", (event) => {
         setNotice(`无法接收 Android 文档：${event.payload}`);
@@ -481,6 +495,35 @@ export default function App() {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [persistCurrent]);
+
+  useEffect(() => {
+    if (!android) return;
+    const androidWindow = window as AndroidBackWindow;
+    const previous = androidWindow.__LEAFMARK_ANDROID_BACK__;
+    const closeAndroidLayer = () => {
+      if (menu) setMenu(null);
+      else if (deleteEntry) setDeleteEntry(null);
+      else if (entryDialog) setEntryDialog(null);
+      else if (exportOpen) {
+        if (exporting) cancelExportRef.current?.();
+        else setExportOpen(false);
+      } else if (importOpen) setImportOpen(false);
+      else if (settingsOpen) setSettingsOpen(false);
+      else if (outlineOpen) setOutlineOpen(false);
+      else if (sidebarOpen) setSidebarOpen(false);
+      else if (dirty) {
+        setNotice("正在保存当前文档，保存完成后可再次返回退出");
+        void persistCurrent(true);
+      } else return false;
+      return true;
+    };
+    androidWindow.__LEAFMARK_ANDROID_BACK__ = closeAndroidLayer;
+    return () => {
+      if (androidWindow.__LEAFMARK_ANDROID_BACK__ === closeAndroidLayer) {
+        androidWindow.__LEAFMARK_ANDROID_BACK__ = previous;
+      }
+    };
+  }, [android, deleteEntry, dirty, entryDialog, exportOpen, exporting, importOpen, menu, outlineOpen, persistCurrent, settingsOpen, sidebarOpen]);
 
   const switchMode = async (next: ViewMode) => {
     if (next === "live" && !settings.liveEditing) {
@@ -914,8 +957,8 @@ export default function App() {
     : settings.workspacePath;
 
   return (
-    <div className={`app-shell${sidebarOpen ? "" : " sidebar-closed"}${outlineOpen ? " outline-visible" : ""}${api.isAndroid() ? " platform-android" : ""}`} onClick={() => setMenu(null)}>
-      {!api.isAndroid() && <TitleBar />}
+    <div className={`app-shell${sidebarOpen ? "" : " sidebar-closed"}${outlineOpen ? " outline-visible" : ""}${android ? " platform-android" : ""}`} onClick={() => setMenu(null)}>
+      {!android && <TitleBar />}
       {busy && <div className="top-progress" />}
       <aside className="sidebar">
         <div className="sidebar-toolbar">
@@ -923,7 +966,7 @@ export default function App() {
           <div className="sidebar-actions">
             <button className="icon-button" type="button" onClick={() => startCreate("file")} title="新建文档"><FilePlus2 size={16} /></button>
             <button className="icon-button" type="button" onClick={() => startCreate("directory")} title="新建文件夹"><FolderPlus size={16} /></button>
-            <button className="icon-button" type="button" onClick={() => setImportOpen(true)} title="导入文件或文件夹"><Upload size={15} /></button>
+            <button className="icon-button" type="button" onClick={() => setImportOpen(true)} title={android ? "导入 Markdown 文件" : "导入文件或文件夹"}><Upload size={15} /></button>
             <button className="icon-button" type="button" onClick={() => setSidebarOpen(false)} title="收起目录"><PanelLeftClose size={16} /></button>
           </div>
         </div>
@@ -1114,11 +1157,11 @@ export default function App() {
       )}
 
       {menu && (
-        <div className="context-menu" style={{ left: Math.min(menu.x, window.innerWidth - 210), top: Math.min(menu.y, window.innerHeight - 220) }} onClick={(event) => event.stopPropagation()}>
+        <div className="context-menu" style={contextMenuPosition(menu.x, menu.y, android)} onClick={(event) => event.stopPropagation()}>
           {menu.kind === "workspace" ? (
             <>
               {menu.entry?.kind === "file" && <button type="button" onClick={() => { void openDocument(menu.entry!.path); setMenu(null); }}><Eye size={14} /> 打开</button>}
-              <button type="button" onClick={() => void revealWorkspaceLocation(menu.entry)}><FolderOpen size={14} /> {menu.entry?.kind === "file" ? "打开文档所在目录" : menu.entry ? "打开文件夹所在位置" : "打开文档库目录"}</button>
+              {!android && <button type="button" onClick={() => void revealWorkspaceLocation(menu.entry)}><FolderOpen size={14} /> {menu.entry?.kind === "file" ? "打开文档所在目录" : menu.entry ? "打开文件夹所在位置" : "打开文档库目录"}</button>}
               <button type="button" onClick={() => startCreate("file", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FilePlus2 size={14} /> 新建文档</button>
               <button type="button" onClick={() => startCreate("directory", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FolderPlus size={14} /> 新建文件夹</button>
               {menu.entry && <><hr /><button type="button" onClick={() => startRename(menu.entry!)}><PencilLine size={14} /> 重命名</button><button className="danger" type="button" onClick={() => { setDeleteEntry(menu.entry); setMenu(null); }}><Trash2 size={14} /> 删除</button></>}
@@ -1126,7 +1169,7 @@ export default function App() {
           ) : (
             <>
               <button type="button" onClick={() => { void openArchivedDocument(menu.entry); setMenu(null); }}><Eye size={14} /> 打开</button>
-              <button type="button" onClick={() => void revealArchiveLocation(menu.entry)}><FolderOpen size={14} /> {menu.entry.sourceExists ? "打开文档所在目录" : "打开保留副本所在目录"}</button>
+              {!android && <button type="button" onClick={() => void revealArchiveLocation(menu.entry)}><FolderOpen size={14} /> {menu.entry.sourceExists ? "打开文档所在目录" : "打开保留副本所在目录"}</button>}
               <button type="button" onClick={() => { void saveHistoryToWorkspace(menu.entry); setMenu(null); }}><FilePlus2 size={14} /> 保存到我的文档库</button>
               <button type="button" onClick={() => { void toggleFavorite(menu.entry, !menu.entry.favorite); setMenu(null); }}><Star size={14} fill={menu.entry.favorite ? "currentColor" : "none"} /> {menu.entry.favorite ? "取消收藏" : "收藏并保留"}</button>
               {!menu.entry.favorite && <><hr /><button className="danger" type="button" onClick={() => { void removeHistoryEntry(menu.entry); setMenu(null); }}><Trash2 size={14} /> 移除历史和保留副本</button></>}
@@ -1167,7 +1210,7 @@ export default function App() {
 
       {importOpen && (
         <ImportDialog
-          android={api.isAndroid()}
+          android={android}
           onCancel={() => setImportOpen(false)}
           onImport={(mode) => void importDocuments(mode)}
         />
@@ -1315,7 +1358,10 @@ function DocumentSurface({ html, live, settings, documentDirectory, editorRef, o
       contentEditable={live}
       suppressContentEditableWarning
       spellCheck={live}
-      onInput={live ? onInput : undefined}
+      onInput={live ? (event) => {
+        if (!(event.nativeEvent as InputEvent).isComposing) onInput();
+      } : undefined}
+      onCompositionEnd={live ? onInput : undefined}
       onClick={(event) => {
         const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>("a");
         if (!anchor) return;
@@ -1328,6 +1374,17 @@ function DocumentSurface({ html, live, settings, documentDirectory, editorRef, o
 
 function ModeButton({ active, title, onClick, children }: { active: boolean; title: string; onClick: () => void; children: React.ReactNode }) {
   return <button type="button" className={active ? "active" : ""} onClick={onClick} title={title}>{children}</button>;
+}
+
+function contextMenuPosition(x: number, y: number, android: boolean): React.CSSProperties {
+  const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+  const width = android ? Math.min(260, viewportWidth - 24) : 200;
+  const estimatedHeight = android ? 286 : 220;
+  return {
+    left: Math.max(12, Math.min(x, viewportWidth - width - 12)),
+    top: Math.max(12, Math.min(y, viewportHeight - estimatedHeight - 12)),
+  };
 }
 
 function EmptyWorkspace({ onCreate, onImport }: { onCreate: () => void; onImport: () => void }) {
