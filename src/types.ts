@@ -13,6 +13,12 @@ export interface DocumentEntry {
   modifiedMs: number;
 }
 
+export interface ImportDirectoryResult {
+  rootPath: string;
+  files: string[];
+  directories: number;
+}
+
 export interface LoadedDocument {
   path: string;
   origin: DocumentOrigin;

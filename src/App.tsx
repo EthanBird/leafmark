@@ -133,6 +133,7 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [entryDialog, setEntryDialog] = useState<EntryDialogState | null>(null);
@@ -489,6 +490,19 @@ export default function App() {
     });
   };
 
+  const revealEntry = (path: string, directory: boolean) => {
+    setSelectedEntryPath(path);
+    setExpanded((current) => {
+      const next = new Set(current);
+      let parent = directory ? path : parentPath(path);
+      while (parent) {
+        next.add(parent);
+        parent = parentPath(parent);
+      }
+      return next;
+    });
+  };
+
   const startCreate = (kind: EntryKind, parent = currentDirectory) => {
     setMenu(null);
     setEntryDialog({ action: "create", kind, parent, value: kind === "file" ? "新文档.md" : "新文件夹" });
@@ -513,10 +527,12 @@ export default function App() {
       if (entryDialog.action === "create") {
         await api.create(target, entryDialog.kind);
         const nextTarget = await refresh(entryDialog.kind === "file" ? target : undefined);
-        if (entryDialog.kind === "file") await openDocument(nextTarget || target, true);
+        if (entryDialog.kind === "file") {
+          revealEntry(target, false);
+          await openDocument(nextTarget || target, true);
+        }
         else {
-          setSelectedEntryPath(target);
-          setExpanded((current) => new Set(current).add(target));
+          revealEntry(target, true);
         }
         setNotice(`已创建 ${name}`);
       } else if (entryDialog.source) {
@@ -570,17 +586,50 @@ export default function App() {
     }
   };
 
-  const importDocuments = async () => {
+  const importDocuments = async (mode: "files" | "directory") => {
     if (!api.isTauri()) return;
-    const selected = await open({ multiple: true, filters: [{ name: "Markdown", extensions: ["md", "markdown"] }], title: "导入 Markdown 文档" });
+    setImportOpen(false);
+    const selected = mode === "directory"
+      ? await open({
+        directory: true,
+        multiple: false,
+        recursive: true,
+        title: "导入整个 Markdown 文件夹",
+      })
+      : await open({
+        multiple: true,
+        filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+        title: "导入 Markdown 文档",
+      });
     if (!selected) return;
     setBusy(true);
     try {
-      const imported = await api.importFiles(Array.isArray(selected) ? selected : [selected], currentDirectory);
-      const last = imported.at(-1);
-      await refresh(last);
-      if (last) await openDocument(last, true);
-      setNotice(`已导入 ${imported.length} 篇文档`);
+      if (mode === "directory") {
+        const path = Array.isArray(selected) ? selected[0] : selected;
+        if (!path) return;
+        const imported = await api.importDirectory(path, currentDirectory);
+        await refresh();
+        revealEntry(imported.rootPath, true);
+        const first = imported.files.at(0);
+        if (first) await openDocument(first, true);
+        setNotice(
+          imported.files.length
+            ? `已导入文件夹 · ${imported.files.length} 篇文档 · ${imported.directories} 个文件夹`
+            : `已导入空文件夹结构 · ${imported.directories} 个文件夹`,
+        );
+      } else {
+        const imported = await api.importFiles(
+          Array.isArray(selected) ? selected : [selected],
+          currentDirectory,
+        );
+        const last = imported.at(-1);
+        await refresh(last);
+        if (last) {
+          revealEntry(last, false);
+          await openDocument(last, true);
+        }
+        setNotice(`已导入 ${imported.length} 篇文档`);
+      }
     } catch (error) {
       setNotice(`导入失败：${String(error)}`);
     } finally {
@@ -820,7 +869,7 @@ export default function App() {
           <div className="sidebar-actions">
             <button className="icon-button" type="button" onClick={() => startCreate("file")} title="新建文档"><FilePlus2 size={16} /></button>
             <button className="icon-button" type="button" onClick={() => startCreate("directory")} title="新建文件夹"><FolderPlus size={16} /></button>
-            <button className="icon-button" type="button" onClick={() => void importDocuments()} title="导入"><Upload size={15} /></button>
+            <button className="icon-button" type="button" onClick={() => setImportOpen(true)} title="导入文件或文件夹"><Upload size={15} /></button>
             <button className="icon-button" type="button" onClick={() => setSidebarOpen(false)} title="收起目录"><PanelLeftClose size={16} /></button>
           </div>
         </div>
@@ -941,7 +990,7 @@ export default function App() {
 
         <div className={`document-host mode-${mode}${settings.showStatusBar ? " with-status" : ""}`}>
           {!selectedPath ? (
-            <EmptyWorkspace onCreate={() => startCreate("file", "")} onImport={() => void importDocuments()} />
+            <EmptyWorkspace onCreate={() => startCreate("file", "")} onImport={() => setImportOpen(true)} />
           ) : (
             <>
               {(mode === "source" || mode === "split") && (
@@ -1046,6 +1095,14 @@ export default function App() {
         />
       )}
 
+      {importOpen && (
+        <ImportDialog
+          android={api.isAndroid()}
+          onCancel={() => setImportOpen(false)}
+          onImport={(mode) => void importDocuments(mode)}
+        />
+      )}
+
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
@@ -1121,6 +1178,33 @@ function ExportDialog({ busy, progress, onCancel, onExport }: {
           <button className="secondary-button" type="button" onClick={onCancel}>{busy ? "取消导出" : "取消"}</button>
           <button className="primary-button" type="button" onClick={() => onExport(format)} disabled={busy}>{busy ? "后台生成中…" : `导出 ${exportLabel(format)}`}</button>
         </footer>
+      </section>
+    </div>
+  );
+}
+
+function ImportDialog({ android, onCancel, onImport }: {
+  android: boolean;
+  onCancel: () => void;
+  onImport: (mode: "files" | "directory") => void;
+}) {
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <section className="export-dialog import-dialog" role="dialog" aria-modal="true" aria-label="导入文档">
+        <header><div><small>IMPORT</small><h2>导入到文档库</h2></div><button className="icon-button" type="button" onClick={onCancel}><X size={17} /></button></header>
+        <div className="export-options import-options">
+          <button type="button" onClick={() => onImport("files")}>
+            <span className="import-option-icon"><Upload size={17} /></span>
+            <span><strong>导入 Markdown 文件</strong><small>可一次选择多篇 .md 或 .markdown 文档</small></span>
+          </button>
+          {!android && (
+            <button type="button" onClick={() => onImport("directory")}>
+              <span className="import-option-icon"><FolderPlus size={17} /></span>
+              <span><strong>导入整个文件夹</strong><small>递归保留目录结构与空文件夹，自动忽略非 Markdown 文件</small></span>
+            </button>
+          )}
+        </div>
+        <footer><button className="secondary-button" type="button" onClick={onCancel}>取消</button></footer>
       </section>
     </div>
   );

@@ -125,6 +125,14 @@ struct DocumentEntry {
     modified_ms: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportDirectoryResult {
+    root_path: String,
+    files: Vec<String>,
+    directories: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LoadedDocument {
@@ -619,6 +627,31 @@ fn import_files(
 }
 
 #[tauri::command]
+fn import_directory(
+    source_path: String,
+    target_directory: String,
+    state: State<'_, AppState>,
+) -> Result<ImportDirectoryResult, String> {
+    let directory = if target_directory.trim().is_empty() {
+        PathBuf::new()
+    } else {
+        validate_relative(&target_directory)?
+    };
+    let mut inner = state.0.lock();
+    let destination_root = secure_target_path(&inner.workspace, &directory)?;
+    fs::create_dir_all(&destination_root).map_err(error_string)?;
+    let result = copy_markdown_directory(
+        Path::new(&source_path),
+        &destination_root,
+        &inner.workspace,
+    )?;
+    for path in &result.files {
+        inner.cache.invalidate(path);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 fn export_file(
     relative_path: String,
     target_path: String,
@@ -837,10 +870,22 @@ fn scan_entries(root: &Path) -> Result<Vec<DocumentEntry>, String> {
     let mut directories = HashSet::new();
     for result in builder.build() {
         let entry = result.map_err(error_string)?;
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        let Some(kind) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if kind.is_dir() {
+            if entry.depth() > 0 {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|_| "扫描结果超出文档库".to_string())?;
+                directories.insert(relative.to_path_buf());
+            }
             continue;
         }
-        let path = entry.path();
+        if !kind.is_file() {
+            continue;
+        }
         if !is_markdown(path) {
             continue;
         }
@@ -903,6 +948,120 @@ fn scan_entries(root: &Path) -> Result<Vec<DocumentEntry>, String> {
             })
     });
     Ok(entries)
+}
+
+fn copy_markdown_directory(
+    source: &Path,
+    destination_parent: &Path,
+    workspace: &Path,
+) -> Result<ImportDirectoryResult, String> {
+    let source = source.canonicalize().map_err(error_string)?;
+    if !source.is_dir() {
+        return Err("请选择一个有效文件夹".into());
+    }
+    let workspace = workspace.canonicalize().map_err(error_string)?;
+    let destination_parent = destination_parent.canonicalize().map_err(error_string)?;
+    if !destination_parent.starts_with(&workspace) {
+        return Err("导入目标超出文档库".into());
+    }
+    let original_name = source
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| std::ffi::OsStr::new("导入文件夹"));
+    let destination = unique_directory_destination(&destination_parent, original_name);
+    if destination.starts_with(&source) {
+        return Err("不能把文件夹导入到它自身或其子目录".into());
+    }
+    let staging = destination_parent.join(format!(
+        ".leafmark-import-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    fs::create_dir(&staging).map_err(error_string)?;
+
+    let copied = (|| -> Result<(Vec<PathBuf>, usize), String> {
+        let mut builder = WalkBuilder::new(&source);
+        builder
+            .hidden(false)
+            .parents(false)
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .filter_entry(|entry| {
+                if entry.depth() == 0 {
+                    return true;
+                }
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                !matches!(
+                    name.as_str(),
+                    "node_modules" | "target" | "dist" | "build" | ".git" | ".svn" | ".hg"
+                )
+            });
+        let mut files = Vec::new();
+        let mut directories = 1;
+        for result in builder.build() {
+            let entry = result.map_err(error_string)?;
+            if entry.depth() == 0 {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&source)
+                .map_err(|_| "导入路径超出源文件夹".to_string())?;
+            let Some(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                fs::create_dir_all(staging.join(relative)).map_err(error_string)?;
+                directories += 1;
+                continue;
+            }
+            if !kind.is_file() || !is_markdown(entry.path()) {
+                continue;
+            }
+            let metadata = entry.metadata().map_err(error_string)?;
+            if metadata.len() > MAX_OPENED_DOCUMENT_BYTES as u64 {
+                return Err(format!(
+                    "Markdown 文档超过 32 MB：{}",
+                    entry.path().display()
+                ));
+            }
+            let bytes = fs::read(entry.path()).map_err(error_string)?;
+            let target = staging.join(relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(error_string)?;
+            }
+            atomic_write(&target, &bytes)?;
+            files.push(relative.to_path_buf());
+        }
+        Ok((files, directories))
+    })();
+
+    let (relative_files, directories) = match copied {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    if let Err(error) = fs::rename(&staging, &destination) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error_string(error));
+    }
+
+    let root_relative = destination
+        .strip_prefix(&workspace)
+        .map_err(|_| "导入目标超出文档库".to_string())?;
+    let files = relative_files
+        .into_iter()
+        .map(|relative| path_to_slash(&root_relative.join(relative)))
+        .collect();
+    Ok(ImportDirectoryResult {
+        root_path: path_to_slash(root_relative),
+        files,
+        directories,
+    })
 }
 
 fn validate_relative(value: &str) -> Result<PathBuf, String> {
@@ -1041,6 +1200,21 @@ fn unique_destination(directory: &Path, original: &std::ffi::OsStr) -> PathBuf {
         }
     }
     directory.join(format!("{stem}-{}.{}", now_ms(), extension))
+}
+
+fn unique_directory_destination(directory: &Path, original: &std::ffi::OsStr) -> PathBuf {
+    let direct = directory.join(original);
+    if !direct.exists() {
+        return direct;
+    }
+    let name = original.to_string_lossy();
+    for index in 1..10_000 {
+        let candidate = directory.join(format!("{name} ({index})"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    directory.join(format!("{name}-{}", now_ms()))
 }
 
 fn modified_ms(metadata: &fs::Metadata) -> u64 {
@@ -1281,6 +1455,7 @@ pub fn run() {
             rename_entry,
             delete_entry,
             import_files,
+            import_directory,
             export_file,
             write_export,
             set_workspace,
@@ -1387,5 +1562,72 @@ mod tests {
         assert!(!migrated.live_editing);
         assert_eq!(migrated.theme_palette, "leaf");
         assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn scan_entries_includes_empty_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "leafmark-empty-directory-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(root.join("空文件夹/子目录")).unwrap();
+        fs::write(root.join("文档.md"), "# 文档").unwrap();
+
+        let entries = scan_entries(&root).unwrap();
+
+        assert!(entries
+            .iter()
+            .any(|entry| entry.kind == "directory" && entry.path == "空文件夹"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.kind == "directory" && entry.path == "空文件夹/子目录"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_import_preserves_structure_and_ignores_other_files() {
+        let root = std::env::temp_dir().join(format!(
+            "leafmark-directory-import-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let source = root.join("source/课程笔记");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(source.join("第一章/空目录")).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(source.join("README.md"), "# 课程").unwrap();
+        fs::write(source.join("第一章/推导.markdown"), "$x^2$").unwrap();
+        fs::write(source.join("第一章/忽略.txt"), "not markdown").unwrap();
+
+        let result = copy_markdown_directory(&source, &workspace, &workspace).unwrap();
+
+        assert_eq!(result.root_path, "课程笔记");
+        assert_eq!(result.files.len(), 2);
+        assert!(workspace.join("课程笔记/README.md").is_file());
+        assert!(workspace.join("课程笔记/第一章/推导.markdown").is_file());
+        assert!(workspace.join("课程笔记/第一章/空目录").is_dir());
+        assert!(!workspace.join("课程笔记/第一章/忽略.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_import_uses_a_conflict_safe_root_name() {
+        let root = std::env::temp_dir().join(format!(
+            "leafmark-directory-conflict-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let source = root.join("source/notes");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(workspace.join("notes")).unwrap();
+        fs::write(source.join("one.md"), "one").unwrap();
+
+        let result = copy_markdown_directory(&source, &workspace, &workspace).unwrap();
+
+        assert_eq!(result.root_path, "notes (1)");
+        assert!(workspace.join("notes (1)/one.md").is_file());
+        let _ = fs::remove_dir_all(root);
     }
 }

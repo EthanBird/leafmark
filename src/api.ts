@@ -6,6 +6,7 @@ import type {
   BootstrapPayload,
   DocumentEntry,
   EntryKind,
+  ImportDirectoryResult,
   LoadedDocument,
 } from "./types";
 
@@ -202,6 +203,12 @@ export const api = {
   async importFiles(paths: string[], targetDirectory: string): Promise<string[]> {
     if (isTauri()) return invoke("import_files", { sourcePaths: paths, targetDirectory });
     return [];
+  },
+  async importDirectory(path: string, targetDirectory: string): Promise<ImportDirectoryResult> {
+    if (isTauri()) {
+      return invoke("import_directory", { sourcePath: path, targetDirectory });
+    }
+    return { rootPath: "", files: [], directories: 0 };
   },
   async exportFile(path: string, target: string): Promise<void> {
     if (isTauri()) await invoke("export_file", { relativePath: path, targetPath: target });

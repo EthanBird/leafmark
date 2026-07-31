@@ -708,6 +708,9 @@ button:disabled { opacity: .42; cursor: default !important; }
 .export-options > button.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
 .export-options strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 11px; }
 .export-options small { display: block; color: var(--text-tertiary); font-size: 9px; line-height: 1.5; }
+.import-dialog { width: min(480px, 100%); }
+.import-options > button { grid-template-columns: 36px minmax(0, 1fr); align-items: center; min-height: 78px; }
+.import-option-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-strong); }
 .export-radio { display: grid; place-items: center; width: 15px; height: 15px; margin-top: 1px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface-raised); }
 .active > .export-radio { border-color: var(--accent); }
 .export-radio > span { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
