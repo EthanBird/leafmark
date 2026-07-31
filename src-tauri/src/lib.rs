@@ -340,12 +340,7 @@ fn write_archived_document(
     state: State<'_, AppState>,
 ) -> Result<ArchiveEntry, String> {
     let mut inner = state.0.lock();
-    let entry = inner.library.write(&id, &content)?;
-    let source = PathBuf::from(&entry.source_path);
-    if let Ok(relative) = source.strip_prefix(&inner.workspace) {
-        inner.cache.invalidate(&path_to_slash(relative));
-    }
-    Ok(entry)
+    inner.library.write(&id, &content)
 }
 
 #[tauri::command]
@@ -357,11 +352,21 @@ fn save_archived_to_workspace(
     let archived = inner.library.open(&id)?;
     let source = PathBuf::from(&archived.entry.source_path);
     if let Ok(relative) = source.strip_prefix(&inner.workspace) {
-        if source.is_file() {
-            let normalized = path_to_slash(relative);
-            inner.cache.invalidate(&normalized);
-            return Ok(normalized);
+        if let Some(parent) = source.parent() {
+            fs::create_dir_all(parent).map_err(error_string)?;
         }
+        atomic_write(&source, archived.content.as_bytes())?;
+        let metadata = fs::metadata(&source).map_err(error_string)?;
+        inner.library.record(
+            &source,
+            &archived.content,
+            metadata.len(),
+            modified_ms(&metadata),
+            true,
+        )?;
+        let normalized = path_to_slash(relative);
+        inner.cache.invalidate(&normalized);
+        return Ok(normalized);
     }
 
     let destination = unique_destination(

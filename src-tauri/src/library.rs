@@ -178,16 +178,12 @@ impl DocumentArchive {
             .position(|entry| entry.id == id)
             .ok_or_else(|| "历史记录不存在".to_string())?;
         let source = PathBuf::from(&self.index.documents[position].source_path);
-        if source.is_file() {
-            return self.open_source(&source);
-        }
-
         let snapshot_path = self.snapshot_path(id);
         let bytes = fs::read(&snapshot_path)
-            .map_err(|error| format!("源文件已删除，且保留副本无法读取：{error}"))?;
+            .map_err(|error| format!("LeafMark 保留副本无法读取：{error}"))?;
         let content = super::decode_text(&bytes);
         let entry = &mut self.index.documents[position];
-        entry.source_exists = false;
+        entry.source_exists = source.is_file();
         entry.last_opened_ms = now_ms();
         entry.size = content.len() as u64;
         let result = entry.clone();
@@ -207,19 +203,11 @@ impl DocumentArchive {
             .ok_or_else(|| "历史记录不存在".to_string())?;
         let source = PathBuf::from(&self.index.documents[position].source_path);
         let source_exists = source.is_file();
-        let modified_ms = if source_exists {
-            atomic_write(&source, content.as_bytes())?;
-            fs::metadata(&source)
-                .ok()
-                .map_or_else(now_ms, |metadata| modified_ms(&metadata))
-        } else {
-            now_ms()
-        };
         atomic_write(&self.snapshot_path(id), content.as_bytes())?;
         let entry = &mut self.index.documents[position];
         entry.source_exists = source_exists;
         entry.size = content.len() as u64;
-        entry.modified_ms = modified_ms;
+        entry.modified_ms = now_ms();
         entry.last_opened_ms = now_ms();
         let result = entry.clone();
         self.persist()?;
@@ -419,6 +407,54 @@ mod tests {
 
         assert_eq!(retained.content, "# retained");
         assert!(!retained.entry.source_exists);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editing_retained_copy_never_mutates_external_source() {
+        let root = test_root("external-copy");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("wechat.md");
+        fs::write(&source, "# original from WeChat").unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+
+        let opened = archive.open_source(&source).unwrap();
+        archive
+            .write(&opened.entry.id, "# edited LeafMark copy")
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "# original from WeChat"
+        );
+        assert_eq!(
+            archive.open(&opened.entry.id).unwrap().content,
+            "# edited LeafMark copy"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_always_opens_retained_copy_even_when_source_changes() {
+        let root = test_root("history-copy");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("history.md");
+        fs::write(&source, "# imported").unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+
+        let opened = archive.open_source(&source).unwrap();
+        archive.write(&opened.entry.id, "# retained edit").unwrap();
+        fs::write(&source, "# changed by another app").unwrap();
+        let reopened = archive.open(&opened.entry.id).unwrap();
+
+        assert_eq!(reopened.content, "# retained edit");
+        assert!(reopened.entry.source_exists);
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "# changed by another app"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

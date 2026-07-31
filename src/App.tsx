@@ -1094,7 +1094,7 @@ function ExportDialog({ busy, progress, onCancel, onExport }: {
   const options: { value: ExportFormat; title: string; detail: string }[] = [
     { value: "markdown", title: "Markdown 原文", detail: "保留可继续编辑的 .md 文件" },
     { value: "html", title: "HTML 网页", detail: "带当前主题、公式与图表的独立页面" },
-    { value: "png", title: "PNG 长图", detail: "整篇正文导出为高清图片" },
+    { value: "png", title: "PNG 长图", detail: "单次排版，后台生成 2–2.5× 高清长图" },
     { value: "pdf-long", title: "PDF · 连续长页", detail: "保持字号与矢量清晰度，超长内容自动分段" },
     { value: "pdf-pages", title: "PDF · A4 标准分页", detail: "适合打印与文档归档" },
   ];

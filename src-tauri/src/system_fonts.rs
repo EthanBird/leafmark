@@ -41,47 +41,35 @@ pub(crate) fn export_font_payload(
     let database = load_database();
     let preferred = preferred_family.trim();
     let cjk_families = [
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "DengXian",
+        "SimHei",
+        "SimSun",
+        "NSimSun",
+        "FangSong",
+        "KaiTi",
         "Noto Serif CJK SC",
         "Source Han Serif SC",
         "Noto Sans CJK SC",
         "Source Han Sans SC",
         "Noto Serif SC",
         "Noto Sans SC",
-        "Microsoft YaHei UI",
-        "Microsoft YaHei",
-        "DengXian",
-        "SimSun",
         "PingFang SC",
         "Songti SC",
         "Hiragino Sans GB",
         "WenQuanYi Micro Hei",
     ];
-    let latin_only_families = [
-        "Arial",
-        "Calibri",
-        "Cambria",
-        "Consolas",
-        "Courier New",
-        "DejaVu Sans",
-        "DejaVu Serif",
-        "Georgia",
-        "Roboto",
-        "Segoe UI",
-        "Times New Roman",
-    ];
-    let preferred_may_cover_cjk = cjk_families
+    let preferred_has_known_cjk_coverage = cjk_families
         .iter()
         .any(|family| family.eq_ignore_ascii_case(preferred))
         || preferred.to_lowercase().contains("cjk")
-        || preferred.to_lowercase().contains("han ")
-        || !latin_only_families
-            .iter()
-            .any(|family| family.eq_ignore_ascii_case(preferred));
+        || preferred.to_lowercase().contains("source han");
 
     let mut candidates = Vec::new();
     if !preferred.is_empty()
         && preferred != "system"
-        && (!contains_cjk || preferred_may_cover_cjk)
+        && (!contains_cjk || preferred_has_known_cjk_coverage)
     {
         candidates.push(preferred);
     }

@@ -127,12 +127,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 修复自动保存并发覆盖与 Windows 瞬时文件占用造成的偶发保存错误
-            - 历史/收藏新增“保存到我的文档库”，使用防重名副本并立即打开
-            - 导出改为后台任务，提供分阶段进度、完成提示和取消操作
-            - PDF 改用可复制文字、系统中文字体子集和 MathJax 矢量公式，不再截图正文
-            - A4 PDF 自动分页并避免标题孤行；连续长页 PDF 超过阅读器安全高度时无缩放分段
-            - PNG 使用 2.5 倍分片绘制和后台流式无损压缩，超长文档不再创建巨型画布
+            - 修复 Windows 11 中文/英文标点与行内公式附近出现缺字方框的问题
+            - `$…$`、`\(...\)`、`\mathbf`、上下标与分数改用 MathJax 行内矢量排版
+            - 外部或微信文档始终保存到 LeafMark 私有副本，不再回写只读来源路径
+            - 历史记录始终打开保留副本；“保存到我的文档库”会写入可编辑的文档库文件
+            - PNG 页面只序列化一次，分片绘制与流式压缩全部移入后台 Worker
+            - 超长 PNG 自动采用 2×、普通文档采用 2.5×，兼顾清晰度、速度和内存
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
             Android APK 是使用开发密钥签名的优化 release 构建；Windows 未签名构建可能触发 SmartScreen 提示。
