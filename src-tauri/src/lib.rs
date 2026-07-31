@@ -25,6 +25,7 @@ use tauri_plugin_fs::FsExt;
 
 const CACHE_DOCUMENTS: usize = 12;
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_IMPORTED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
@@ -1021,7 +1022,7 @@ fn copy_markdown_directory(
                 continue;
             }
             let metadata = entry.metadata().map_err(error_string)?;
-            if metadata.len() > MAX_OPENED_DOCUMENT_BYTES as u64 {
+            if metadata.len() > MAX_IMPORTED_DOCUMENT_BYTES as u64 {
                 return Err(format!(
                     "Markdown 文档超过 32 MB：{}",
                     entry.path().display()
