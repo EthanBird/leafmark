@@ -10,9 +10,10 @@ import type {
 } from "./types";
 
 const browserSettings: AppSettings = {
-  settingsSchemaVersion: 2,
+  settingsSchemaVersion: 3,
   workspacePath: "浏览器预览",
   theme: "system",
+  themePalette: "leaf",
   liveEditing: true,
   autosaveDelayMs: 600,
   contentWidth: 860,
@@ -192,6 +193,13 @@ export const api = {
   },
   async exportFile(path: string, target: string): Promise<void> {
     if (isTauri()) await invoke("export_file", { relativePath: path, targetPath: target });
+  },
+  async writeExport(target: string, bytes: Uint8Array): Promise<void> {
+    if (isTauri()) {
+      await invoke("write_export", bytes, {
+        headers: { "LeafMark-Target": encodeURIComponent(target) },
+      });
+    }
   },
   async setWorkspace(path: string): Promise<BootstrapPayload> {
     if (isTauri()) return invoke("set_workspace", { path });

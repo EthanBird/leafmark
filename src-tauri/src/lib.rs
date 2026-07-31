@@ -27,10 +27,14 @@ const CACHE_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
-const SETTINGS_SCHEMA_VERSION: u32 = 2;
+const SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 fn default_font_family() -> String {
     "system".into()
+}
+
+fn default_theme_palette() -> String {
+    "leaf".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +44,8 @@ struct AppSettings {
     settings_schema_version: u32,
     workspace_path: String,
     theme: String,
+    #[serde(default = "default_theme_palette")]
+    theme_palette: String,
     live_editing: bool,
     autosave_delay_ms: u64,
     content_width: u32,
@@ -59,6 +65,7 @@ impl AppSettings {
             settings_schema_version: SETTINGS_SCHEMA_VERSION,
             workspace_path: workspace.to_string_lossy().into_owned(),
             theme: "system".into(),
+            theme_palette: default_theme_palette(),
             live_editing: true,
             autosave_delay_ms: 600,
             content_width: 860,
@@ -73,12 +80,23 @@ impl AppSettings {
     }
 
     fn normalize(mut self) -> Self {
-        if self.settings_schema_version < SETTINGS_SCHEMA_VERSION {
+        if self.settings_schema_version < 2 {
             self.live_editing = true;
+        }
+        if self.settings_schema_version < 3 {
+            self.theme_palette = default_theme_palette();
+        }
+        if self.settings_schema_version < SETTINGS_SCHEMA_VERSION {
             self.settings_schema_version = SETTINGS_SCHEMA_VERSION;
         }
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = "system".into();
+        }
+        if !matches!(
+            self.theme_palette.as_str(),
+            "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria"
+        ) {
+            self.theme_palette = default_theme_palette();
         }
         self.font_family = self.font_family.trim().to_owned();
         if self.font_family.is_empty()
@@ -554,6 +572,23 @@ fn export_file(
     let source = secure_existing_path(&workspace, &relative)?;
     let bytes = fs::read(source).map_err(error_string)?;
     write_export_target(&app, &target_path, &bytes)
+}
+
+#[tauri::command]
+fn write_export(request: tauri::ipc::Request, app: AppHandle) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("导出数据必须使用二进制传输".into());
+    };
+    let encoded_target = request
+        .headers()
+        .get("LeafMark-Target")
+        .ok_or_else(|| "导出目标路径缺失".to_string())?
+        .to_str()
+        .map_err(error_string)?;
+    let target_path = percent_encoding::percent_decode_str(encoded_target)
+        .decode_utf8()
+        .map_err(error_string)?;
+    write_export_target(&app, &target_path, bytes)
 }
 
 #[tauri::command]
@@ -1176,6 +1211,7 @@ pub fn run() {
             delete_entry,
             import_files,
             export_file,
+            write_export,
             set_workspace,
             save_settings,
         ])
@@ -1265,5 +1301,20 @@ mod tests {
         assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
         assert!(migrated.live_editing);
         assert_eq!(migrated.font_family, "system");
+        assert_eq!(migrated.theme_palette, "leaf");
+    }
+
+    #[test]
+    fn preserves_an_explicit_v2_live_editing_choice_while_adding_the_palette() {
+        let settings = AppSettings {
+            settings_schema_version: 2,
+            live_editing: false,
+            ..AppSettings::defaults(Path::new("/tmp/leafmark"))
+        };
+        let migrated = settings.normalize();
+
+        assert!(!migrated.live_editing);
+        assert_eq!(migrated.theme_palette, "leaf");
+        assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
     }
 }

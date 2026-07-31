@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppSettings, AssociationStatus, ThemeMode } from "../types";
+import type { AppSettings, AssociationStatus, ThemeMode, ThemePalette } from "../types";
 import { api } from "../api";
 
 interface SettingsPanelProps {
@@ -130,6 +130,9 @@ export function SettingsPanel({
                 <SettingsIntro title="外观" description="保持安静的阅读界面，同时让长文档拥有舒适的密度。" />
                 <SettingRow title="颜色主题" description="系统模式会跟随操作系统切换。">
                   <ThemePicker value={settings.theme} onChange={(theme) => patch({ theme })} />
+                </SettingRow>
+                <SettingRow title="主题配色" description="每套配色都为浅色与深色模式分别调校，正文对比度保持一致。">
+                  <PalettePicker value={settings.themePalette} onChange={(themePalette) => patch({ themePalette })} />
                 </SettingRow>
                 <SettingRow title="文档字体" description={isAndroid ? "读取 Android 系统字体；选择名称后即时预览，清空则恢复系统推荐字体。" : "读取本机已安装字体；输入名称时会即时预览，清空则恢复系统推荐字体。"}>
                   <FontPicker
@@ -266,6 +269,32 @@ function ThemePicker({ value, onChange }: { value: ThemeMode; onChange: (value: 
   return <div className="theme-picker">{choices.map((choice) => <button key={choice.value} type="button" className={value === choice.value ? "active" : ""} onClick={() => onChange(choice.value)}>{choice.icon}{choice.label}</button>)}</div>;
 }
 
+function PalettePicker({ value, onChange }: { value: ThemePalette; onChange: (value: ThemePalette) => void }) {
+  const choices: { value: ThemePalette; label: string; colors: [string, string] }[] = [
+    { value: "leaf", label: "一叶绿", colors: ["#52745a", "#dce9dd"] },
+    { value: "sakura", label: "樱花粉", colors: ["#b9657c", "#f6e2e8"] },
+    { value: "qingchuan", label: "清川蓝", colors: ["#39769c", "#dcecf4"] },
+    { value: "amber", label: "暖杏金", colors: ["#9a6a2f", "#f3e7d2"] },
+    { value: "wisteria", label: "藤萝紫", colors: ["#75659b", "#e8e2f3"] },
+  ];
+  return (
+    <div className="palette-picker">
+      {choices.map((choice) => (
+        <button
+          key={choice.value}
+          type="button"
+          className={value === choice.value ? "active" : ""}
+          onClick={() => onChange(choice.value)}
+        >
+          <span className="palette-swatch" style={{ "--swatch-main": choice.colors[0], "--swatch-soft": choice.colors[1] } as React.CSSProperties} />
+          <span>{choice.label}</span>
+          {value === choice.value && <Check size={13} />}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function FontPicker({ value, families, loading, listId, onChange }: {
   value: string;
   families: string[];
@@ -298,7 +327,7 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 
 function defaultVisualSettings(settings: AppSettings): AppSettings {
-  return { ...settings, theme: "system", contentWidth: 860, fontFamily: "system", fontSize: 16, lineHeight: 1.75, reduceMotion: false };
+  return { ...settings, theme: "system", themePalette: "leaf", contentWidth: 860, fontFamily: "system", fontSize: 16, lineHeight: 1.75, reduceMotion: false };
 }
 
 function fontPreviewStack(fontFamily: string) {

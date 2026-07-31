@@ -22,11 +22,7 @@ function slugify(value: string, fallback: string) {
   return slug || fallback;
 }
 
-export async function enhanceDocument(
-  root: HTMLElement,
-  settings: AppSettings,
-  documentDirectory: string,
-): Promise<{ outline: OutlineItem[]; cleanup: () => void }> {
+export function collectOutline(root: HTMLElement) {
   const outline: OutlineItem[] = [];
   const usedIds = new Set<string>();
   root.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6").forEach((heading, index) => {
@@ -38,6 +34,16 @@ export async function enhanceDocument(
     heading.id = id;
     outline.push({ id, level: Number(heading.tagName.slice(1)), text: heading.textContent?.trim() || `章节 ${index + 1}` });
   });
+  return outline;
+}
+
+export async function enhanceDocument(
+  root: HTMLElement,
+  settings: AppSettings,
+  documentDirectory: string,
+  options: { eager?: boolean } = {},
+): Promise<{ outline: OutlineItem[]; cleanup: () => void }> {
+  const outline = collectOutline(root);
 
   if ("__TAURI_INTERNALS__" in window) {
     root.querySelectorAll<HTMLImageElement>("img").forEach((image) => {
@@ -56,8 +62,12 @@ export async function enhanceDocument(
   const observers: IntersectionObserver[] = [];
   if (settings.mathEnabled) await renderMath(root);
   if (settings.mermaidEnabled) {
-    const observer = lazyRenderDiagrams(root);
-    if (observer) observers.push(observer);
+    if (options.eager) {
+      await Promise.all(Array.from(root.querySelectorAll<HTMLElement>("[data-mermaid-source]")).map((node) => renderDiagram(node)));
+    } else {
+      const observer = lazyRenderDiagrams(root);
+      if (observer) observers.push(observer);
+    }
   }
 
   return {

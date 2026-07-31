@@ -1,17 +1,21 @@
 # LeafMark（一叶）
 
-LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来的本地 Markdown 应用，支持 Windows 与 Android。界面只保留文档目录、主阅读区和必要操作；Markdown 首次编译、文件扫描、缓存与原子写入由 Rust 完成。
+LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来的本地 Markdown 应用，支持 Windows、Linux 与 Android。界面只保留文档目录、主阅读区和必要操作；Markdown 首次编译、文件扫描、缓存与原子写入由 Rust 完成。
 
 ## 已实现
 
 - 本地目录直接作为文档库，不使用数据库或专有格式
-- 默认进入所见即所得的实时渲染编辑，并可切换阅读、源码和分栏视图
+- 默认进入所见即所得的实时渲染编辑；输入标题、引用或列表标记后立即原位成形
 - GFM：表格、任务列表、删除线、脚注与智能标点
 - KaTeX：`$…$`、`$$…$$`、`\(...\)`、`\[...\]`、`math` / `tex` / `latex` 围栏
 - Mermaid：完整 Mermaid 运行时，进入可视区域时才按需加载和绘制
-- 文档目录搜索、新建、重命名、删除、导入、导出和本地链接跳转
+- 文档目录搜索、新建、重命名、删除、导入和本地链接跳转
+- 导出 Markdown、带主题 HTML、PNG 长图、单页长 PDF 或 A4 标准分页 PDF
 - 自动保存、UTF-8/UTF-16 读取、路径越界防护与安全 HTML 转义
-- 系统/浅色/深色主题、本机字体、版心、字号、行高、动效和渲染能力设置
+- 一叶绿、樱花粉、清川蓝、暖杏金和藤萝紫主题；每套均支持系统/浅色/深色模式
+- 本机字体、版心、字号、行高、动效和渲染能力设置
+- 不遮挡正文的停靠式文章大纲
+- Windows / Linux 自绘主题标题栏与本地化应用名称
 - Windows 资源管理器“打开方式”、右键打开与双击 `.md` / `.markdown`
 - Windows 启动、文件关联检测与默认应用设置全程不创建命令行窗口
 - Android 文件管理器、聊天、网盘等应用通过 `ACTION_VIEW`、`ACTION_EDIT` 或分享 Intent 打开 Markdown
@@ -71,7 +75,7 @@ Rust LTO/strip、R8、资源裁剪和原生库压缩，并在上传后自动验�
 ## 下载
 
 可以从 [GitHub Releases](https://github.com/EthanBird/leafmark/releases/latest)
-下载 Android APK 或 Windows NSIS 安装包。Android APK 是使用开发密钥签名、可直接安装
+下载 Android APK、Windows NSIS 安装包、Linux AppImage 或 Debian 安装包。Android APK 是使用开发密钥签名、可直接安装
 的优化 release 构建；Windows 安装后可在 LeafMark 的“设置 → 系统集成”中完成
 Markdown 默认应用确认。
 

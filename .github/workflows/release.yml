@@ -1,4 +1,4 @@
-name: Publish desktop and Android release
+name: Publish Windows, Linux and Android release
 
 on:
   push:
@@ -127,14 +127,14 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 新增 Android APK，针对手机触控、抽屉导航与安全区完成适配
-            - 支持从文件管理器、聊天、网盘等应用通过 Android Intent 打开或分享 .md / .markdown
-            - Android 外部文档会复制到私有资料库，并继续进入历史、收藏与防删除快照
-            - 默认进入接近 Typora 的实时渲染编辑，设置页可扫描和切换系统字体
-            - v0.3.1 改为仅面向现代手机的 ARM64 优化构建，移除调试符号与 32 位库并显著缩小 APK
-            - v0.3.2 使用原生 Windows 注册表 API，并禁止所有辅助进程创建命令行窗口
+            - 实时编辑会在输入标题、引用和列表标记时原位渲染，并同步文章大纲
+            - 大纲改为不遮挡正文的停靠侧栏
+            - 新增一叶绿、樱花粉、清川蓝、暖杏金和藤萝紫，每套配色均含浅色/深色模式
+            - 新增 HTML、PNG 长图、单页长 PDF 与 A4 标准分页 PDF 导出
+            - Windows 与 Linux 使用随主题变化的自绘标题栏，标题会按系统语言显示“一叶”或“LeafMark”
+            - 新增 Linux AppImage 与 Debian 安装包
 
-            Android 请下载 APK；Windows 请下载 NSIS 安装程序。
+            Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
             Android APK 是使用开发密钥签名的优化 release 构建；Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
           prerelease: false
@@ -270,10 +270,97 @@ jobs:
           sha256sum "$apk"
           du -h "$apk"
 
+  release-linux:
+    needs: release-windows
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            wget \
+            xvfb
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Test frontend and native core
+        run: |
+          npm test
+          npm run typecheck
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build and upload Linux bundles
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: false
+          retryAttempts: 2
+          args: --bundles appimage,deb
+          releaseAssetNamePattern: LeafMark_[version]_Linux_[arch].[ext]
+
+      - name: Verify Linux bundles and launch
+        shell: bash
+        run: |
+          appimage="$(find src-tauri/target/release/bundle/appimage -type f -name '*.AppImage' -print -quit)"
+          deb="$(find src-tauri/target/release/bundle/deb -type f -name '*.deb' -print -quit)"
+          if [[ -z "$appimage" || -z "$deb" ]]; then
+            echo "Expected both AppImage and Debian artifacts."
+            exit 1
+          fi
+
+          dpkg-deb --info "$deb"
+          if ldd src-tauri/target/release/leafmark | grep -q 'not found'; then
+            ldd src-tauri/target/release/leafmark
+            exit 1
+          fi
+
+          set +e
+          GDK_BACKEND=x11 timeout 15s xvfb-run --auto-servernum src-tauri/target/release/leafmark \
+            > /tmp/leafmark-linux-smoke.log 2>&1
+          status="$?"
+          set -e
+          cat /tmp/leafmark-linux-smoke.log
+          if [[ "$status" -ne 124 ]]; then
+            echo "Linux GUI did not remain healthy during the 15-second smoke test (status $status)."
+            exit 1
+          fi
+
+          sha256sum "$appimage" "$deb"
+          du -h "$appimage" "$deb"
+
   publish-release:
     needs:
       - release-windows
       - release-android
+      - release-linux
     runs-on: ubuntu-latest
     timeout-minutes: 5
 

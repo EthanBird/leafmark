@@ -1,6 +1,6 @@
 {
   "name": "leafmark",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "LeafMark（一叶）— 高性能、轻量、本地优先的 Markdown 阅读与写作应用",
   "private": true,
   "type": "module",
@@ -20,6 +20,8 @@
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.0",
+    "html-to-image": "^1.11.13",
+    "jspdf": "^4.2.1",
     "katex": "^0.16.22",
     "lucide-react": "^0.468.0",
     "mermaid": "^11.12.2",

@@ -1,6 +1,7 @@
 export type EntryKind = "file" | "directory";
 export type ViewMode = "read" | "source" | "split" | "live";
 export type ThemeMode = "system" | "light" | "dark";
+export type ThemePalette = "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria";
 export type DocumentOrigin = "workspace" | "archive";
 
 export interface DocumentEntry {
@@ -47,6 +48,7 @@ export interface AppSettings {
   settingsSchemaVersion: number;
   workspacePath: string;
   theme: ThemeMode;
+  themePalette: ThemePalette;
   liveEditing: boolean;
   autosaveDelayMs: number;
   contentWidth: number;

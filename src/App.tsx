@@ -16,6 +16,7 @@ import {
   List,
   ListOrdered,
   Menu,
+  Minus,
   PanelLeftClose,
   PanelLeftOpen,
   PencilLine,
@@ -23,6 +24,7 @@ import {
   Save,
   Search,
   Settings,
+  Square,
   SplitSquareHorizontal,
   Star,
   Strikethrough,
@@ -34,11 +36,22 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import { DocumentLibrary } from "./components/DocumentLibrary";
 import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { enhanceDocument, type OutlineItem } from "./rendering";
+import {
+  buildStandaloneHtml,
+  canvasToLongPdfBytes,
+  canvasToPagedPdfBytes,
+  canvasToPngBytes,
+  exportExtension,
+  inlineExportImages,
+  renderExportCanvas,
+  type ExportFormat,
+} from "./exporting";
+import { collectOutline, enhanceDocument, type OutlineItem } from "./rendering";
 import { buildTree, joinPath, parentPath, resolveMarkdownLink } from "./tree";
 import type {
   AppSettings,
@@ -51,7 +64,7 @@ import type {
   TreeNode,
   ViewMode,
 } from "./types";
-import { htmlToMarkdown, runFormat } from "./wysiwyg";
+import { applyLiveMarkdownShortcut, htmlToMarkdown, runFormat } from "./wysiwyg";
 
 interface EntryDialogState {
   action: "create" | "rename";
@@ -72,9 +85,10 @@ type SidebarView = "workspace" | "history" | "favorites";
 const isCompactLayout = () => window.matchMedia("(max-width: 620px)").matches;
 
 const EMPTY_SETTINGS: AppSettings = {
-  settingsSchemaVersion: 2,
+  settingsSchemaVersion: 3,
   workspacePath: "",
   theme: "system",
+  themePalette: "leaf",
   liveEditing: true,
   autosaveDelayMs: 600,
   contentWidth: 860,
@@ -116,6 +130,8 @@ export default function App() {
   const [notice, setNotice] = useState("正在启动…");
   const [busy, setBusy] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -151,6 +167,7 @@ export default function App() {
     const root = document.documentElement;
     root.dataset.theme = next.theme;
     root.dataset.resolvedTheme = resolved;
+    root.dataset.palette = next.themePalette;
     root.dataset.reduceMotion = String(next.reduceMotion);
     root.style.setProperty("--reader-width", `${next.contentWidth}px`);
     root.style.setProperty("--reader-font-family", readerFontStack(next.fontFamily));
@@ -403,6 +420,8 @@ export default function App() {
 
   const onLiveInput = () => {
     if (!liveEditorRef.current) return;
+    applyLiveMarkdownShortcut(liveEditorRef.current);
+    setOutline(collectOutline(liveEditorRef.current));
     setContent(htmlToMarkdown(liveEditorRef.current));
   };
 
@@ -511,20 +530,66 @@ export default function App() {
     }
   };
 
-  const exportCurrent = async () => {
+  const exportCurrent = async (format: ExportFormat) => {
     if (!api.isTauri() || !selectedPath) return;
     await persistCurrent(true);
-    const target = await saveDialog({ defaultPath: nativeFileName(selectedPath), filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
+    const extension = exportExtension(format);
+    const name = nativeFileName(selectedPath).replace(/\.(md|markdown)$/i, "");
+    const suffix = format === "pdf-long" ? "-长页" : format === "pdf-pages" ? "-标准分页" : "";
+    const target = await saveDialog({
+      defaultPath: `${name}${suffix}.${extension}`,
+      filters: [{ name: exportLabel(format), extensions: [extension] }],
+      title: `导出${exportLabel(format)}`,
+    });
     if (!target) return;
+    setExporting(true);
     try {
-      if (documentOrigin === "archive") {
-        await api.exportArchivedDocument(archiveId, target);
+      if (format === "markdown") {
+        if (documentOrigin === "archive") {
+          await api.exportArchivedDocument(archiveId, target);
+        } else {
+          await api.exportFile(selectedPath, target);
+        }
       } else {
-        await api.exportFile(selectedPath, target);
+        const html = await api.render(contentRef.current);
+        const surface = document.createElement("article");
+        surface.className = "markdown-body export-document";
+        surface.innerHTML = html;
+        surface.style.width = `${Math.max(680, settings.contentWidth + 112)}px`;
+        surface.style.height = "auto";
+        surface.style.minHeight = "0";
+        surface.style.padding = "56px";
+        surface.style.overflow = "visible";
+        document.body.append(surface);
+        let cleanup = () => {};
+        try {
+          const result = await enhanceDocument(surface, settings, documentDirectory, { eager: true });
+          cleanup = result.cleanup;
+          await inlineExportImages(surface);
+          await document.fonts?.ready;
+          let bytes: Uint8Array;
+          if (format === "html") {
+            bytes = new TextEncoder().encode(buildStandaloneHtml(surface, name));
+          } else {
+            const canvas = await renderExportCanvas(surface);
+            bytes = format === "png"
+              ? canvasToPngBytes(canvas)
+              : format === "pdf-long"
+                ? await canvasToLongPdfBytes(canvas)
+                : await canvasToPagedPdfBytes(canvas);
+          }
+          await api.writeExport(target, bytes);
+        } finally {
+          cleanup();
+          surface.remove();
+        }
       }
+      setExportOpen(false);
       setNotice(`已导出到 ${target}`);
     } catch (error) {
       setNotice(`导出失败：${String(error)}`);
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -627,7 +692,8 @@ export default function App() {
     : settings.workspacePath;
 
   return (
-    <div className={`app-shell${sidebarOpen ? "" : " sidebar-closed"}${api.isAndroid() ? " platform-android" : ""}`} onClick={() => setMenu(null)}>
+    <div className={`app-shell${sidebarOpen ? "" : " sidebar-closed"}${outlineOpen ? " outline-visible" : ""}${api.isAndroid() ? " platform-android" : ""}`} onClick={() => setMenu(null)}>
+      {!api.isAndroid() && <TitleBar />}
       {busy && <div className="top-progress" />}
       <aside className="sidebar">
         <div className="sidebar-toolbar">
@@ -742,7 +808,7 @@ export default function App() {
             </button>
             <button className={`icon-button${outlineOpen ? " active" : ""}`} type="button" onClick={() => setOutlineOpen((open) => !open)} title="文章大纲" disabled={!selectedPath}><LayoutPanelLeft size={16} /></button>
             <button className="icon-button" type="button" onClick={() => void persistCurrent()} title="保存 (Ctrl+S)" disabled={!dirty}><Save size={16} /></button>
-            <button className="icon-button" type="button" onClick={() => void exportCurrent()} title="导出" disabled={!selectedPath || !api.isTauri()}><Download size={15} /></button>
+            <button className="icon-button" type="button" onClick={() => setExportOpen(true)} title="导出" disabled={!selectedPath || !api.isTauri()}><Download size={15} /></button>
             <button className="icon-button" type="button" onClick={() => setSettingsOpen(true)} title="设置 (Ctrl+,)"><Settings size={16} /></button>
           </div>
         </header>
@@ -807,7 +873,7 @@ export default function App() {
       </main>
 
       {outlineOpen && (
-        <aside className="outline-popover">
+        <aside className="outline-panel">
           <header><strong>文章大纲</strong><button className="icon-button compact" type="button" onClick={() => setOutlineOpen(false)}><X size={14} /></button></header>
           <nav>
             {outline.length ? outline.map((item) => <button key={item.id} type="button" style={{ "--outline-depth": Math.max(0, item.level - 1) } as React.CSSProperties} onClick={() => document.getElementById(item.id)?.scrollIntoView({ behavior: settings.reduceMotion ? "auto" : "smooth" })}>{item.text}</button>) : <span>这篇文档没有标题</span>}
@@ -845,6 +911,14 @@ export default function App() {
         />
       )}
 
+      {exportOpen && (
+        <ExportDialog
+          busy={exporting}
+          onCancel={() => !exporting && setExportOpen(false)}
+          onExport={(format) => void exportCurrent(format)}
+        />
+      )}
+
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
@@ -855,6 +929,61 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+function TitleBar() {
+  const localizedTitle = navigator.language.toLowerCase().startsWith("zh") ? "一叶" : "LeafMark";
+  const perform = (action: "minimize" | "maximize" | "close") => {
+    if (!api.isTauri()) return;
+    const window = getCurrentWindow();
+    if (action === "minimize") void window.minimize();
+    if (action === "maximize") void window.toggleMaximize();
+    if (action === "close") void window.close();
+  };
+  return (
+    <header className="app-titlebar" data-tauri-drag-region onDoubleClick={() => perform("maximize")}>
+      <div className="app-titlebar-brand" data-tauri-drag-region>
+        <BookOpen size={13} />
+        <span data-tauri-drag-region>{localizedTitle}</span>
+      </div>
+      <div className="window-controls" onDoubleClick={(event) => event.stopPropagation()}>
+        <button type="button" onClick={() => perform("minimize")} aria-label="最小化"><Minus size={14} /></button>
+        <button type="button" onClick={() => perform("maximize")} aria-label="最大化或还原"><Square size={11} /></button>
+        <button className="window-close" type="button" onClick={() => perform("close")} aria-label="关闭"><X size={14} /></button>
+      </div>
+    </header>
+  );
+}
+
+function ExportDialog({ busy, onCancel, onExport }: {
+  busy: boolean;
+  onCancel: () => void;
+  onExport: (format: ExportFormat) => void;
+}) {
+  const [format, setFormat] = useState<ExportFormat>("html");
+  const options: { value: ExportFormat; title: string; detail: string }[] = [
+    { value: "markdown", title: "Markdown 原文", detail: "保留可继续编辑的 .md 文件" },
+    { value: "html", title: "HTML 网页", detail: "带当前主题、公式与图表的独立页面" },
+    { value: "png", title: "PNG 长图", detail: "整篇正文导出为高清图片" },
+    { value: "pdf-long", title: "PDF · 一页长页", detail: "连续阅读，不在段落中间分页" },
+    { value: "pdf-pages", title: "PDF · A4 标准分页", detail: "适合打印与文档归档" },
+  ];
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <section className="export-dialog" role="dialog" aria-modal="true" aria-label="导出文档">
+        <header><div><small>EXPORT</small><h2>导出文档</h2></div><button className="icon-button" type="button" onClick={onCancel} disabled={busy}><X size={17} /></button></header>
+        <div className="export-options">
+          {options.map((option) => (
+            <button key={option.value} type="button" className={format === option.value ? "active" : ""} onClick={() => setFormat(option.value)} disabled={busy}>
+              <span className="export-radio">{format === option.value && <span />}</span>
+              <span><strong>{option.title}</strong><small>{option.detail}</small></span>
+            </button>
+          ))}
+        </div>
+        <footer><button className="secondary-button" type="button" onClick={onCancel} disabled={busy}>取消</button><button className="primary-button" type="button" onClick={() => onExport(format)} disabled={busy}>{busy ? "正在生成…" : `导出 ${exportLabel(format)}`}</button></footer>
+      </section>
     </div>
   );
 }
@@ -971,6 +1100,14 @@ function lastDirectory(path: string) {
 
 function nativeFileName(path: string) {
   return path.replace(/[\\/]$/, "").split(/[\\/]/).at(-1) ?? path;
+}
+
+function exportLabel(format: ExportFormat) {
+  if (format === "markdown") return "Markdown";
+  if (format === "html") return "HTML";
+  if (format === "png") return "PNG";
+  if (format === "pdf-long") return "长页 PDF";
+  return "标准 PDF";
 }
 
 function nativeParentPath(path: string) {

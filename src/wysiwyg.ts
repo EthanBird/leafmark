@@ -2,6 +2,76 @@ function cleanText(value: string) {
   return value.replace(/\u00a0/g, " ");
 }
 
+export type LiveBlockShortcut =
+  | { kind: "heading"; level: number; text: string }
+  | { kind: "quote"; text: string }
+  | { kind: "unordered-list"; text: string }
+  | { kind: "ordered-list"; text: string };
+
+export function matchLiveBlockShortcut(value: string): LiveBlockShortcut | null {
+  const text = cleanText(value);
+  const heading = text.match(/^(#{1,6}) (.*)$/s);
+  if (heading) return { kind: "heading", level: heading[1].length, text: heading[2] };
+  const quote = text.match(/^> (.*)$/s);
+  if (quote) return { kind: "quote", text: quote[1] };
+  const unordered = text.match(/^[-*+] (.*)$/s);
+  if (unordered) return { kind: "unordered-list", text: unordered[1] };
+  const ordered = text.match(/^\d+[.)] (.*)$/s);
+  if (ordered) return { kind: "ordered-list", text: ordered[1] };
+  return null;
+}
+
+function placeCaret(element: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  if (element.lastChild?.nodeType === Node.TEXT_NODE) {
+    range.setStart(element.lastChild, element.lastChild.textContent?.length ?? 0);
+  } else {
+    range.setStart(element, element.childNodes.length);
+  }
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+export function applyLiveMarkdownShortcut(root: HTMLElement) {
+  const selection = window.getSelection();
+  const anchor = selection?.anchorNode;
+  if (!anchor || !root.contains(anchor)) return false;
+  let block = anchor.nodeType === Node.ELEMENT_NODE ? anchor as HTMLElement : anchor.parentElement;
+  while (block?.parentElement && block.parentElement !== root) block = block.parentElement;
+  if (!block || block.parentElement !== root || block.closest('[contenteditable="false"]')) return false;
+
+  const shortcut = matchLiveBlockShortcut(block.textContent ?? "");
+  if (!shortcut) return false;
+  let replacement: HTMLElement;
+  let caretTarget: HTMLElement;
+
+  if (shortcut.kind === "heading") {
+    replacement = document.createElement(`h${shortcut.level}`);
+    replacement.textContent = shortcut.text;
+    caretTarget = replacement;
+  } else if (shortcut.kind === "quote") {
+    replacement = document.createElement("blockquote");
+    const paragraph = document.createElement("p");
+    paragraph.textContent = shortcut.text;
+    replacement.append(paragraph);
+    caretTarget = paragraph;
+  } else {
+    replacement = document.createElement(shortcut.kind === "ordered-list" ? "ol" : "ul");
+    const item = document.createElement("li");
+    item.textContent = shortcut.text;
+    replacement.append(item);
+    caretTarget = item;
+  }
+
+  if (!caretTarget.textContent) caretTarget.append(document.createElement("br"));
+  block.replaceWith(replacement);
+  placeCaret(caretTarget);
+  return true;
+}
+
 function inlineChildren(element: Element): string {
   return Array.from(element.childNodes).map(serializeNode).join("");
 }
