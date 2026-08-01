@@ -1,5 +1,5 @@
 import { Bot, Clock3, Files, ListTree, Star, X } from "lucide-react";
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import type { DockPanelId, DockZone } from "../types";
 
 const PANEL_META: Record<DockPanelId, { label: string; icon: ReactNode }> = {
@@ -19,11 +19,13 @@ interface DockRegionProps {
   onActivate: (panel: DockPanelId) => void;
   onHide: (panel: DockPanelId) => void;
   onDragStart: (panel: DockPanelId) => void;
-  onDragEnd: () => void;
+  onDragMove: (x: number, y: number) => void;
+  onDragEnd: (panel: DockPanelId, x: number, y: number) => void;
   onResize: (size: number) => void;
 }
 
-export function DockRegion({ zone, panels, active, size, renderPanel, onActivate, onHide, onDragStart, onDragEnd, onResize }: DockRegionProps) {
+export function DockRegion({ zone, panels, active, size, renderPanel, onActivate, onHide, onDragStart, onDragMove, onDragEnd, onResize }: DockRegionProps) {
+  const suppressClick = useRef<DockPanelId | null>(null);
   if (!panels.length) return null;
   const resize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -53,15 +55,46 @@ export function DockRegion({ zone, panels, active, size, renderPanel, onActivate
             <button
               key={panel}
               type="button"
-              draggable
               className={active === panel ? "active" : ""}
-              onClick={() => onActivate(panel)}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/leafmark-panel", panel);
-                onDragStart(panel);
+              onClick={() => {
+                if (suppressClick.current === panel) { suppressClick.current = null; return; }
+                onActivate(panel);
               }}
-              onDragEnd={onDragEnd}
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                const startX = event.clientX;
+                const startY = event.clientY;
+                let dragging = false;
+                const previousUserSelect = document.body.style.userSelect;
+                const move = (next: PointerEvent) => {
+                  if (!dragging && Math.hypot(next.clientX - startX, next.clientY - startY) >= 5) {
+                    dragging = true;
+                    document.body.style.userSelect = "none";
+                    onDragStart(panel);
+                  }
+                  if (dragging) onDragMove(next.clientX, next.clientY);
+                };
+                const finish = (next: PointerEvent) => {
+                  window.removeEventListener("pointermove", move);
+                  window.removeEventListener("pointerup", finish);
+                  window.removeEventListener("pointercancel", cancel);
+                  document.body.style.userSelect = previousUserSelect;
+                  if (dragging) {
+                    suppressClick.current = panel;
+                    window.setTimeout(() => { if (suppressClick.current === panel) suppressClick.current = null; }, 250);
+                    onDragEnd(panel, next.clientX, next.clientY);
+                  }
+                };
+                const cancel = () => {
+                  window.removeEventListener("pointermove", move);
+                  window.removeEventListener("pointerup", finish);
+                  window.removeEventListener("pointercancel", cancel);
+                  document.body.style.userSelect = previousUserSelect;
+                };
+                window.addEventListener("pointermove", move);
+                window.addEventListener("pointerup", finish, { once: true });
+                window.addEventListener("pointercancel", cancel, { once: true });
+              }}
               title={`拖动“${PANEL_META[panel].label}”到窗口边缘以重新停靠`}
             >
               {PANEL_META[panel].icon}<span>{PANEL_META[panel].label}</span>
@@ -78,7 +111,7 @@ export function DockRegion({ zone, panels, active, size, renderPanel, onActivate
   );
 }
 
-export function DockDropTargets({ active, onDrop }: { active: boolean; onDrop: (zone: DockZone) => void }) {
+export function DockDropTargets({ active, hover }: { active: boolean; hover: DockZone | null }) {
   if (!active) return null;
   const targets: Array<{ zone: DockZone; label: string }> = [
     { zone: "left", label: "停靠左侧" },
@@ -89,9 +122,7 @@ export function DockDropTargets({ active, onDrop }: { active: boolean; onDrop: (
   return <div className="dock-drop-overlay">{targets.map((target) => (
     <div
       key={target.zone}
-      className={`dock-drop-target target-${target.zone}`}
-      onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }}
-      onDrop={(event) => { event.preventDefault(); onDrop(target.zone); }}
+      className={`dock-drop-target target-${target.zone}${hover === target.zone ? " hover" : ""}`}
     ><span>{target.label}</span></div>
   ))}</div>;
 }

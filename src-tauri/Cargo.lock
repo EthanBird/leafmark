@@ -2056,16 +2056,20 @@ dependencies = [
 
 [[package]]
 name = "leafmark"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
  "atomicwrites",
+ "base64 0.22.1",
  "fontdb",
  "ignore",
  "parking_lot",
  "percent-encoding",
  "pulldown-cmark",
+ "rand",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -2073,6 +2077,9 @@ dependencies = [
  "tauri-plugin-http",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tokio",
+ "url",
+ "urlencoding",
  "winreg",
 ]
 

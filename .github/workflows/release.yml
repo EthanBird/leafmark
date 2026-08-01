@@ -127,12 +127,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 新增类 VS Code 多文档标签栏，可快速切换、查看未保存状态并单独关闭文档
-            - 桌面端新增柔性 Dock：文档库、历史、收藏、Agent 与大纲可拖动到上下左右、合并为页签并调整尺寸
-            - 新增轻量流式文档 Agent，支持 OpenAI 兼容服务、文档读写工具、并行只读子 Agent、会话检索与本地长期记忆
-            - Agent 支持内置/自定义 Skills、网页读取、Streamable HTTP MCP，以及完整的模型和权限设置
-            - Agent 按需联网且不内置模型或向量数据库；Android 保持适合手机的抽屉导航和 ARM64 单架构构建
-            - 移除编辑区上方的完整文档路径，界面只显示简洁的文档标签
+            - 新增 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth 登录、自动续期和账户状态 UI
+            - 订阅请求分别走 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 原生协议，不回退到按量 API Key
+            - Provider 列表与 jcode 的 OpenAI-compatible catalog 对齐，保留自定义兼容端点和本地 Ollama / LM Studio
+            - 新增本机终端工具：Windows 固定使用不显示窗口的 PowerShell，支持超时、后台任务、查询/终止与破坏性命令拦截
+            - 修复 Windows WebView 下 Dock 目标无法放置和禁止鼠标问题，改为可靠的应用内指针拖放
+            - Agent 不包含 jcode GUI 或云端控制能力；Android 不引入桌面 OAuth/终端依赖，继续发布 ARM64 手机包
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
             Android APK 是使用开发密钥签名的优化 release 构建；Windows 未签名构建可能触发 SmartScreen 提示。

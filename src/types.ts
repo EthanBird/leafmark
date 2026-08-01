@@ -5,7 +5,48 @@ export type ThemePalette = "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria
 export type DocumentOrigin = "workspace" | "archive";
 export type DockPanelId = "workspace" | "history" | "favorites" | "agent" | "outline";
 export type DockZone = "left" | "right" | "top" | "bottom";
-export type AgentProvider = "openai" | "deepseek" | "openrouter" | "ollama" | "lmstudio" | "custom";
+export type AgentProvider =
+  | "openai-oauth"
+  | "claude-oauth"
+  | "gemini-oauth"
+  | "copilot"
+  | "openai-api"
+  | "anthropic-api"
+  | "gemini-api"
+  | "deepseek"
+  | "openrouter"
+  | "opencode"
+  | "opencode-go"
+  | "zai"
+  | "kimi"
+  | "302ai"
+  | "baseten"
+  | "cortecs"
+  | "comtegra"
+  | "fpt"
+  | "firmware"
+  | "huggingface"
+  | "moonshotai"
+  | "nebius"
+  | "scaleway"
+  | "stackit"
+  | "groq"
+  | "mistral"
+  | "perplexity"
+  | "togetherai"
+  | "deepinfra"
+  | "fireworks"
+  | "minimax"
+  | "xai"
+  | "chutes"
+  | "cerebras"
+  | "alibaba-coding-plan"
+  | "nvidia-nim"
+  | "xiaomi-mimo"
+  | "celeris"
+  | "ollama"
+  | "lmstudio"
+  | "custom";
 
 export interface DockZoneState {
   panels: DockPanelId[];
@@ -38,9 +79,48 @@ export interface AgentSettings {
   allowDocumentEdits: boolean;
   memoryEnabled: boolean;
   webToolsEnabled: boolean;
+  terminalToolsEnabled: boolean;
+  allowDestructiveTerminal: boolean;
   enabledSkills: string[];
   customSkills: string;
   mcpServersJson: string;
+}
+
+export interface AgentAuthChallenge {
+  flowId: string;
+  provider: string;
+  authorizeUrl: string;
+  userCode: string | null;
+  message: string;
+}
+
+export interface AgentAuthFlowStatus {
+  status: "pending" | "success" | "error";
+  message: string;
+}
+
+export interface AgentAuthAccountStatus {
+  provider: string;
+  connected: boolean;
+  email: string | null;
+  expiresAt: number | null;
+  detail: string;
+}
+
+export interface AgentCredential {
+  accessToken: string;
+  accountId: string | null;
+  expiresAt: number | null;
+  apiBase: string | null;
+}
+
+export interface AgentTerminalResult {
+  jobId: string | null;
+  status: "running" | "completed" | "timed_out" | "killed";
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
 }
 
 export interface DocumentEntry {

@@ -1,6 +1,10 @@
 mod library;
 mod system_fonts;
 mod system_integration;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod agent_auth;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod agent_terminal;
 
 use atomicwrites::{AllowOverwrite, AtomicFile};
 use ignore::WalkBuilder;
@@ -60,9 +64,9 @@ fn default_agent_settings() -> serde_json::Value {
     serde_json::json!({
         "enabled": false,
         "provider": "deepseek",
-        "baseUrl": "https://api.deepseek.com/v1",
+        "baseUrl": "https://api.deepseek.com",
         "apiKey": "",
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "temperature": 0.3,
         "topP": 0.95,
         "maxTokens": 8192,
@@ -74,6 +78,8 @@ fn default_agent_settings() -> serde_json::Value {
         "allowDocumentEdits": false,
         "memoryEnabled": true,
         "webToolsEnabled": true,
+        "terminalToolsEnabled": false,
+        "allowDestructiveTerminal": false,
         "enabledSkills": ["writing", "proofread", "summarize", "structure"],
         "customSkills": "",
         "mcpServersJson": ""
@@ -1504,9 +1510,145 @@ fn default_workspace(app: &AppHandle, config_dir: &Path) -> Result<PathBuf, Stri
         .join("LeafMark"))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+async fn agent_oauth_start(
+    provider: String,
+    app: AppHandle,
+    state: State<'_, agent_auth::AgentAuthManager>,
+) -> Result<agent_auth::AuthChallenge, String> {
+    agent_auth::start(app, state.inner().clone(), provider).await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+async fn agent_oauth_start(_provider: String) -> Result<serde_json::Value, String> {
+    Err("移动端不启用桌面订阅 OAuth harness".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn agent_oauth_poll(
+    flow_id: String,
+    state: State<'_, agent_auth::AgentAuthManager>,
+) -> agent_auth::AuthFlowStatus {
+    agent_auth::poll(state.inner().clone(), flow_id)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+fn agent_oauth_poll(_flow_id: String) -> serde_json::Value {
+    serde_json::json!({"status":"error","message":"移动端不支持此登录方式"})
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+async fn agent_auth_status(
+    provider: String,
+    app: AppHandle,
+) -> Result<agent_auth::AuthAccountStatus, String> {
+    agent_auth::account_status(app, provider).await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+async fn agent_auth_status(provider: String) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({"provider":provider,"connected":false,"detail":"移动端未启用桌面 OAuth"}))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn agent_oauth_logout(provider: String, app: AppHandle) -> Result<(), String> {
+    agent_auth::logout(app, provider)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+fn agent_oauth_logout(_provider: String) -> Result<(), String> {
+    Err("移动端不支持此登录方式".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+async fn agent_auth_credential(
+    provider: String,
+    app: AppHandle,
+) -> Result<agent_auth::AgentCredential, String> {
+    agent_auth::credential(app, provider).await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+async fn agent_auth_credential(_provider: String) -> Result<serde_json::Value, String> {
+    Err("移动端不支持此登录方式".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+async fn agent_terminal_execute(
+    command: String,
+    cwd: Option<String>,
+    timeout_ms: u64,
+    background: bool,
+    allow_destructive: bool,
+    app: AppHandle,
+    app_state: State<'_, AppState>,
+    terminal_state: State<'_, agent_terminal::TerminalManager>,
+) -> Result<agent_terminal::TerminalResult, String> {
+    let workspace = app_state.0.lock().workspace.clone();
+    let cache_dir = app.path().app_cache_dir().map_err(error_string)?.join("agent-terminal");
+    agent_terminal::execute(
+        terminal_state.inner().clone(), workspace, cache_dir, command, cwd,
+        timeout_ms, background, allow_destructive,
+    ).await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+async fn agent_terminal_execute(
+    _command: String, _cwd: Option<String>, _timeout_ms: u64,
+    _background: bool, _allow_destructive: bool,
+) -> Result<serde_json::Value, String> {
+    Err("移动端不提供系统终端工具".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn agent_terminal_status(
+    job_id: String,
+    state: State<'_, agent_terminal::TerminalManager>,
+) -> Result<agent_terminal::TerminalResult, String> {
+    agent_terminal::status(state.inner().clone(), job_id)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+fn agent_terminal_status(_job_id: String) -> Result<serde_json::Value, String> {
+    Err("移动端不提供系统终端工具".into())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn agent_terminal_kill(
+    job_id: String,
+    state: State<'_, agent_terminal::TerminalManager>,
+) -> Result<agent_terminal::TerminalResult, String> {
+    agent_terminal::kill(state.inner().clone(), job_id)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+fn agent_terminal_kill(_job_id: String) -> Result<serde_json::Value, String> {
+    Err("移动端不提供系统终端工具".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder
+        .manage(agent_auth::AgentAuthManager::default())
+        .manage(agent_terminal::TerminalManager::default());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
         let paths = markdown_paths_from_args(args, Path::new(&cwd));
@@ -1596,6 +1738,14 @@ pub fn run() {
             write_export,
             set_workspace,
             save_settings,
+            agent_oauth_start,
+            agent_oauth_poll,
+            agent_auth_status,
+            agent_oauth_logout,
+            agent_auth_credential,
+            agent_terminal_execute,
+            agent_terminal_status,
+            agent_terminal_kill,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build LeafMark");

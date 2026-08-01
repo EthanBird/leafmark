@@ -315,7 +315,8 @@ button:disabled { opacity: .42; cursor: default !important; }
 .dock-tabs { display: flex; align-items: stretch; justify-content: space-between; min-width: 0; border-bottom: 1px solid var(--border-subtle); background: color-mix(in srgb, var(--sidebar) 88%, var(--surface)); user-select: none; }
 .dock-tabs > div { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .dock-tabs > div::-webkit-scrollbar { display: none; }
-.dock-tabs button { display: flex; align-items: center; justify-content: center; height: 31px; gap: 5px; padding: 0 9px; border: 0; border-right: 1px solid var(--border-subtle); background: transparent; color: var(--text-tertiary); cursor: pointer; font-size: 9px; white-space: nowrap; }
+.dock-tabs button { display: flex; align-items: center; justify-content: center; height: 31px; gap: 5px; padding: 0 9px; border: 0; border-right: 1px solid var(--border-subtle); background: transparent; color: var(--text-tertiary); cursor: grab; font-size: 9px; white-space: nowrap; touch-action: none; }
+.dock-tabs button:active { cursor: grabbing; }
 .dock-tabs button:hover { background: var(--surface-hover); color: var(--text); }
 .dock-tabs button.active { background: var(--surface); color: var(--accent-strong); box-shadow: inset 0 -2px var(--accent); }
 .dock-tabs .dock-close { flex: 0 0 30px; width: 30px; padding: 0; border-right: 0; border-left: 1px solid var(--border-subtle); }
@@ -329,7 +330,7 @@ button:disabled { opacity: .42; cursor: default !important; }
 .dock-bottom .dock-resizer { top: -3px; right: 0; left: 0; height: 6px; cursor: ns-resize; }
 .dock-drop-overlay { position: fixed; z-index: 1500; inset: 34px 0 0; pointer-events: none; }
 .dock-drop-target { position: absolute; display: grid; place-items: center; border: 2px dashed color-mix(in srgb, var(--accent) 72%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent-soft) 82%, transparent); color: var(--accent-strong); opacity: .82; pointer-events: auto; backdrop-filter: blur(5px); }
-.dock-drop-target:hover { border-style: solid; background: color-mix(in srgb, var(--accent-soft) 94%, transparent); opacity: 1; }
+.dock-drop-target.hover { border-style: solid; background: color-mix(in srgb, var(--accent-soft) 94%, transparent); opacity: 1; transform: scale(1.015); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .dock-drop-target span { padding: 6px 10px; border-radius: 7px; background: var(--surface-raised); box-shadow: var(--shadow-sm); font-size: 10px; font-weight: 700; }
 .target-left, .target-right { top: 18%; bottom: 18%; width: min(24vw, 300px); }
 .target-left { left: 12px; }.target-right { right: 12px; }
@@ -903,6 +904,9 @@ button:disabled { opacity: .42; cursor: default !important; }
 .agent-setting-area, .agent-settings-block { padding: 17px 0; border-top: 1px solid var(--border-subtle); }
 .agent-setting-area textarea { width: 100%; min-height: 96px; margin-top: 10px; padding: 9px 10px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; outline: 0; background: var(--surface-raised); color: var(--text); font-size: 10px; line-height: 1.55; }
 .agent-setting-area textarea.mono { font-family: var(--mono); }
+.agent-auth-card { display: flex; align-items: center; justify-content: space-between; min-height: 92px; gap: 20px; padding: 15px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface-raised)); }
+.agent-auth-card > div { min-width: 0; }.agent-auth-card small { display: block; color: var(--accent-strong); font-size: 8px; font-weight: 700; letter-spacing: .1em; }.agent-auth-card strong { display: block; margin-top: 4px; font-size: 11px; }.agent-auth-card p { margin: 4px 0 0; color: var(--text-secondary); font-size: 9px; line-height: 1.5; }
+.agent-device-code { margin-top: 8px; padding: 5px 9px; border: 1px dashed var(--accent); border-radius: 6px; background: var(--surface-raised); color: var(--accent-strong); cursor: copy; font: 700 13px var(--mono); letter-spacing: .08em; }
 .skill-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 11px; }
 .skill-options label { display: flex; align-items: center; min-height: 34px; gap: 7px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text-secondary); cursor: pointer; font-size: 9px; }
 .skill-options input { accent-color: var(--accent); }

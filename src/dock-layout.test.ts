@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { activateDockPanel, defaultDesktopDockLayout, hideDockPanel, moveDockPanel, normalizeDesktopDockLayout, visibleDockPanels } from "./dock-layout";
+import { activateDockPanel, defaultDesktopDockLayout, dockZoneAtPoint, hideDockPanel, moveDockPanel, normalizeDesktopDockLayout, visibleDockPanels } from "./dock-layout";
 
 describe("desktop dock layout", () => {
+  it("resolves pointer drops at every window edge without native HTML drag events", () => {
+    expect(dockZoneAtPoint(3, 400, 1200, 800)).toBe("left");
+    expect(dockZoneAtPoint(1197, 400, 1200, 800)).toBe("right");
+    expect(dockZoneAtPoint(600, 36, 1200, 800)).toBe("top");
+    expect(dockZoneAtPoint(600, 797, 1200, 800)).toBe("bottom");
+    expect(dockZoneAtPoint(600, 400, 1200, 800)).toBeNull();
+  });
   it("keeps the requested default fourth Agent tab", () => {
     expect(defaultDesktopDockLayout().zones.left.panels).toEqual(["workspace", "history", "favorites", "agent"]);
   });

@@ -13,9 +13,9 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppSettings, AssociationStatus, ThemeMode, ThemePalette } from "../types";
+import type { AgentAuthAccountStatus, AgentAuthChallenge, AppSettings, AssociationStatus, ThemeMode, ThemePalette } from "../types";
 import { api } from "../api";
-import { PROVIDER_DEFAULTS } from "../agent-runtime";
+import { AGENT_PROVIDER_PROFILES, PROVIDER_DEFAULTS, isOAuthProvider, providerProfile } from "../agent-providers";
 import { defaultDesktopDockLayout } from "../dock-layout";
 
 interface SettingsPanelProps {
@@ -42,6 +42,9 @@ export function SettingsPanel({
   const [working, setWorking] = useState(false);
   const [associationWorking, setAssociationWorking] = useState(false);
   const [fontFamilies, setFontFamilies] = useState<string[] | null>(null);
+  const [agentAuth, setAgentAuth] = useState<AgentAuthAccountStatus | null>(null);
+  const [authChallenge, setAuthChallenge] = useState<AgentAuthChallenge | null>(null);
+  const [authWorking, setAuthWorking] = useState(false);
   const fontListId = useId();
   const sections = useMemo(() => [
     { id: "editor" as const, label: "编辑与保存", detail: "编译模式、自动保存" },
@@ -70,6 +73,53 @@ export function SettingsPanel({
       active = false;
     };
   }, [fontFamilies, section]);
+
+  useEffect(() => {
+    if (section !== "agent" || isAndroid || !isOAuthProvider(settings.agent.provider)) {
+      setAgentAuth(null);
+      return;
+    }
+    let active = true;
+    void api.getAgentAuthStatus(settings.agent.provider)
+      .then((status) => { if (active) setAgentAuth(status); })
+      .catch((error) => { if (active) setAgentAuth({ provider: settings.agent.provider, connected: false, email: null, expiresAt: null, detail: String(error) }); });
+    return () => { active = false; };
+  }, [isAndroid, section, settings.agent.provider]);
+
+  const startAgentLogin = async () => {
+    setAuthWorking(true);
+    setAuthChallenge(null);
+    try {
+      const challenge = await api.startAgentOAuth(settings.agent.provider);
+      setAuthChallenge(challenge);
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        const status = await api.pollAgentOAuth(challenge.flowId);
+        setAuthChallenge((current) => current ? { ...current, message: status.message } : current);
+        if (status.status === "pending") continue;
+        if (status.status === "error") throw new Error(status.message);
+        setAgentAuth(await api.getAgentAuthStatus(settings.agent.provider));
+        setAuthChallenge(null);
+        return;
+      }
+      throw new Error("登录等待超时，请重新开始");
+    } catch (error) {
+      setAuthChallenge((current) => current ? { ...current, message: error instanceof Error ? error.message : String(error) } : null);
+    } finally {
+      setAuthWorking(false);
+    }
+  };
+
+  const logoutAgent = async () => {
+    setAuthWorking(true);
+    try {
+      await api.logoutAgentOAuth(settings.agent.provider);
+      setAgentAuth(await api.getAgentAuthStatus(settings.agent.provider));
+      setAuthChallenge(null);
+    } finally {
+      setAuthWorking(false);
+    }
+  };
 
   const chooseWorkspace = async () => {
     if (!api.isTauri()) return;
@@ -132,25 +182,35 @@ export function SettingsPanel({
 
             {section === "agent" && (
               <>
-                <SettingsIntro title="AI Agent" description="按需启动的完整 Agent 循环：流式响应、多轮工具、长期记忆、会话恢复、Skills 与 Streamable HTTP MCP。未打开 Agent 时不会建立模型连接。" />
+                <SettingsIntro title="AI Agent" description="以 jcode 的 provider/auth 分层为基准：订阅 OAuth、原生模型协议、工具循环、长期记忆、会话恢复、Skills、MCP 与本机终端。未发送消息时不会建立模型连接。" />
                 <SettingRow title="启用一叶 Agent" description="启用后，Agent 会出现在桌面 Dock 与 Android 侧栏的第四个页签。模型请求只在你发送消息时发生。">
                   <Switch checked={settings.agent.enabled} onChange={(enabled) => patchAgent({ enabled })} />
                 </SettingRow>
-                <SettingRow title="Provider" description="预设只负责填充兼容端点；仍可自由修改 Base URL 和模型。">
+                <SettingRow title="Provider" description="订阅 Provider 使用原生 OAuth 和专用协议；其他条目与 jcode 的 OpenAI-compatible provider catalog 保持一致。">
                   <Select
                     value={settings.agent.provider}
                     onChange={(provider) => {
                       const next = provider as AppSettings["agent"]["provider"];
                       patchAgent({ provider: next, ...PROVIDER_DEFAULTS[next] });
                     }}
-                    options={[
-                      ["deepseek", "DeepSeek"], ["openai", "OpenAI"], ["openrouter", "OpenRouter"],
-                      ["ollama", "Ollama"], ["lmstudio", "LM Studio"], ["custom", "自定义兼容服务"],
-                    ]}
+                    options={AGENT_PROVIDER_PROFILES.map((item): [string, string] => [item.id, item.name])}
                   />
                 </SettingRow>
-                <AgentTextField title="Base URL" description="OpenAI Chat Completions 兼容地址；可填写到 /v1，Agent 会自动补齐 /chat/completions。" value={settings.agent.baseUrl} placeholder="https://api.example.com/v1" onChange={(baseUrl) => patchAgent({ baseUrl })} />
-                <AgentTextField title="API Key" description="留空可连接无需鉴权的 Ollama、LM Studio 或局域网服务。" value={settings.agent.apiKey} placeholder="sk-…" secret onChange={(apiKey) => patchAgent({ apiKey })} />
+                {!isAndroid && isOAuthProvider(settings.agent.provider) && (
+                  <div className="agent-auth-card">
+                    <div>
+                      <small>SUBSCRIPTION OAUTH</small>
+                      <strong>{agentAuth?.connected ? agentAuth.email || "订阅账户已连接" : `登录 ${providerProfile(settings.agent.provider).name}`}</strong>
+                      <p>{authChallenge?.message || agentAuth?.detail || "凭据由 Rust harness 保存；不会写入设置或 WebView localStorage。"}</p>
+                      {authChallenge?.userCode && <button type="button" className="agent-device-code" onClick={() => void navigator.clipboard?.writeText(authChallenge.userCode!)} title="点击复制设备代码">{authChallenge.userCode}</button>}
+                    </div>
+                    {agentAuth?.connected
+                      ? <button type="button" className="secondary-button" disabled={authWorking} onClick={() => void logoutAgent()}>退出登录</button>
+                      : <button type="button" className="primary-button" disabled={authWorking || !api.isTauri()} onClick={() => void startAgentLogin()}>{authWorking ? "等待授权…" : "浏览器登录"}</button>}
+                  </div>
+                )}
+                {!isOAuthProvider(settings.agent.provider) && <AgentTextField title="Base URL" description="兼容地址可填写到 /v1；一叶会根据 Provider 的原生协议补齐请求路径。" value={settings.agent.baseUrl} placeholder="https://api.example.com/v1" onChange={(baseUrl) => patchAgent({ baseUrl })} />}
+                {!isOAuthProvider(settings.agent.provider) && providerProfile(settings.agent.provider).auth !== "local" && <AgentTextField title="API Key" description="只用于当前 API Provider；订阅登录不会读取这里的 Key。" value={settings.agent.apiKey} placeholder="sk-…" secret onChange={(apiKey) => patchAgent({ apiKey })} />}
                 <AgentTextField title="模型" description="使用服务端显示的精确模型 ID。" value={settings.agent.model} placeholder="deepseek-chat" onChange={(model) => patchAgent({ model })} />
                 <SettingSlider title="Temperature" value={settings.agent.temperature} min={0} max={2} step={0.05} unit="" onChange={(temperature) => patchAgent({ temperature })} />
                 <SettingSlider title="Top P" value={settings.agent.topP} min={0.05} max={1} step={0.05} unit="" onChange={(topP) => patchAgent({ topP })} />
@@ -180,6 +240,12 @@ export function SettingsPanel({
                 <SettingRow title="Web 工具" description="允许 Agent 使用原生 HTTP 客户端读取 HTTP/HTTPS 页面文字。">
                   <Switch checked={settings.agent.webToolsEnabled} onChange={(webToolsEnabled) => patchAgent({ webToolsEnabled })} />
                 </SettingRow>
+                <SettingRow title="本机终端工具" description={isAndroid ? "Android 不提供系统终端 harness。" : "允许 Agent 在当前文档库中执行命令；Windows 固定使用隐藏窗口的 PowerShell，不会弹出黑色命令行。支持前台超时和后台任务。"}>
+                  <Switch checked={!isAndroid && settings.agent.terminalToolsEnabled} onChange={(terminalToolsEnabled) => patchAgent({ terminalToolsEnabled: !isAndroid && terminalToolsEnabled })} />
+                </SettingRow>
+                {settings.agent.terminalToolsEnabled && !isAndroid && <SettingRow title="允许破坏性终端命令" description="关闭时，删除、格式化、git reset --hard 等命令会在 Rust 层被拒绝。建议保持关闭。">
+                  <Switch checked={settings.agent.allowDestructiveTerminal} onChange={(allowDestructiveTerminal) => patchAgent({ allowDestructiveTerminal })} />
+                </SettingRow>}
                 <div className="agent-settings-block">
                   <strong>内置 Skills</strong><p>Skills 只向模型注入所需的方法约束，不引入额外运行库。</p>
                   <div className="skill-options">

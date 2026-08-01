@@ -1,4 +1,6 @@
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
+import { PROVIDER_DEFAULTS, providerProfile } from "./agent-providers";
+import { api } from "./api";
 import type { AgentSettings } from "./types";
 
 export type AgentRole = "system" | "user" | "assistant" | "tool";
@@ -14,6 +16,7 @@ interface RuntimeMessage {
   content: string | null;
   tool_call_id?: string;
   tool_calls?: OpenAiToolCall[];
+  provider_items?: Array<Record<string, unknown>>;
 }
 
 interface OpenAiToolCall {
@@ -60,14 +63,7 @@ export interface RunAgentResult {
   rounds: number;
 }
 
-export const PROVIDER_DEFAULTS: Record<AgentSettings["provider"], { baseUrl: string; model: string }> = {
-  openai: { baseUrl: "https://api.openai.com/v1", model: "gpt-5.4-mini" },
-  deepseek: { baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-  openrouter: { baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-5.4-mini" },
-  ollama: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen3:8b" },
-  lmstudio: { baseUrl: "http://127.0.0.1:1234/v1", model: "local-model" },
-  custom: { baseUrl: "https://example.com/v1", model: "model-id" },
-};
+export { PROVIDER_DEFAULTS } from "./agent-providers";
 
 export async function runAgentTurn(options: RunAgentOptions): Promise<RunAgentResult> {
   const messages: RuntimeMessage[] = [
@@ -83,7 +79,7 @@ export async function runAgentTurn(options: RunAgentOptions): Promise<RunAgentRe
     finalContent += response.content;
     if (!response.toolCalls.length) return { content: finalContent, rounds: round + 1 };
 
-    messages.push({ role: "assistant", content: response.content || null, tool_calls: response.toolCalls });
+    messages.push({ role: "assistant", content: response.content || null, tool_calls: response.toolCalls, provider_items: response.providerItems });
     for (const call of response.toolCalls) {
       const tool = options.tools.find((candidate) => candidate.definition.function.name === call.function.name);
       const input = safeJsonObject(call.function.arguments);
@@ -108,10 +104,20 @@ export async function runAgentTurn(options: RunAgentOptions): Promise<RunAgentRe
 interface CompletionResult {
   content: string;
   toolCalls: OpenAiToolCall[];
+  providerItems?: Array<Record<string, unknown>>;
 }
 
 async function requestCompletion(messages: RuntimeMessage[], options: RunAgentOptions, emitText: boolean): Promise<CompletionResult> {
-  const endpoint = completionEndpoint(options.settings);
+  const protocol = providerProfile(options.settings.provider).protocol;
+  if (protocol === "openai-responses") return requestOpenAiResponses(messages, options, emitText);
+  if (protocol === "anthropic") return requestAnthropic(messages, options, emitText);
+  if (protocol === "gemini-code-assist") return requestGeminiCodeAssist(messages, options, emitText);
+  return requestOpenAiChat(messages, options, emitText);
+}
+
+async function requestOpenAiChat(messages: RuntimeMessage[], options: RunAgentOptions, emitText: boolean): Promise<CompletionResult> {
+  const oauth = options.settings.provider === "copilot" ? await api.getAgentCredential("copilot") : null;
+  const endpoint = completionEndpoint(options.settings, oauth?.apiBase || undefined);
   const body: Record<string, unknown> = {
     model: options.settings.model.trim() || PROVIDER_DEFAULTS[options.settings.provider].model,
     messages,
@@ -119,14 +125,14 @@ async function requestCompletion(messages: RuntimeMessage[], options: RunAgentOp
     temperature: options.settings.temperature,
     top_p: options.settings.topP,
   };
-  if (options.settings.provider === "openai") body.max_completion_tokens = options.settings.maxTokens;
+  if (options.settings.provider === "openai-api") body.max_completion_tokens = options.settings.maxTokens;
   else body.max_tokens = options.settings.maxTokens;
   if (options.tools.length) body.tools = options.tools.map((tool) => tool.definition);
   if (options.settings.reasoningEffort !== "none") body.reasoning_effort = options.settings.reasoningEffort;
 
   const response = await portableFetch(endpoint, {
     method: "POST",
-    headers: providerHeaders(options.settings),
+    headers: providerHeaders(options.settings, oauth?.accessToken),
     body: JSON.stringify(body),
     signal: options.signal,
   });
@@ -169,6 +175,301 @@ async function requestCompletion(messages: RuntimeMessage[], options: RunAgentOp
     if (done) break;
   }
   return { content, toolCalls: [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call) };
+}
+
+async function requestOpenAiResponses(messages: RuntimeMessage[], options: RunAgentOptions, emitText: boolean): Promise<CompletionResult> {
+  const credential = await api.getAgentCredential("openai-oauth");
+  const profile = providerProfile(options.settings.provider);
+  const base = (options.settings.baseUrl.trim() || profile.baseUrl).replace(/\/+$/, "");
+  const endpoint = /\/responses$/i.test(base) ? base : `${base}/responses`;
+  const input = messages.filter((message) => message.role !== "system").flatMap((message): Record<string, unknown>[] => {
+    if (message.role === "tool") return [{ type: "function_call_output", call_id: message.tool_call_id, output: message.content || "" }];
+    const items: Record<string, unknown>[] = [];
+    if (message.content) items.push({ role: message.role, content: message.content });
+    items.push(...(message.provider_items ?? []));
+    for (const call of message.tool_calls ?? []) {
+      items.push({ type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments });
+    }
+    return items;
+  });
+  const body: Record<string, unknown> = {
+    model: options.settings.model.trim() || profile.model,
+    instructions: messages.find((message) => message.role === "system")?.content || "",
+    input,
+    tools: options.tools.map((tool) => ({
+      type: "function",
+      name: tool.definition.function.name,
+      description: tool.definition.function.description,
+      parameters: tool.definition.function.parameters,
+      strict: false,
+    })),
+    tool_choice: "auto",
+    parallel_tool_calls: false,
+    stream: true,
+    store: false,
+    include: ["reasoning.encrypted_content"],
+  };
+  if (options.settings.reasoningEffort !== "none") body.reasoning = { effort: options.settings.reasoningEffort, summary: "auto" };
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${credential.accessToken}`,
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    originator: "codex_cli_rs",
+  };
+  if (credential.accountId) headers["chatgpt-account-id"] = credential.accountId;
+  const response = await portableFetch(endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: options.signal });
+  if (!response.ok) throw await responseError(response);
+  if (!response.body) return parseOpenAiResponsesJson(await response.json() as Record<string, unknown>, options, emitText);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const calls = new Map<string, OpenAiToolCall>();
+  const providerItems: Array<Record<string, unknown>> = [];
+  let buffer = "";
+  let content = "";
+  while (true) {
+    assertNotAborted(options.signal);
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const parsed = consumeSseEvents(buffer);
+    buffer = parsed.rest;
+    for (const data of parsed.events) {
+      const event = safeJson(data) as ResponsesStreamEvent | null;
+      if (!event) continue;
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+        content += event.delta;
+        if (emitText) options.onText(event.delta);
+      }
+      if ((event.type === "response.reasoning_summary_text.delta" || event.type === "response.reasoning_text.delta") && typeof event.delta === "string") {
+        options.onReasoning?.(event.delta);
+      }
+      const item = event.item;
+      if ((event.type === "response.output_item.added" || event.type === "response.output_item.done") && item?.type === "function_call") {
+        const key = item.id || item.call_id || `call-${calls.size}`;
+        calls.set(key, {
+          id: item.call_id || key,
+          type: "function",
+          function: { name: item.name || calls.get(key)?.function.name || "", arguments: item.arguments ?? calls.get(key)?.function.arguments ?? "" },
+        });
+      }
+      if (event.type === "response.output_item.done" && item && (item.type === "reasoning" || item.type === "compaction")) {
+        providerItems.push(item as Record<string, unknown>);
+      }
+      if ((event.type === "response.function_call_arguments.delta" || event.type === "response.function_call_arguments.done") && event.item_id) {
+        const call = calls.get(event.item_id);
+        if (call) call.function.arguments = event.type.endsWith(".done") && typeof event.arguments === "string" ? event.arguments : call.function.arguments + (event.delta || "");
+      }
+      if (event.type === "response.failed") throw new Error(event.response?.error?.message || "Codex Responses 请求失败");
+    }
+    if (done) break;
+  }
+  return { content, toolCalls: [...calls.values()].filter((call) => call.function.name), providerItems };
+}
+
+function parseOpenAiResponsesJson(json: Record<string, unknown>, options: RunAgentOptions, emitText: boolean): CompletionResult {
+  const output = Array.isArray(json.output) ? json.output as Array<Record<string, unknown>> : [];
+  let content = "";
+  const toolCalls: OpenAiToolCall[] = [];
+  const providerItems: Array<Record<string, unknown>> = [];
+  for (const item of output) {
+    if (item.type === "function_call") toolCalls.push({ id: String(item.call_id || item.id || crypto.randomUUID()), type: "function", function: { name: String(item.name || ""), arguments: String(item.arguments || "{}") } });
+    if (item.type === "message" && Array.isArray(item.content)) content += item.content.map((part) => typeof part?.text === "string" ? part.text : "").join("");
+    if (item.type === "reasoning" || item.type === "compaction") providerItems.push(item);
+  }
+  if (emitText && content) options.onText(content);
+  return { content, toolCalls, providerItems };
+}
+
+async function requestAnthropic(messages: RuntimeMessage[], options: RunAgentOptions, emitText: boolean): Promise<CompletionResult> {
+  const oauth = options.settings.provider === "claude-oauth";
+  const credential = oauth ? await api.getAgentCredential("claude-oauth") : null;
+  const base = (options.settings.baseUrl.trim() || providerProfile(options.settings.provider).baseUrl).replace(/\/+$/, "");
+  const endpoint = /\/messages(?:\?|$)/i.test(base) ? base : `${base}/messages${oauth ? "?beta=true" : ""}`;
+  const body: Record<string, unknown> = {
+    model: options.settings.model.trim() || providerProfile(options.settings.provider).model,
+    system: messages.find((message) => message.role === "system")?.content || "",
+    messages: messages.filter((message) => message.role !== "system").map((message) => anthropicMessage(message)),
+    max_tokens: options.settings.maxTokens,
+    temperature: options.settings.temperature,
+    top_p: options.settings.topP,
+    stream: true,
+  };
+  if (options.tools.length) body.tools = options.tools.map((tool) => ({
+    name: tool.definition.function.name,
+    description: tool.definition.function.description,
+    input_schema: tool.definition.function.parameters,
+  }));
+  if (options.settings.reasoningEffort !== "none") {
+    body.thinking = { type: "adaptive" };
+    body.output_config = { effort: options.settings.reasoningEffort };
+  }
+  const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "text/event-stream", "anthropic-version": "2023-06-01" };
+  if (oauth) {
+    headers.Authorization = `Bearer ${credential!.accessToken}`;
+    headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24";
+    headers["User-Agent"] = "claude-cli/2.1.123 (external, sdk-cli)";
+    headers["x-app"] = "cli";
+    headers["X-Claude-Code-Session-Id"] = crypto.randomUUID();
+    headers["anthropic-dangerous-direct-browser-access"] = "true";
+  } else if (options.settings.apiKey.trim()) headers["x-api-key"] = options.settings.apiKey.trim();
+  const response = await portableFetch(endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: options.signal });
+  if (!response.ok) throw await responseError(response);
+  if (!response.body) throw new Error("Anthropic 没有返回流式响应");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const calls = new Map<number, OpenAiToolCall>();
+  let buffer = "";
+  let content = "";
+  while (true) {
+    assertNotAborted(options.signal);
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const parsed = consumeSseEvents(buffer);
+    buffer = parsed.rest;
+    for (const data of parsed.events) {
+      const event = safeJson(data) as AnthropicStreamEvent | null;
+      if (!event) continue;
+      if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
+        calls.set(event.index ?? calls.size, { id: event.content_block.id || crypto.randomUUID(), type: "function", function: { name: event.content_block.name || "", arguments: JSON.stringify(event.content_block.input || {}) } });
+      }
+      if (event.type === "content_block_delta") {
+        if (event.delta?.type === "text_delta" && event.delta.text) {
+          content += event.delta.text;
+          if (emitText) options.onText(event.delta.text);
+        }
+        if (event.delta?.type === "thinking_delta" && event.delta.thinking) options.onReasoning?.(event.delta.thinking);
+        if (event.delta?.type === "input_json_delta" && typeof event.delta.partial_json === "string") {
+          const call = calls.get(event.index ?? -1);
+          if (call) call.function.arguments = call.function.arguments === "{}" ? event.delta.partial_json : call.function.arguments + event.delta.partial_json;
+        }
+      }
+      if (event.type === "error") throw new Error(event.error?.message || "Anthropic 请求失败");
+    }
+    if (done) break;
+  }
+  return { content, toolCalls: [...calls.values()] };
+}
+
+function anthropicMessage(message: RuntimeMessage): Record<string, unknown> {
+  if (message.role === "tool") return { role: "user", content: [{ type: "tool_result", tool_use_id: message.tool_call_id, content: message.content || "" }] };
+  if (message.role === "assistant" && message.tool_calls?.length) {
+    return { role: "assistant", content: [
+      ...(message.content ? [{ type: "text", text: message.content }] : []),
+      ...message.tool_calls.map((call) => ({ type: "tool_use", id: call.id, name: call.function.name, input: safeJsonObject(call.function.arguments) })),
+    ] };
+  }
+  return { role: message.role, content: message.content || "" };
+}
+
+let geminiProjectId = "";
+
+async function requestGeminiCodeAssist(messages: RuntimeMessage[], options: RunAgentOptions, emitText: boolean): Promise<CompletionResult> {
+  const credential = await api.getAgentCredential("gemini-oauth");
+  const base = (options.settings.baseUrl.trim() || providerProfile(options.settings.provider).baseUrl).replace(/\/+$/, "");
+  if (!geminiProjectId) geminiProjectId = await ensureGeminiProject(base, credential.accessToken, options.signal);
+  const priorCalls = new Map<string, string>();
+  for (const message of messages) for (const call of message.tool_calls ?? []) priorCalls.set(call.id, call.function.name);
+  const contents = messages.filter((message) => message.role !== "system").flatMap((message) => {
+    if (message.role === "tool") return [{ role: "user", parts: [{ functionResponse: { name: priorCalls.get(message.tool_call_id || "") || "tool", id: message.tool_call_id, response: { content: message.content || "" } } }] }];
+    const parts: Record<string, unknown>[] = [];
+    if (message.content) parts.push({ text: message.content });
+    for (const call of message.tool_calls ?? []) parts.push({ functionCall: { name: call.function.name, id: call.id, args: safeJsonObject(call.function.arguments) } });
+    return parts.length ? [{ role: message.role === "assistant" ? "model" : "user", parts }] : [];
+  });
+  const system = messages.find((message) => message.role === "system")?.content || "";
+  const body = {
+    model: options.settings.model.trim() || providerProfile(options.settings.provider).model,
+    project: geminiProjectId,
+    user_prompt_id: crypto.randomUUID(),
+    request: {
+      contents,
+      systemInstruction: system ? { role: "user", parts: [{ text: options.tools.length ? `${system}\n\n## Function calling\nUse native function calls only; never write code that pretends to call a tool.` : system }] } : undefined,
+      tools: options.tools.length ? [{ functionDeclarations: options.tools.map((tool) => ({
+        name: tool.definition.function.name,
+        description: tool.definition.function.description,
+        parameters: geminiSchema(tool.definition.function.parameters),
+      })) }] : undefined,
+      toolConfig: options.tools.length ? { functionCallingConfig: { mode: "AUTO" } } : undefined,
+      session_id: crypto.randomUUID(),
+    },
+  };
+  const response = await portableFetch(`${base}/v1internal:generateContent`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${credential.accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    const error = await responseError(response);
+    if (/project|not found/i.test(error.message)) geminiProjectId = "";
+    throw error;
+  }
+  const json = await response.json() as GeminiGenerateResponse;
+  const parts = json.response?.candidates?.[0]?.content?.parts ?? [];
+  let content = "";
+  const toolCalls: OpenAiToolCall[] = [];
+  for (const part of parts) {
+    if (part.text) content += part.text;
+    if (part.functionCall?.name) toolCalls.push({
+      id: part.functionCall.id || crypto.randomUUID(),
+      type: "function",
+      function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args || {}) },
+    });
+  }
+  if (emitText && content) options.onText(content);
+  return { content, toolCalls };
+}
+
+async function ensureGeminiProject(base: string, accessToken: string, signal: AbortSignal): Promise<string> {
+  const metadata = { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI" };
+  const post = async (method: string, body: unknown) => {
+    const response = await portableFetch(`${base}/v1internal:${method}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal,
+    });
+    if (!response.ok) throw await responseError(response);
+    return response.json() as Promise<Record<string, unknown>>;
+  };
+  const loaded = await post("loadCodeAssist", { metadata });
+  const existing = stringAt(loaded, "cloudaicompanionProject");
+  if (existing) return existing;
+  if (loaded.currentTier) throw new Error("Gemini Code Assist 账户没有返回项目；请先在 Gemini CLI 完成一次 Code Assist 初始化");
+  const tiers = Array.isArray(loaded.allowedTiers) ? loaded.allowedTiers as Array<Record<string, unknown>> : [];
+  const tier = tiers.find((item) => item.isDefault === true) ?? tiers.find((item) => item.id === "free-tier") ?? tiers[0];
+  if (!tier) {
+    const reason = Array.isArray(loaded.ineligibleTiers) ? (loaded.ineligibleTiers as Array<Record<string, unknown>>).map((item) => item.reasonMessage).filter(Boolean).join("；") : "";
+    throw new Error(reason || "此 Google 账户暂时无法使用 Gemini Code Assist");
+  }
+  let operation = await post("onboardUser", {
+    tierId: tier.id,
+    metadata: { ...metadata, duetProject: null },
+  });
+  for (let attempt = 0; operation.done !== true && attempt < 60; attempt += 1) {
+    const name = stringAt(operation, "name");
+    if (!name) throw new Error("Gemini Code Assist 初始化没有返回操作 ID");
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    const response = await portableFetch(`${base}/v1internal/${name.replace(/^\/+/, "")}`, { headers: { Authorization: `Bearer ${accessToken}` }, signal });
+    if (!response.ok) throw await responseError(response);
+    operation = await response.json() as Record<string, unknown>;
+  }
+  const project = nestedString(operation, ["response", "cloudaicompanionProject", "id"]);
+  if (!project) throw new Error("Gemini Code Assist 初始化完成，但没有返回项目 ID");
+  return project;
+}
+
+function geminiSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(geminiSchema);
+  if (!value || typeof value !== "object") return value;
+  const unsupported = new Set(["additionalProperties", "$schema", "$id", "$ref", "$defs", "definitions", "$comment"]);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !unsupported.has(key)).map(([key, child]) => [key, geminiSchema(child)]));
+}
+
+function stringAt(value: Record<string, unknown>, key: string) { return typeof value[key] === "string" ? value[key] as string : ""; }
+function nestedString(value: unknown, path: string[]): string {
+  let current: unknown = value;
+  for (const key of path) current = current && typeof current === "object" ? (current as Record<string, unknown>)[key] : undefined;
+  return typeof current === "string" ? current : "";
 }
 
 export function consumeSseEvents(buffer: string): { events: string[]; rest: string } {
@@ -253,7 +554,7 @@ async function connectMcpServer(config: McpServerConfig, signal: AbortSignal): P
   await rpc("initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
-    clientInfo: { name: "leafmark", version: "0.4.6" },
+    clientInfo: { name: "leafmark", version: "0.5.0" },
   });
   await rpc("notifications/initialized", undefined, true);
   const listed = await rpc("tools/list", {}) as { result?: { tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> }; error?: { message?: string } } | null;
@@ -309,17 +610,25 @@ export async function fetchWebText(url: string, signal: AbortSignal): Promise<st
     .slice(0, 40_000);
 }
 
-function completionEndpoint(settings: AgentSettings) {
-  const base = (settings.baseUrl.trim() || PROVIDER_DEFAULTS[settings.provider].baseUrl).replace(/\/+$/, "");
+function completionEndpoint(settings: AgentSettings, overrideBase?: string) {
+  const base = (overrideBase?.trim() || settings.baseUrl.trim() || PROVIDER_DEFAULTS[settings.provider].baseUrl).replace(/\/+$/, "");
   return /\/chat\/completions$/i.test(base) ? base : `${base}/chat/completions`;
 }
 
-function providerHeaders(settings: AgentSettings): Record<string, string> {
+function providerHeaders(settings: AgentSettings, oauthToken?: string): Record<string, string> {
   const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "text/event-stream, application/json" };
-  if (settings.apiKey.trim()) headers.Authorization = `Bearer ${settings.apiKey.trim()}`;
+  if (oauthToken) headers.Authorization = `Bearer ${oauthToken}`;
+  else if (settings.apiKey.trim()) headers.Authorization = `Bearer ${settings.apiKey.trim()}`;
   if (settings.provider === "openrouter") {
     headers["HTTP-Referer"] = "https://github.com/EthanBird/leafmark";
     headers["X-Title"] = "LeafMark";
+  }
+  if (settings.provider === "copilot") {
+    headers["Copilot-Integration-Id"] = "vscode-chat";
+    headers["Editor-Version"] = "vscode/1.95.0";
+    headers["Editor-Plugin-Version"] = "copilot-chat/0.22.0";
+    headers["Openai-Intent"] = "conversation-panel";
+    headers["User-Agent"] = "GitHubCopilotChat/0.22.0";
   }
   return headers;
 }
@@ -382,4 +691,29 @@ interface OpenAiResponse {
 
 interface OpenAiStreamChunk {
   choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; tool_calls?: Array<Partial<OpenAiToolCall> & { index?: number; function?: { name?: string; arguments?: string } }> } }>;
+}
+
+interface ResponsesStreamEvent {
+  type?: string;
+  delta?: string;
+  arguments?: string;
+  item_id?: string;
+  item?: { id?: string; type?: string; call_id?: string; name?: string; arguments?: string; [key: string]: unknown };
+  response?: { error?: { message?: string } };
+}
+
+interface AnthropicStreamEvent {
+  type?: string;
+  index?: number;
+  content_block?: { type?: string; id?: string; name?: string; input?: unknown };
+  delta?: { type?: string; text?: string; thinking?: string; partial_json?: string };
+  error?: { message?: string };
+}
+
+interface GeminiGenerateResponse {
+  response?: {
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string; functionCall?: { id?: string; name?: string; args?: Record<string, unknown> } }> };
+    }>;
+  };
 }

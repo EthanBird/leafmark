@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
+  AgentAuthAccountStatus,
+  AgentAuthChallenge,
+  AgentAuthFlowStatus,
+  AgentCredential,
+  AgentTerminalResult,
+  AgentProvider,
   AppSettings,
   ArchiveEntry,
   AssociationStatus,
@@ -9,7 +16,7 @@ import type {
   ImportDirectoryResult,
   LoadedDocument,
 } from "./types";
-import { defaultAppSettings } from "./settings-defaults";
+import { defaultAppSettings, normalizeAgentSettings } from "./settings-defaults";
 
 const browserSettings: AppSettings = defaultAppSettings("浏览器预览");
 
@@ -67,7 +74,10 @@ export const api = {
   isTauri,
   isAndroid,
   async bootstrap(): Promise<BootstrapPayload> {
-    if (isTauri()) return invoke("bootstrap");
+    if (isTauri()) {
+      const payload = await invoke<BootstrapPayload>("bootstrap");
+      return { ...payload, settings: { ...payload.settings, agent: normalizeAgentSettings(payload.settings.agent) } };
+    }
     return {
       settings: browserSettings,
       entries: [{ path: "欢迎.md", name: "欢迎.md", kind: "file", depth: 0, size: sample.length, modifiedMs: Date.now() }],
@@ -81,6 +91,45 @@ export const api = {
         message: "浏览器预览不支持系统文件关联",
       },
     };
+  },
+  async startAgentOAuth(provider: AgentProvider): Promise<AgentAuthChallenge> {
+    if (!isTauri()) throw new Error("浏览器预览无法启动本机 OAuth");
+    const challenge = await invoke<AgentAuthChallenge>("agent_oauth_start", { provider });
+    await openUrl(challenge.authorizeUrl);
+    return challenge;
+  },
+  async pollAgentOAuth(flowId: string): Promise<AgentAuthFlowStatus> {
+    if (!isTauri()) return { status: "error", message: "浏览器预览不支持 OAuth" };
+    return invoke("agent_oauth_poll", { flowId });
+  },
+  async getAgentAuthStatus(provider: AgentProvider): Promise<AgentAuthAccountStatus> {
+    if (!isTauri()) return { provider, connected: false, email: null, expiresAt: null, detail: "浏览器预览未登录" };
+    return invoke("agent_auth_status", { provider });
+  },
+  async logoutAgentOAuth(provider: AgentProvider): Promise<void> {
+    if (isTauri()) await invoke("agent_oauth_logout", { provider });
+  },
+  async getAgentCredential(provider: AgentProvider): Promise<AgentCredential> {
+    if (!isTauri()) throw new Error("浏览器预览无法读取订阅凭据");
+    return invoke("agent_auth_credential", { provider });
+  },
+  async executeAgentTerminal(command: string, options: { cwd?: string; timeoutMs?: number; background?: boolean; allowDestructive?: boolean } = {}): Promise<AgentTerminalResult> {
+    if (!isTauri()) throw new Error("浏览器预览无法执行系统终端");
+    return invoke("agent_terminal_execute", {
+      command,
+      cwd: options.cwd || null,
+      timeoutMs: options.timeoutMs ?? 120_000,
+      background: options.background ?? false,
+      allowDestructive: options.allowDestructive ?? false,
+    });
+  },
+  async getAgentTerminalStatus(jobId: string): Promise<AgentTerminalResult> {
+    if (!isTauri()) throw new Error("浏览器预览无法读取终端任务");
+    return invoke("agent_terminal_status", { jobId });
+  },
+  async killAgentTerminal(jobId: string): Promise<AgentTerminalResult> {
+    if (!isTauri()) throw new Error("浏览器预览无法停止终端任务");
+    return invoke("agent_terminal_kill", { jobId });
   },
   async listEntries(): Promise<DocumentEntry[]> {
     if (isTauri()) return invoke("list_entries");
@@ -214,7 +263,10 @@ export const api = {
     }
   },
   async setWorkspace(path: string): Promise<BootstrapPayload> {
-    if (isTauri()) return invoke("set_workspace", { path });
+    if (isTauri()) {
+      const payload = await invoke<BootstrapPayload>("set_workspace", { path });
+      return { ...payload, settings: { ...payload.settings, agent: normalizeAgentSettings(payload.settings.agent) } };
+    }
     return {
       settings: { ...browserSettings, workspacePath: path },
       entries: [],

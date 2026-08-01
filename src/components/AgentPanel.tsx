@@ -36,6 +36,7 @@ import {
   type AgentSession,
 } from "../agent-storage";
 import type { AgentSettings, DocumentEntry } from "../types";
+import { api } from "../api";
 
 export interface AgentDocumentHost {
   current: { path: string; content: string } | null;
@@ -330,6 +331,23 @@ function buildTools(settings: AgentSettings, host: AgentDocumentHost, session: A
   }
   if (settings.webToolsEnabled) {
     tools.push(tool("web_fetch", "读取一个 HTTP/HTTPS 网页的主要文字。", { url: { type: "string" } }, ["url"], async (input, signal) => fetchWebText(stringArg(input.url), signal)));
+  }
+  if (settings.terminalToolsEnabled && !api.isAndroid()) {
+    tools.push(
+      tool("terminal_execute", "在当前文档库内执行终端命令。Windows 使用不显示窗口的 PowerShell。需要持续运行时设置 background=true。", {
+        command: { type: "string" },
+        cwd: { type: "string", description: "相对文档库的工作目录，留空使用文档库根目录" },
+        timeout_seconds: { type: "integer", minimum: 1, maximum: 600 },
+        background: { type: "boolean" },
+      }, ["command"], async (input) => JSON.stringify(await api.executeAgentTerminal(stringArg(input.command), {
+        cwd: stringArg(input.cwd) || undefined,
+        timeoutMs: numberArg(input.timeout_seconds, 120) * 1000,
+        background: Boolean(input.background),
+        allowDestructive: settings.allowDestructiveTerminal,
+      }))),
+      tool("terminal_status", "读取后台终端任务的状态与最新输出。", { job_id: { type: "string" } }, ["job_id"], async (input) => JSON.stringify(await api.getAgentTerminalStatus(stringArg(input.job_id)))),
+      tool("terminal_kill", "停止由 terminal_execute 启动的后台任务。", { job_id: { type: "string" } }, ["job_id"], async (input) => JSON.stringify(await api.killAgentTerminal(stringArg(input.job_id)))),
+    );
   }
   if (settings.maxParallelAgents > 0) {
     tools.push(tool("delegate_tasks", "把彼此独立的分析任务并行委派给只读子 Agent，并返回每项结果。适合多角度审阅、核查或比较方案。", {

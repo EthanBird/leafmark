@@ -75,6 +75,7 @@ import {
 import { defaultAppSettings } from "./settings-defaults";
 import {
   activateDockPanel,
+  dockZoneAtPoint,
   hideDockPanel,
   moveDockPanel,
   normalizeDesktopDockLayout,
@@ -167,6 +168,7 @@ export default function App() {
   const [rendering, setRendering] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [draggedPanel, setDraggedPanel] = useState<DockPanelId | null>(null);
+  const [dockDragZone, setDockDragZone] = useState<DockZone | null>(null);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   const contentRef = useRef(content);
   const savedRef = useRef(savedContent);
@@ -1092,9 +1094,11 @@ export default function App() {
     updateDockLayout(hideDockPanel(dockLayout, panel));
     if (panel === "outline") setOutlineOpen(false);
   };
-  const dropPanel = (zone: DockZone) => {
-    if (draggedPanel) updateDockLayout(moveDockPanel(dockLayout, draggedPanel, zone));
+  const finishPanelDrag = (panel: DockPanelId, x: number, y: number) => {
+    const zone = dockZoneAtPoint(x, y, window.innerWidth, window.innerHeight);
+    if (zone) updateDockLayout(moveDockPanel(dockLayout, panel, zone));
     setDraggedPanel(null);
+    setDockDragZone(null);
   };
   const toggleOutlinePanel = () => {
     if (android) {
@@ -1267,7 +1271,8 @@ export default function App() {
           onActivate={activatePanel}
           onHide={hidePanel}
           onDragStart={setDraggedPanel}
-          onDragEnd={() => setDraggedPanel(null)}
+          onDragMove={(x, y) => setDockDragZone(dockZoneAtPoint(x, y, window.innerWidth, window.innerHeight))}
+          onDragEnd={finishPanelDrag}
           onResize={(nextSize) => updateDockLayout(resizeDockZone(dockLayout, zone, nextSize))}
         />;
       })}
@@ -1416,7 +1421,7 @@ export default function App() {
         </aside>
       )}
 
-      <DockDropTargets active={!android && Boolean(draggedPanel)} onDrop={dropPanel} />
+      <DockDropTargets active={!android && Boolean(draggedPanel)} hover={dockDragZone} />
 
       {menu && (
         <div className="context-menu" style={contextMenuPosition(menu.x, menu.y, android)} onClick={(event) => event.stopPropagation()}>

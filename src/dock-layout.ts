@@ -107,6 +107,18 @@ export function resizeDockZone(layout: DesktopDockLayout, zone: DockZone, size: 
   return next;
 }
 
+export function dockZoneAtPoint(x: number, y: number, width: number, height: number): DockZone | null {
+  if (width <= 0 || height <= 0 || x < 0 || y < 0 || x > width || y > height) return null;
+  const horizontalEdge = Math.min(300, Math.max(150, width * 0.26));
+  const verticalEdge = Math.min(180, Math.max(100, height * 0.22));
+  const distances: Array<[DockZone, number]> = [];
+  if (x <= horizontalEdge) distances.push(["left", x / horizontalEdge]);
+  if (x >= width - horizontalEdge) distances.push(["right", (width - x) / horizontalEdge]);
+  if (y <= verticalEdge) distances.push(["top", y / verticalEdge]);
+  if (y >= height - verticalEdge) distances.push(["bottom", (height - y) / verticalEdge]);
+  return distances.sort((a, b) => a[1] - b[1])[0]?.[0] ?? null;
+}
+
 function clampSize(value: unknown, min: number, max: number, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback;
 }
