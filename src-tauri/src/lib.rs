@@ -2275,7 +2275,15 @@ mod tests {
         assert_eq!(prepared.mime_type, "application/pdf");
         assert_eq!(prepared.size, payload.len() as u64);
         assert_eq!(fs::read(&prepared.path).unwrap(), payload);
-        assert!(Path::new(&prepared.path).starts_with(root.join(SHARED_EXPORT_DIRECTORY)));
+        // `stage_export_bytes` returns a canonical path. On Windows that may
+        // carry the extended-length (`\\?\\`) prefix, so compare two
+        // canonical paths instead of mixing canonical and lexical forms.
+        let prepared_path = Path::new(&prepared.path).canonicalize().unwrap();
+        let shared_root = root
+            .join(SHARED_EXPORT_DIRECTORY)
+            .canonicalize()
+            .unwrap();
+        assert!(prepared_path.starts_with(shared_root));
         assert!(stage_export_bytes(&root, "x.pdf", "application/pdf", "upload", payload).is_err());
         let _ = fs::remove_dir_all(root);
     }
