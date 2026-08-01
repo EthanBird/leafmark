@@ -22,8 +22,11 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - Windows 资源管理器“打开方式”、右键打开与双击 `.md` / `.markdown`
 - Windows 启动、文件关联检测与默认应用设置全程不创建命令行窗口
 - Android 文件管理器、聊天、网盘等应用通过 `ACTION_VIEW`、`ACTION_EDIT` 或分享 Intent 打开 Markdown
+- Android 可把当前 Markdown 或导出的 HTML、PNG、PDF 作为真实文件发送到微信、邮件、网盘等应用
+- Android SAF 导出由原生 `ContentResolver` 提交并校验完整字节数，兼容本机 DocumentsProvider 与云盘 `content://` 目标
 - Android 手机抽屉导航、触控热区、系统安全区与系统字体扫描
 - Android Agent 支持在系统默认浏览器登录 ChatGPT/Codex 等订阅；授权回调只监听本机 IPv4/IPv6 loopback，并提供重新打开与复制链接兜底
+- Android Agent 运行时使用可见前台服务、限时唤醒锁与增量任务日志；切到后台仍维持任务优先级，极端中断后会恢复已生成文本并安全收束文件版本
 - 最近打开历史与收藏；打开时自动保存独立文档副本，并可一键保存到我的文档库
 - 文档库、历史和收藏均提供右键菜单，可直接在系统文件管理器中定位源文档或保留副本
 - 源文件被移动或删除后，仍可从历史/收藏读取、编辑和导出保留副本
@@ -32,6 +35,7 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - 内置按需启动的流式文档 Agent；原生支持 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth，并完整提供 jcode 的 OpenAI-compatible provider catalog
 - 订阅模式分别使用 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 协议，不会把订阅账户错误回退到按量 API Key
 - Agent 支持自动刷新登录、文档读写、并行只读子 Agent、会话检索、长期记忆、Skills、网页读取、Streamable HTTP MCP 和本机终端
+- Agent 可用 `create / replace / append` 方式把长篇 Markdown 直接流式写入目标标签；中止时保留已生成部分并可随整轮版本回退
 - Agent 每轮对话都建立不依赖 Git 的本地文件版本；消息、文档工具和 PowerShell 修改可一起回退或重做，重做不会再次执行命令
 - Windows 终端工具固定使用隐藏窗口 PowerShell；版本化回合采用可完整捕获的前台命令，支持超时和破坏性命令 Rust 级拦截，不会弹出黑色命令行
 
@@ -77,21 +81,27 @@ cd ..
 npm run tauri:build
 ```
 
-Android APK：
+Android ARM64 APK：
 
 ```powershell
 npm run tauri -- android init
-$env:ANDROID_KEYSTORE_PATH = "C:\secure\leafmark-release.jks"
-$env:ANDROID_KEYSTORE_PASSWORD = "<store password>"
-$env:ANDROID_KEY_ALIAS = "leafmark"
-$env:ANDROID_KEY_PASSWORD = "<key password>"
+[IO.File]::WriteAllBytes(
+  "$env:TEMP\leafmark-community-release-v1.jks",
+  [Convert]::FromBase64String(
+    (Get-Content .github\leafmark-community-release.jks.b64 -Raw).Trim()
+  )
+)
+$env:ANDROID_KEYSTORE_PATH = "$env:TEMP\leafmark-community-release-v1.jks"
+$env:ANDROID_KEYSTORE_PASSWORD = "leafmark-community-release-v1"
+$env:ANDROID_KEY_ALIAS = "leafmark-community"
+$env:ANDROID_KEY_PASSWORD = "leafmark-community-release-v1"
 npm run tauri -- android build --apk --target aarch64 --split-per-abi
 ```
 
 GitHub Release 只发布适用于现代 Android 手机的 `arm64-v8a` 优化 APK。发布构建会启用
 Rust LTO/strip、R8、资源裁剪和原生库压缩，并在上传后自动验证 APK 只包含 ARM64
-动态库且不超过 16 MiB。正式 APK 必须使用永久固定的 release keystore；密钥准备、Secrets
-配置与证书迁移规则见 [Android 发布签名](docs/android-signing.md)。
+动态库且不超过 16 MiB。APK 固定使用公开的社区更新证书，发布前后都会校验证书指纹；更新
+兼容性、风险说明与证书迁移规则见 [Android 发布签名](docs/android-signing.md)。
 
 ## 下载
 

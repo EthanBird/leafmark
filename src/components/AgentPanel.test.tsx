@@ -15,6 +15,10 @@ const host: AgentDocumentHost = {
   replaceCurrentDocument: async () => {},
   replaceText: async () => "ok",
   createDocument: async () => "ok",
+  beginDocumentStream: async (_path, mode) => ({ id: "stream-test", path: "流式.md", mode }),
+  appendDocumentStream: () => {},
+  finishDocumentStream: async () => ({ id: "stream-test", path: "流式.md", mode: "create", characters: 0, bytes: 0 }),
+  abortDocumentStream: async () => {},
   openDocument: async () => {},
   searchDocuments: async () => [],
   flushDocumentChanges: async () => {},
@@ -29,6 +33,7 @@ const host: AgentDocumentHost = {
     outcome,
     changes: [],
   }),
+  findVersionForTurn: async () => null,
   versionStatus: async () => ({ undo: null, redo: null, pending: false }),
   undoVersion: async () => { throw new Error("no undo"); },
   redoVersion: async () => { throw new Error("no redo"); },
@@ -64,6 +69,7 @@ describe("AgentPanel", () => {
         host={host}
         onOpenSettings={() => {}}
         onReasoningEffortChange={() => {}}
+        onActivityChange={() => {}}
       />);
       await new Promise((resolve) => setTimeout(resolve, 25));
     });

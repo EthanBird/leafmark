@@ -26,6 +26,7 @@ import {
   Save,
   Search,
   Settings,
+  Share2,
   Square,
   SplitSquareHorizontal,
   Star,
@@ -43,7 +44,13 @@ import { api } from "./api";
 import { DocumentLibrary } from "./components/DocumentLibrary";
 import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { AgentPanel, type AgentDocumentHost } from "./components/AgentPanel";
+import {
+  AgentPanel,
+  type AgentDocumentHost,
+  type AgentDocumentStreamHandle,
+  type AgentDocumentStreamMode,
+  type AgentDocumentStreamResult,
+} from "./components/AgentPanel";
 import { DockDropTargets, DockRegion } from "./components/DockRegion";
 import {
   buildStandaloneHtml,
@@ -118,6 +125,24 @@ interface ArchiveMenuState {
 type MenuState = WorkspaceMenuState | ArchiveMenuState;
 type SidebarView = "workspace" | "history" | "favorites" | "agent";
 type SaveStatus = "idle" | "saving" | "saved" | "error";
+type ExportDelivery = "save" | "share";
+
+interface AgentDocumentStreamTransaction extends AgentDocumentStreamHandle {
+  tabKey: string;
+  origin: DocumentOrigin;
+  archiveId: string;
+  initialContent: string;
+  buffer: string;
+  lastSaved: string;
+  started: boolean;
+  created: boolean;
+  previousMode: ViewMode;
+  uiTimer: number | null;
+  saveTimer: number | null;
+  writeQueue: Promise<void>;
+  writeError: unknown | null;
+}
+
 type AndroidBackWindow = Window & {
   __LEAFMARK_ANDROID_BACK__?: () => boolean;
   LeafMarkAndroid?: { setDarkMode: (dark: boolean) => void };
@@ -170,6 +195,8 @@ export default function App() {
   const [deleteEntry, setDeleteEntry] = useState<DocumentEntry | null>(null);
   const [rendering, setRendering] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [agentTurnActive, setAgentTurnActive] = useState(false);
+  const [streamingDocument, setStreamingDocument] = useState<{ id: string; tabKey: string; path: string } | null>(null);
   const [draggedPanel, setDraggedPanel] = useState<DockPanelId | null>(null);
   const [dockDragZone, setDockDragZone] = useState<DockZone | null>(null);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
@@ -178,6 +205,7 @@ export default function App() {
   const selectedRef = useRef(selectedPath);
   const originRef = useRef<DocumentOrigin>(documentOrigin);
   const archiveIdRef = useRef(archiveId);
+  const modeRef = useRef<ViewMode>(mode);
   const liveEditorRef = useRef<HTMLElement>(null);
   const settingsReady = useRef(false);
   const renderRequest = useRef(0);
@@ -192,6 +220,8 @@ export default function App() {
   const openIntentQueueRef = useRef<Promise<void>>(Promise.resolve());
   const tabsRef = useRef<OpenDocumentTab[]>(openTabs);
   const activeTabKeyRef = useRef(activeTabKey);
+  const agentDocumentStreamRef = useRef<AgentDocumentStreamTransaction | null>(null);
+  const agentTurnActiveRef = useRef(false);
   const android = api.isAndroid();
 
   const dirty = Boolean(selectedPath) && content !== savedContent;
@@ -201,12 +231,27 @@ export default function App() {
   const selectedEntry = entryMap.get(selectedEntryPath);
   const currentDirectory = selectedEntry?.kind === "directory" ? selectedEntry.path : parentPath(selectedEntryPath);
   const currentArchiveEntry = archiveEntries.find((entry) => entry.id === archiveId);
+  const activeDocumentStreaming = streamingDocument?.tabKey === activeTabKey;
+
+  const rejectDuringAgentTurn = (action: string) => {
+    const stream = agentDocumentStreamRef.current;
+    if (!agentTurnActiveRef.current && !stream) return false;
+    const target = stream ? `向 ${nativeFileName(stream.path)} 写入` : "执行任务";
+    setNotice(`Agent 正在${target}，请停止或等待本轮完成后再${action}`);
+    return true;
+  };
+
+  const handleAgentActivityChange = useCallback((active: boolean) => {
+    agentTurnActiveRef.current = active;
+    setAgentTurnActive(active);
+  }, []);
 
   useEffect(() => { contentRef.current = content; }, [content]);
   useEffect(() => { savedRef.current = savedContent; }, [savedContent]);
   useEffect(() => { selectedRef.current = selectedPath; }, [selectedPath]);
   useEffect(() => { originRef.current = documentOrigin; }, [documentOrigin]);
   useEffect(() => { archiveIdRef.current = archiveId; }, [archiveId]);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { tabsRef.current = openTabs; }, [openTabs]);
   useEffect(() => { activeTabKeyRef.current = activeTabKey; }, [activeTabKey]);
 
@@ -245,6 +290,17 @@ export default function App() {
   }, []);
 
   const persistCurrent = useCallback((quiet = false): Promise<boolean> => {
+    const stream = agentDocumentStreamRef.current;
+    if (stream?.tabKey === activeTabKeyRef.current) {
+      if (!stream.started || stream.buffer === stream.lastSaved) return Promise.resolve(true);
+      if (stream.saveTimer !== null) {
+        window.clearTimeout(stream.saveTimer);
+        stream.saveTimer = null;
+      }
+      return writeAgentStreamSnapshot(stream, stream.buffer)
+        .then(() => true)
+        .catch(() => false);
+    }
     const path = selectedRef.current;
     const value = contentRef.current;
     if (!path || value === savedRef.current) {
@@ -371,35 +427,53 @@ export default function App() {
     } : tab));
   }, [activeTabKey, archiveId, content, documentOrigin, renderedHtml, savedContent, selectedPath, sourceExists, sourcePath]);
 
-  const activateDocumentTab = useCallback(async (tab: OpenDocumentTab) => {
-    if (tab.key === activeTabKeyRef.current) return;
-    if (!await persistCurrent(true)) return;
+  const activateDocumentTab = useCallback(async (tab: OpenDocumentTab, agentAuthorized = false): Promise<boolean> => {
+    if (agentTurnActiveRef.current && !agentAuthorized) {
+      setNotice("Agent 工作期间已锁定当前文档，停止或等待完成后即可切换");
+      return false;
+    }
+    if (tab.key === activeTabKeyRef.current) return true;
+    if (!await persistCurrent(true)) return false;
     applyTabSnapshot(tab);
+    if (agentDocumentStreamRef.current?.tabKey === tab.key) {
+      modeRef.current = "source";
+      setMode("source");
+    }
     if (isCompactLayout()) setSidebarOpen(false);
+    return true;
   }, [applyTabSnapshot, persistCurrent]);
 
-  const openDocument = useCallback(async (path: string, force = false) => {
-    if (!force && path === selectedRef.current) return;
+  const openDocument = useCallback(async (path: string, force = false, agentAuthorized = false): Promise<boolean> => {
+    if (agentTurnActiveRef.current && !agentAuthorized) {
+      setNotice("Agent 工作期间已锁定当前文档，停止或等待完成后即可打开其他文档");
+      return false;
+    }
+    if (!force && path === selectedRef.current) return true;
     const existing = !force ? tabsRef.current.find((tab) => tab.origin === "workspace" && tab.path === path) : null;
     if (existing) {
-      await activateDocumentTab(existing);
-      return;
+      return activateDocumentTab(existing, agentAuthorized);
     }
-    if (!await persistCurrent(true)) return;
+    if (!await persistCurrent(true)) return false;
     setBusy(true);
     try {
       const loaded = await api.readDocument(path);
       applyLoadedDocument(loaded);
       void refreshLibrary();
       setNotice(`${loaded.cached ? "瞬时打开（缓存）" : "已打开"} · ${formatBytes(loaded.size)}`);
+      return true;
     } catch (error) {
       setNotice(`打开文档失败：${String(error)}`);
+      return false;
     } finally {
       setBusy(false);
     }
   }, [activateDocumentTab, applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   const openExternalDocument = useCallback(async (path: string) => {
+    if (agentTurnActiveRef.current) {
+      setNotice("Agent 工作期间暂缓打开外部文档，请在本轮结束后重试");
+      return;
+    }
     if (!await persistCurrent(true)) return;
     setBusy(true);
     try {
@@ -416,6 +490,10 @@ export default function App() {
   }, [applyLoadedDocument, persistCurrent, refreshLibrary]);
 
   const openArchivedDocument = useCallback(async (entry: ArchiveEntry) => {
+    if (agentTurnActiveRef.current) {
+      setNotice("Agent 工作期间已锁定当前文档，停止或等待完成后即可打开历史副本");
+      return;
+    }
     const existing = tabsRef.current.find((tab) => tab.key === `archive:${entry.id}`);
     if (existing) {
       await activateDocumentTab(existing);
@@ -461,6 +539,14 @@ export default function App() {
   }, []);
 
   const closeDocumentTab = useCallback(async (key: string) => {
+    if (agentTurnActiveRef.current) {
+      setNotice("Agent 工作期间不能关闭文档标签页");
+      return;
+    }
+    if (agentDocumentStreamRef.current?.tabKey === key) {
+      setNotice("Agent 正在向该文档流式写入，请先停止本轮任务");
+      return;
+    }
     const tabs = tabsRef.current;
     const closing = tabs.find((tab) => tab.key === key);
     if (!closing) return;
@@ -559,6 +645,10 @@ export default function App() {
 
   useEffect(() => {
     if (!dirty || busy) return;
+    // Agent streams use a target-bound, throttled write queue. The normal
+    // current-tab autosave would otherwise enqueue a disk write for every UI
+    // batch and can also save the wrong tab after the user switches tabs.
+    if (agentDocumentStreamRef.current?.tabKey === activeTabKeyRef.current) return;
     const timer = window.setTimeout(() => void persistCurrent(true), settings.autosaveDelayMs);
     return () => window.clearTimeout(timer);
   }, [busy, content, dirty, persistCurrent, settings.autosaveDelayMs]);
@@ -646,6 +736,10 @@ export default function App() {
   }, [android, deleteEntry, dirty, entryDialog, exportOpen, exporting, importOpen, menu, outlineOpen, persistCurrent, settingsOpen, sidebarOpen]);
 
   const switchMode = async (next: ViewMode) => {
+    if (agentTurnActiveRef.current || agentDocumentStreamRef.current?.tabKey === activeTabKeyRef.current) {
+      setNotice("Agent 工作期间文档保持只读；流式写入完成后会恢复原模式");
+      return;
+    }
     if (next === "live" && !settings.liveEditing) {
       setSettingsOpen(true);
       return;
@@ -664,6 +758,7 @@ export default function App() {
   };
 
   const onLiveInput = () => {
+    if (agentTurnActiveRef.current) return;
     if (!liveEditorRef.current) return;
     if (!applyLiveMarkdownShortcut(liveEditorRef.current)) {
       applyLiveInlineMarkdownShortcut(liveEditorRef.current);
@@ -695,17 +790,20 @@ export default function App() {
   };
 
   const startCreate = (kind: EntryKind, parent = currentDirectory) => {
+    if (rejectDuringAgentTurn("新建文档")) return;
     setMenu(null);
     setEntryDialog({ action: "create", kind, parent, value: kind === "file" ? "新文档.md" : "新文件夹" });
   };
 
   const startRename = (entry: DocumentEntry) => {
+    if (rejectDuringAgentTurn("重命名")) return;
     setMenu(null);
     setEntryDialog({ action: "rename", kind: entry.kind, source: entry, parent: parentPath(entry.path), value: entry.name });
   };
 
   const commitEntryDialog = async () => {
     if (!entryDialog) return;
+    if (rejectDuringAgentTurn("执行文件操作")) return;
     let name = entryDialog.value.trim();
     if (!name || name === "." || name === ".." || /[\\/:*?"<>|]/.test(name)) {
       setNotice("名称不能为空，也不能包含系统保留字符");
@@ -752,6 +850,7 @@ export default function App() {
 
   const confirmDelete = async () => {
     if (!deleteEntry) return;
+    if (rejectDuringAgentTurn("删除文档")) return;
     setBusy(true);
     try {
       await api.remove(deleteEntry.path);
@@ -777,6 +876,7 @@ export default function App() {
 
   const importDocuments = async (mode: "files" | "directory") => {
     if (!api.isTauri()) return;
+    if (rejectDuringAgentTurn("导入文档")) return;
     setImportOpen(false);
     const selected = mode === "directory"
       ? await open({
@@ -826,32 +926,42 @@ export default function App() {
     }
   };
 
-  const exportCurrent = async (format: ExportFormat) => {
+  const exportCurrent = async (format: ExportFormat, delivery: ExportDelivery = "save") => {
     if (!api.isTauri() || !selectedPath) return;
+    if (rejectDuringAgentTurn("导出文档")) return;
+    if (delivery === "share" && !android) return;
     if (!await persistCurrent(true)) return;
+    const exportSource = contentRef.current;
+    const exportPath = selectedRef.current;
+    const exportDirectory = documentDirectory;
     const extension = exportExtension(format);
-    const name = nativeFileName(selectedPath).replace(/\.(md|markdown)$/i, "");
+    const name = nativeFileName(exportPath).replace(/\.(md|markdown)$/i, "");
     const suffix = format === "pdf-long" ? "-长页" : format === "pdf-pages" ? "-标准分页" : "";
-    const target = await saveDialog({
-      defaultPath: `${name}${suffix}.${extension}`,
+    const fileName = `${name}${suffix}.${extension}`;
+    const target = delivery === "save" ? await saveDialog({
+      defaultPath: fileName,
       filters: [{ name: exportLabel(format), extensions: [extension] }],
       title: `导出${exportLabel(format)}`,
-    });
-    if (!target) return;
+    }) : null;
+    if (delivery === "save" && !target) return;
     setExporting(true);
-    setExportProgress({ progress: 0.02, message: "正在准备导出…" });
+    setExportProgress({ progress: 0.02, message: delivery === "share" ? "正在准备分享文件…" : "正在准备导出…" });
+    const deliver = async (bytes: Uint8Array) => {
+      setExportProgress({
+        progress: 0.98,
+        message: delivery === "share" ? "正在打开系统分享面板…" : "正在安全写入目标文件…",
+      });
+      if (delivery === "share") await api.shareExport(fileName, exportMimeType(format), bytes);
+      else await api.writeExport(target!, bytes);
+    };
     try {
       if (format === "markdown") {
-        if (documentOrigin === "archive") {
-          await api.exportArchivedDocument(archiveId, target);
-        } else {
-          await api.exportFile(selectedPath, target);
-        }
+        await deliver(new TextEncoder().encode(exportSource));
       } else if (format === "pdf-long" || format === "pdf-pages") {
         const styles = getComputedStyle(document.documentElement);
         const color = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
         const job = startPdfExport({
-          source: contentRef.current,
+          source: exportSource,
           title: name,
           mode: format === "pdf-long" ? "long" : "pages",
           fontFamily: settings.fontFamily,
@@ -869,10 +979,9 @@ export default function App() {
         cancelExportRef.current = job.cancel;
         const bytes = await job.promise;
         cancelExportRef.current = null;
-        setExportProgress({ progress: 0.98, message: "正在安全写入目标文件…" });
-        await api.writeExport(target, bytes);
+        await deliver(bytes);
       } else {
-        const html = await api.render(contentRef.current);
+        const html = await api.render(exportSource);
         setExportProgress({ progress: 0.16, message: "正在构建导出页面…" });
         await nextFrame();
         const surface = document.createElement("article");
@@ -886,7 +995,7 @@ export default function App() {
         document.body.append(surface);
         let cleanup = () => {};
         try {
-          const result = await enhanceDocument(surface, settings, documentDirectory, { eager: true });
+          const result = await enhanceDocument(surface, settings, exportDirectory, { eager: true });
           cleanup = result.cleanup;
           setExportProgress({ progress: 0.42, message: "正在载入图片、公式和图表…" });
           await inlineExportImages(surface);
@@ -902,16 +1011,15 @@ export default function App() {
             bytes = await job.promise;
             cancelExportRef.current = null;
           }
-          setExportProgress({ progress: 0.95, message: "正在安全写入目标文件…" });
-          await api.writeExport(target, bytes);
+          await deliver(bytes);
         } finally {
           cleanup();
           surface.remove();
         }
       }
-      setExportProgress({ progress: 1, message: "导出完成" });
+      setExportProgress({ progress: 1, message: delivery === "share" ? "分享文件已就绪" : "导出完成" });
       setExportOpen(false);
-      setNotice(`已导出到 ${target}`);
+      setNotice(delivery === "share" ? `已打开系统分享面板 · ${fileName}` : `已导出到 ${target}`);
     } catch (error) {
       setNotice(String(error).includes("导出已取消")
         ? "已取消导出，未写入不完整文件"
@@ -932,6 +1040,7 @@ export default function App() {
   };
 
   const changeWorkspace = async (path: string) => {
+    if (rejectDuringAgentTurn("切换文档库")) return;
     if (!await persistCurrent(true)) return;
     const payload = await api.setWorkspace(path);
     documentVersionRef.current += 1;
@@ -981,6 +1090,7 @@ export default function App() {
   };
 
   const removeHistoryEntry = async (entry: ArchiveEntry) => {
+    if (rejectDuringAgentTurn("移除历史副本")) return;
     try {
       const next = await api.removeArchiveEntry(entry.id);
       setArchiveEntries(next);
@@ -1000,6 +1110,7 @@ export default function App() {
   };
 
   const saveHistoryToWorkspace = async (entry: ArchiveEntry) => {
+    if (rejectDuringAgentTurn("保存历史副本")) return;
     if (!await persistCurrent(true)) return;
     setBusy(true);
     try {
@@ -1016,6 +1127,7 @@ export default function App() {
   };
 
   const clearHistory = async () => {
+    if (rejectDuringAgentTurn("清除历史")) return;
     try {
       const next = await api.clearHistory();
       setArchiveEntries(next);
@@ -1087,21 +1199,50 @@ export default function App() {
     : settings.workspacePath;
 
   const dockLayout = normalizeDesktopDockLayout(settings.desktopLayout);
-  const updateDockLayout = (layout: AppSettings["desktopLayout"]) => setSettings((current) => ({ ...current, desktopLayout: normalizeDesktopDockLayout(layout) }));
+  const updateDockLayout = (layout: AppSettings["desktopLayout"]) => {
+    if (agentTurnActiveRef.current) {
+      setNotice("Agent 工作期间已锁定面板布局，避免移动或卸载正在运行的 Agent");
+      return;
+    }
+    setSettings((current) => ({ ...current, desktopLayout: normalizeDesktopDockLayout(layout) }));
+  };
+  const updateAppSettings = (next: AppSettings) => {
+    const normalizedNextLayout = normalizeDesktopDockLayout(next.desktopLayout);
+    if (agentTurnActiveRef.current && JSON.stringify(normalizedNextLayout) !== JSON.stringify(dockLayout)) {
+      setNotice("Agent 工作期间不能重置或移动面板；其他设置已保存");
+      setSettings({ ...next, desktopLayout: dockLayout });
+      return;
+    }
+    setSettings(next);
+  };
   const updateAgentReasoningEffort = (reasoningEffort: AgentReasoningEffort) => setSettings((current) => ({
     ...current,
     agent: { ...current.agent, reasoningEffort },
   }));
   const activatePanel = (panel: DockPanelId) => {
+    if (agentTurnActiveRef.current && panel !== "agent") {
+      setNotice("Agent 工作期间保持 Agent 面板挂载；任务完成后即可切换功能面板");
+      return;
+    }
     updateDockLayout(activateDockPanel(dockLayout, panel));
     if (panel === "workspace" || panel === "history" || panel === "favorites" || panel === "agent") setSidebarView(panel);
     if (panel === "outline") setOutlineOpen(true);
   };
   const hidePanel = (panel: DockPanelId) => {
+    if (panel === "agent" && agentTurnActiveRef.current) {
+      setNotice("Agent 工作期间不能隐藏 Agent 面板，请先停止或等待任务完成");
+      return;
+    }
     updateDockLayout(hideDockPanel(dockLayout, panel));
     if (panel === "outline") setOutlineOpen(false);
   };
   const finishPanelDrag = (panel: DockPanelId, x: number, y: number) => {
+    if (panel === "agent" && agentTurnActiveRef.current) {
+      setNotice("Agent 工作期间不能移动 Agent 面板");
+      setDraggedPanel(null);
+      setDockDragZone(null);
+      return;
+    }
     const zone = dockZoneAtPoint(x, y, window.innerWidth, window.innerHeight);
     if (zone) updateDockLayout(moveDockPanel(dockLayout, panel, zone));
     setDraggedPanel(null);
@@ -1116,7 +1257,274 @@ export default function App() {
     else hidePanel("outline");
   };
 
+  const updateAgentStreamUi = (transaction: AgentDocumentStreamTransaction) => {
+    const nextTabs = tabsRef.current.map((tab) => tab.key === transaction.tabKey ? {
+      ...tab,
+      content: transaction.buffer,
+      size: new Blob([transaction.buffer]).size,
+    } : tab);
+    tabsRef.current = nextTabs;
+    setOpenTabs(nextTabs);
+    if (activeTabKeyRef.current === transaction.tabKey) {
+      contentRef.current = transaction.buffer;
+      setContent(transaction.buffer);
+      setSaveStatus(transaction.buffer === transaction.lastSaved ? "saved" : "saving");
+    }
+  };
+
+  const markAgentStreamSaved = (transaction: AgentDocumentStreamTransaction, value: string) => {
+    transaction.lastSaved = value;
+    queuedSaveRef.current = null;
+    const nextTabs = tabsRef.current.map((tab) => tab.key === transaction.tabKey ? {
+      ...tab,
+      savedContent: value,
+      modifiedMs: Date.now(),
+    } : tab);
+    tabsRef.current = nextTabs;
+    setOpenTabs(nextTabs);
+    if (activeTabKeyRef.current === transaction.tabKey) {
+      savedRef.current = value;
+      setSavedContent(value);
+      setSaveStatus(contentRef.current === value ? "saved" : "saving");
+    }
+  };
+
+  const flushAgentStreamUi = (transaction: AgentDocumentStreamTransaction) => {
+    if (transaction.uiTimer !== null) {
+      window.clearTimeout(transaction.uiTimer);
+      transaction.uiTimer = null;
+    }
+    updateAgentStreamUi(transaction);
+  };
+
+  const writeAgentStreamSnapshot = (transaction: AgentDocumentStreamTransaction, value: string) => {
+    const task = Promise.all([
+      transaction.writeQueue.catch(() => undefined),
+      saveQueueRef.current.catch(() => undefined),
+    ])
+      .then(async () => {
+        if (transaction.origin === "archive") {
+          const updated = await api.writeArchivedDocument(transaction.archiveId, value);
+          if (updated && activeTabKeyRef.current === transaction.tabKey) setSourceExists(updated.sourceExists);
+        } else {
+          await api.write(transaction.path, value);
+        }
+      })
+      .then(() => {
+        transaction.writeError = null;
+        markAgentStreamSaved(transaction, value);
+      })
+      .catch((error: unknown) => {
+        transaction.writeError = error;
+        if (activeTabKeyRef.current === transaction.tabKey) {
+          setSaveStatus("error");
+          setNotice(`Agent 流式保存失败：${String(error)}。内容仍保留在编辑器中`);
+        }
+        throw error;
+      });
+    transaction.writeQueue = task;
+    // All ordinary saves and Agent checkpoints share one ordering barrier, so
+    // an older autosave can never complete after the stream's final snapshot.
+    saveQueueRef.current = task;
+    return task;
+  };
+
+  const scheduleAgentStreamSave = (transaction: AgentDocumentStreamTransaction) => {
+    if (transaction.saveTimer !== null) return;
+    transaction.saveTimer = window.setTimeout(() => {
+      transaction.saveTimer = null;
+      const value = transaction.buffer;
+      if (value === transaction.lastSaved) return;
+      void writeAgentStreamSnapshot(transaction, value).catch(() => undefined);
+    }, 800);
+  };
+
+  const appendAgentDocumentStream = (id: string, delta: string) => {
+    const transaction = agentDocumentStreamRef.current;
+    if (!transaction || transaction.id !== id || !delta) return;
+    if (!transaction.started) {
+      transaction.started = true;
+      transaction.buffer = transaction.mode === "append" ? transaction.initialContent : "";
+    }
+    transaction.buffer += delta;
+    if (transaction.uiTimer === null) {
+      transaction.uiTimer = window.setTimeout(() => {
+        transaction.uiTimer = null;
+        updateAgentStreamUi(transaction);
+      }, 40);
+    }
+    scheduleAgentStreamSave(transaction);
+  };
+
+  const restoreModeAfterAgentStream = async (transaction: AgentDocumentStreamTransaction) => {
+    try {
+      const html = await api.render(transaction.buffer);
+      const nextTabs = tabsRef.current.map((tab) => tab.key === transaction.tabKey ? { ...tab, renderedHtml: html } : tab);
+      tabsRef.current = nextTabs;
+      setOpenTabs(nextTabs);
+      if (activeTabKeyRef.current === transaction.tabKey) setRenderedHtml(html);
+    } catch (error) {
+      setNotice(`文档内容已保留，但最终渲染失败：${String(error)}`);
+    }
+    if (activeTabKeyRef.current === transaction.tabKey) {
+      modeRef.current = transaction.previousMode;
+      setMode(transaction.previousMode);
+    }
+  };
+
+  const rollbackUnstartedAgentStream = async (transaction: AgentDocumentStreamTransaction) => {
+    if (transaction.uiTimer !== null) window.clearTimeout(transaction.uiTimer);
+    if (transaction.saveTimer !== null) window.clearTimeout(transaction.saveTimer);
+    transaction.uiTimer = null;
+    transaction.saveTimer = null;
+    agentDocumentStreamRef.current = null;
+    setStreamingDocument(null);
+
+    if (transaction.created) {
+      const tabs = tabsRef.current;
+      const wasActive = activeTabKeyRef.current === transaction.tabKey;
+      const nextActive = wasActive ? nextTabAfterClose(tabs, transaction.tabKey) : null;
+      const nextTabs = tabs.filter((tab) => tab.key !== transaction.tabKey);
+      tabsRef.current = nextTabs;
+      setOpenTabs(nextTabs);
+      if (wasActive) {
+        if (nextActive) applyTabSnapshot(nextActive);
+        else clearCurrentDocument();
+      }
+      await api.remove(transaction.path);
+      await refresh();
+    } else {
+      transaction.buffer = transaction.initialContent;
+      updateAgentStreamUi(transaction);
+    }
+    await restoreModeAfterAgentStream(transaction);
+  };
+
+  const finishAgentDocumentStream = async (id: string): Promise<AgentDocumentStreamResult> => {
+    const transaction = agentDocumentStreamRef.current;
+    if (!transaction || transaction.id !== id) throw new Error("文档流式写入事务已经结束");
+    if (!transaction.started) {
+      await rollbackUnstartedAgentStream(transaction);
+      throw new Error("模型没有输出可写入的 Markdown 内容");
+    }
+    if (transaction.saveTimer !== null) {
+      window.clearTimeout(transaction.saveTimer);
+      transaction.saveTimer = null;
+    }
+    flushAgentStreamUi(transaction);
+    await writeAgentStreamSnapshot(transaction, transaction.buffer);
+    agentDocumentStreamRef.current = null;
+    setStreamingDocument(null);
+    await restoreModeAfterAgentStream(transaction);
+    await refresh(transaction.origin === "workspace" ? transaction.path : undefined);
+    await refreshLibrary();
+    return {
+      id: transaction.id,
+      path: transaction.path,
+      mode: transaction.mode,
+      characters: [...transaction.buffer].length,
+      bytes: new Blob([transaction.buffer]).size,
+    };
+  };
+
+  const abortAgentDocumentStream = async (id: string) => {
+    const transaction = agentDocumentStreamRef.current;
+    if (!transaction || transaction.id !== id) return;
+    if (!transaction.started) {
+      await rollbackUnstartedAgentStream(transaction);
+      return;
+    }
+    if (transaction.saveTimer !== null) {
+      window.clearTimeout(transaction.saveTimer);
+      transaction.saveTimer = null;
+    }
+    flushAgentStreamUi(transaction);
+    let saveError: unknown = null;
+    try { await writeAgentStreamSnapshot(transaction, transaction.buffer); }
+    catch (error) { saveError = error; }
+    agentDocumentStreamRef.current = null;
+    queuedSaveRef.current = null;
+    setStreamingDocument(null);
+    await restoreModeAfterAgentStream(transaction);
+    if (!saveError) {
+      await refresh(transaction.origin === "workspace" ? transaction.path : undefined);
+      await refreshLibrary();
+    } else {
+      setNotice(`Agent 已停止，未保存内容仍保留在编辑器中：${String(saveError)}。请点击保存重试`);
+      throw saveError;
+    }
+  };
+
+  const beginAgentDocumentStream = async (requestedPath: string | undefined, streamMode: AgentDocumentStreamMode): Promise<AgentDocumentStreamHandle> => {
+    if (agentDocumentStreamRef.current) throw new Error("已有文档正在接收 Agent 流式输出");
+    let path = requestedPath?.trim().replace(/\\/g, "/").replace(/^\/+/, "") ?? "";
+    if (path && path.split("/").some((part) => !part || part === "." || part === "..")) throw new Error("文档路径无效");
+    if (path && !/\.(md|markdown)$/i.test(path)) path += ".md";
+    if (streamMode === "create" && !path) throw new Error("create 模式必须提供新文档路径");
+
+    let created = false;
+    if (path) {
+      const currentEntries = await api.listEntries();
+      const target = currentEntries.find((entry) => entry.path === path);
+      if (streamMode === "create") {
+        if (target) throw new Error(`文档已存在，create 不会覆盖：${path}`);
+        await api.create(path, "file");
+        created = true;
+        await refresh(path);
+        const opened = await openDocument(path, true, true);
+        if (!opened || activeTabKeyRef.current !== `workspace:${path}`) {
+          await api.remove(path).catch(() => undefined);
+          await refresh();
+          throw new Error(`新文档已创建但无法安全激活：${path}`);
+        }
+      } else {
+        if (!target || target.kind !== "file") throw new Error(`找不到文档：${path}`);
+        const opened = await openDocument(path, false, true);
+        if (!opened || activeTabKeyRef.current !== `workspace:${path}`) {
+          throw new Error(`无法安全打开流式写入目标：${path}`);
+        }
+      }
+    } else {
+      if (!selectedRef.current) throw new Error("当前没有打开文档");
+      path = originRef.current === "archive"
+        ? nativeFileName(sourcePath || selectedRef.current)
+        : selectedRef.current;
+    }
+
+    const id = crypto.randomUUID();
+    const transaction: AgentDocumentStreamTransaction = {
+      id,
+      path,
+      mode: streamMode,
+      tabKey: activeTabKeyRef.current,
+      origin: originRef.current,
+      archiveId: archiveIdRef.current,
+      initialContent: contentRef.current,
+      buffer: contentRef.current,
+      lastSaved: savedRef.current,
+      started: false,
+      created,
+      previousMode: modeRef.current,
+      uiTimer: null,
+      saveTimer: null,
+      writeQueue: Promise.resolve(),
+      writeError: null,
+    };
+    agentDocumentStreamRef.current = transaction;
+    queuedSaveRef.current = null;
+    setStreamingDocument({ id, tabKey: transaction.tabKey, path });
+    modeRef.current = "source";
+    setMode("source");
+    setNotice(`Agent 已打开 ${path}，正在等待 Markdown 流…`);
+    return { id, path, mode: streamMode };
+  };
+
   const flushAgentChanges = async () => {
+    const stream = agentDocumentStreamRef.current;
+    if (stream?.started && stream.buffer !== stream.lastSaved) {
+      flushAgentStreamUi(stream);
+      await writeAgentStreamSnapshot(stream, stream.buffer);
+    }
     if (!await persistCurrent(true)) throw new Error("当前文档保存失败，未建立 Agent 版本");
     await saveQueueRef.current;
   };
@@ -1199,10 +1607,16 @@ export default function App() {
       await api.create(path, "file");
       await api.write(path, nextContent);
       await refresh(path);
-      await openDocument(path, true);
+      await openDocument(path, true, true);
       return `已创建并打开 ${path}`;
     },
-    openDocument: async (path) => openDocument(path),
+    beginDocumentStream: beginAgentDocumentStream,
+    appendDocumentStream: appendAgentDocumentStream,
+    finishDocumentStream: finishAgentDocumentStream,
+    abortDocumentStream: abortAgentDocumentStream,
+    openDocument: async (path) => {
+      if (!await openDocument(path, false, true)) throw new Error(`无法打开文档：${path}`);
+    },
     searchDocuments: async (searchText, limit) => {
       const needle = searchText.trim().toLocaleLowerCase();
       if (!needle) return [];
@@ -1231,11 +1645,14 @@ export default function App() {
       );
     },
     finishVersionTurn: async (turnId, outcome) => {
+      const unfinishedStream = agentDocumentStreamRef.current;
+      if (unfinishedStream) await abortAgentDocumentStream(unfinishedStream.id);
       await flushAgentChanges();
       const version = await api.finishAgentTurn(turnId, outcome);
       await reconcileAgentFiles();
       return version;
     },
+    findVersionForTurn: (turnId) => api.findAgentVersionForTurn(turnId),
     versionStatus: (): Promise<AgentVersionStatus> => api.getAgentVersionStatus(),
     undoVersion: async (): Promise<AgentVersionOperation> => {
       await flushAgentChanges();
@@ -1315,7 +1732,7 @@ export default function App() {
   </div>;
 
   const renderDockPanel = (panel: DockPanelId) => {
-    if (panel === "agent") return <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} onReasoningEffortChange={updateAgentReasoningEffort} />;
+    if (panel === "agent") return <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} onReasoningEffortChange={updateAgentReasoningEffort} onActivityChange={handleAgentActivityChange} />;
     if (panel === "outline") return renderOutlinePanel();
     return <div className="dock-library-shell">{renderSidebarToolbar()}{renderLibraryContent(panel)}</div>;
   };
@@ -1332,9 +1749,10 @@ export default function App() {
           <button className={sidebarView === "favorites" ? "active" : ""} type="button" onClick={() => setSidebarView("favorites")} title="收藏"><Star size={14} /> 收藏</button>
           <button className={sidebarView === "agent" ? "active" : ""} type="button" onClick={() => setSidebarView("agent")} title="AI Agent"><Bot size={14} /> Agent</button>
         </div>
-        {sidebarView === "agent"
-          ? <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} onReasoningEffortChange={updateAgentReasoningEffort} />
-          : renderLibraryContent(sidebarView)}
+        <div className="android-agent-panel-slot" style={{ display: sidebarView === "agent" ? "contents" : "none" }}>
+          <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} onReasoningEffortChange={updateAgentReasoningEffort} onActivityChange={handleAgentActivityChange} />
+        </div>
+        {sidebarView !== "agent" && renderLibraryContent(sidebarView)}
       </aside>}
       {android && sidebarOpen && <button className="sidebar-scrim" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭文档抽屉" />}
 
@@ -1366,9 +1784,10 @@ export default function App() {
             {openTabs.map((tab) => {
               const active = tab.key === activeTabKey;
               const tabDirty = tab.content !== tab.savedContent;
-              return <div key={tab.key} className={`document-tab${active ? " active" : ""}`}>
+              const tabStreaming = streamingDocument?.tabKey === tab.key;
+              return <div key={tab.key} className={`document-tab${active ? " active" : ""}${tabStreaming ? " streaming" : ""}`}>
                 <button type="button" role="tab" aria-selected={active} onClick={() => void activateDocumentTab(tab)} title={tab.sourcePath || tab.path}>
-                  <FileCode2 size={12} /><span>{nativeFileName(tab.sourcePath || tab.path)}</span>{tabDirty && <i title="未保存" />}
+                  <FileCode2 size={12} /><span>{nativeFileName(tab.sourcePath || tab.path)}</span>{tabStreaming ? <i title="Agent 正在流式写入" /> : tabDirty && <i title="未保存" />}
                 </button>
                 <button type="button" className="tab-close" aria-label={`关闭 ${nativeFileName(tab.sourcePath || tab.path)}`} onClick={() => void closeDocumentTab(tab.key)}><X size={12} /></button>
               </div>;
@@ -1390,7 +1809,7 @@ export default function App() {
           </div>
 
           <div className="document-actions">
-            {mode === "live" && (
+            {mode === "live" && !agentTurnActive && !activeDocumentStreaming && (
               <div className="format-toolbar" aria-label="格式工具">
                 <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("bold"); }} title="粗体"><Bold size={14} /></button>
                 <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("italic"); }} title="斜体"><Italic size={14} /></button>
@@ -1400,10 +1819,10 @@ export default function App() {
               </div>
             )}
             <div className="mode-switch" aria-label="文档模式">
-              <ModeButton active={mode === "read"} title="阅读" onClick={() => void switchMode("read")}><Eye size={15} /></ModeButton>
-              <ModeButton active={mode === "source"} title="源码" onClick={() => void switchMode("source")}><FileCode2 size={15} /></ModeButton>
-              <ModeButton active={mode === "split"} title="分栏" onClick={() => void switchMode("split")}><SplitSquareHorizontal size={15} /></ModeButton>
-              {settings.liveEditing && <ModeButton active={mode === "live"} title="实时编译" onClick={() => void switchMode("live")}><PencilLine size={15} /></ModeButton>}
+              <ModeButton active={mode === "read"} title="阅读" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("read")}><Eye size={15} /></ModeButton>
+              <ModeButton active={mode === "source"} title="源码" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("source")}><FileCode2 size={15} /></ModeButton>
+              <ModeButton active={mode === "split"} title="分栏" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("split")}><SplitSquareHorizontal size={15} /></ModeButton>
+              {settings.liveEditing && <ModeButton active={mode === "live"} title="实时编译" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("live")}><PencilLine size={15} /></ModeButton>}
             </div>
             <button
               className={`icon-button${currentArchiveEntry?.favorite ? " active favorite" : ""}`}
@@ -1416,8 +1835,8 @@ export default function App() {
             </button>
             <button className={`icon-button${android ? outlineOpen : !dockLayout.hidden.includes("outline") ? " active" : ""}`} type="button" onClick={toggleOutlinePanel} title="文章大纲" disabled={!selectedPath}><LayoutPanelLeft size={16} /></button>
             {!android && <button className={`icon-button${layoutMenuOpen ? " active" : ""}`} type="button" onClick={(event) => { event.stopPropagation(); setLayoutMenuOpen((open) => !open); }} title="管理停靠面板"><PanelsTopLeft size={16} /></button>}
-            <button className="icon-button" type="button" onClick={() => void persistCurrent()} title="保存 (Ctrl+S)" disabled={!dirty}><Save size={16} /></button>
-            <button className="icon-button" type="button" onClick={() => setExportOpen(true)} title="导出" disabled={!selectedPath || !api.isTauri()}><Download size={15} /></button>
+            <button className="icon-button" type="button" onClick={() => void persistCurrent()} title="保存 (Ctrl+S)" disabled={!dirty || agentTurnActive || activeDocumentStreaming}><Save size={16} /></button>
+            <button className="icon-button" type="button" onClick={() => setExportOpen(true)} title="导出" disabled={!selectedPath || !api.isTauri() || agentTurnActive || Boolean(streamingDocument)}><Download size={15} /></button>
             <button className="icon-button" type="button" onClick={() => setSettingsOpen(true)} title="设置 (Ctrl+,)"><Settings size={16} /></button>
           </div>
         </header>
@@ -1435,14 +1854,17 @@ export default function App() {
                   aria-label="Markdown 源码编辑器"
                   spellCheck={false}
                   value={content}
-                  onChange={(event) => setContent(event.target.value)}
+                  readOnly={agentTurnActive || streamingDocument?.tabKey === activeTabKey}
+                  onChange={(event) => {
+                    if (!agentTurnActiveRef.current) setContent(event.target.value);
+                  }}
                 />
               )}
               {(mode === "read" || mode === "split" || mode === "live") && (
                 <DocumentSurface
                   key={`${selectedPath}-${mode}`}
                   html={renderedHtml}
-                  live={mode === "live"}
+                  live={mode === "live" && !agentTurnActive && !activeDocumentStreaming}
                   settings={settings}
                   documentDirectory={documentDirectory}
                   editorRef={liveEditorRef}
@@ -1550,10 +1972,11 @@ export default function App() {
 
       {exportOpen && (
         <ExportDialog
+          android={android}
           busy={exporting}
           progress={exportProgress}
           onCancel={cancelExport}
-          onExport={(format) => void exportCurrent(format)}
+          onExport={(format, delivery) => void exportCurrent(format, delivery)}
         />
       )}
 
@@ -1569,7 +1992,7 @@ export default function App() {
         <SettingsPanel
           settings={settings}
           associationStatus={associationStatus}
-          onChange={setSettings}
+          onChange={updateAppSettings}
           onWorkspaceChange={changeWorkspace}
           onAssociationChange={changeAssociation}
           onClose={() => setSettingsOpen(false)}
@@ -1603,11 +2026,12 @@ function TitleBar() {
   );
 }
 
-function ExportDialog({ busy, progress, onCancel, onExport }: {
+function ExportDialog({ android, busy, progress, onCancel, onExport }: {
+  android: boolean;
   busy: boolean;
   progress: ExportProgress | null;
   onCancel: () => void;
-  onExport: (format: ExportFormat) => void;
+  onExport: (format: ExportFormat, delivery: ExportDelivery) => void;
 }) {
   const [format, setFormat] = useState<ExportFormat>("html");
   const options: { value: ExportFormat; title: string; detail: string }[] = [
@@ -1638,7 +2062,10 @@ function ExportDialog({ busy, progress, onCancel, onExport }: {
         )}
         <footer>
           <button className="secondary-button" type="button" onClick={onCancel}>{busy ? "取消导出" : "取消"}</button>
-          <button className="primary-button" type="button" onClick={() => onExport(format)} disabled={busy}>{busy ? "后台生成中…" : `导出 ${exportLabel(format)}`}</button>
+          {busy ? <button className="primary-button" type="button" disabled>后台生成中…</button> : android ? <>
+            <button className="secondary-button" type="button" onClick={() => onExport(format, "save")}><Download size={13} /> 保存到文件</button>
+            <button className="primary-button" type="button" onClick={() => onExport(format, "share")}><Share2 size={13} /> 分享文件</button>
+          </> : <button className="primary-button" type="button" onClick={() => onExport(format, "save")}>{`导出 ${exportLabel(format)}`}</button>}
         </footer>
       </section>
     </div>
@@ -1721,8 +2148,8 @@ function DocumentSurface({ html, live, settings, documentDirectory, editorRef, o
   );
 }
 
-function ModeButton({ active, title, onClick, children }: { active: boolean; title: string; onClick: () => void; children: React.ReactNode }) {
-  return <button type="button" className={active ? "active" : ""} onClick={onClick} title={title}>{children}</button>;
+function ModeButton({ active, disabled = false, title, onClick, children }: { active: boolean; disabled?: boolean; title: string; onClick: () => void; children: React.ReactNode }) {
+  return <button type="button" className={active ? "active" : ""} onClick={onClick} title={title} disabled={disabled}>{children}</button>;
 }
 
 function contextMenuPosition(x: number, y: number, android: boolean): React.CSSProperties {
@@ -1815,6 +2242,13 @@ function exportLabel(format: ExportFormat) {
   if (format === "png") return "PNG";
   if (format === "pdf-long") return "长页 PDF";
   return "标准 PDF";
+}
+
+function exportMimeType(format: ExportFormat) {
+  if (format === "markdown") return "text/markdown";
+  if (format === "html") return "text/html";
+  if (format === "png") return "image/png";
+  return "application/pdf";
 }
 
 function nativeParentPath(path: string) {

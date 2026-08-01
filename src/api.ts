@@ -73,6 +73,93 @@ function isAndroid() {
   return /Android/i.test(navigator.userAgent);
 }
 
+export type ExportDeliveryPurpose = "save" | "share";
+
+export interface PreparedExport {
+  path: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  purpose: ExportDeliveryPurpose;
+}
+
+const ANDROID_EXPORT_RESULT_EVENT = "leafmark-android-export-result";
+const ANDROID_EXPORT_TIMEOUT_MS = 10 * 60 * 1000;
+let androidExportRequestSequence = 0;
+
+async function prepareExportPayload(
+  fileName: string,
+  mimeType: string,
+  bytes: Uint8Array,
+  purpose: ExportDeliveryPurpose,
+): Promise<PreparedExport> {
+  if (!isTauri()) throw new Error("浏览器预览无法暂存导出文件");
+  return invoke<PreparedExport>("prepare_export", bytes, {
+    headers: {
+      "LeafMark-File-Name": encodeURIComponent(fileName),
+      "LeafMark-Mime-Type": encodeURIComponent(mimeType),
+      "LeafMark-Purpose": encodeURIComponent(purpose),
+    },
+  });
+}
+
+function callAndroidExportBridge(
+  operation: LeafMarkAndroidExportOperation,
+  start: (bridge: LeafMarkAndroidBridge, requestId: string) => void,
+): Promise<number> {
+  if (!isAndroid()) return Promise.reject(new Error("此操作仅支持 Android"));
+  const bridge = window.LeafMarkAndroid;
+  if (!bridge) return Promise.reject(new Error("Android 原生文件桥尚未初始化"));
+  androidExportRequestSequence += 1;
+  const requestId = `${Date.now().toString(36)}-${androidExportRequestSequence.toString(36)}`;
+
+  return new Promise<number>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener(ANDROID_EXPORT_RESULT_EVENT, handleResult as EventListener);
+    };
+    const handleResult = (event: Event) => {
+      const detail = (event as CustomEvent<LeafMarkAndroidExportResult>).detail;
+      if (!detail || detail.requestId !== requestId || detail.operation !== operation) return;
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (detail.ok) resolve(detail.bytesWritten ?? 0);
+      else reject(new Error(detail.error || (operation === "write" ? "Android 文件写入失败" : "无法打开系统分享面板")));
+    };
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(operation === "write" ? "Android 文件写入超时" : "Android 分享操作超时"));
+    }, ANDROID_EXPORT_TIMEOUT_MS);
+    window.addEventListener(ANDROID_EXPORT_RESULT_EVENT, handleResult as EventListener);
+    try {
+      start(bridge, requestId);
+    } catch (error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+}
+
+async function writePreparedAndroidExport(target: string, prepared: PreparedExport) {
+  if (prepared.purpose !== "save") throw new Error("暂存文件不是保存用途");
+  return callAndroidExportBridge("write", (bridge, requestId) => {
+    bridge.writePreparedExport(target, prepared.path, requestId);
+  });
+}
+
+async function sharePreparedAndroidExport(prepared: PreparedExport) {
+  if (prepared.purpose !== "share") throw new Error("暂存文件不是分享用途");
+  await callAndroidExportBridge("share", (bridge, requestId) => {
+    bridge.sharePreparedExport(prepared.path, prepared.mimeType, requestId);
+  });
+}
+
 export const api = {
   isTauri,
   isAndroid,
@@ -144,6 +231,10 @@ export const api = {
     const pending = browserAgentTurns.get(turnId) ?? { sessionId: "browser", label: "Agent 回合", createdMs: Date.now() };
     browserAgentTurns.delete(turnId);
     return { id: `browser-${turnId}`, sessionId: pending.sessionId, turnId, label: pending.label, createdMs: pending.createdMs, outcome, changes: [] };
+  },
+  async findAgentVersionForTurn(turnId: string): Promise<AgentVersionSummary | null> {
+    if (isTauri()) return invoke("agent_vcs_version_for_turn", { turnId });
+    return null;
   },
   async getAgentVersionStatus(): Promise<AgentVersionStatus> {
     if (isTauri()) return invoke("agent_vcs_status");
@@ -281,8 +372,25 @@ export const api = {
   async exportFile(path: string, target: string): Promise<void> {
     if (isTauri()) await invoke("export_file", { relativePath: path, targetPath: target });
   },
+  prepareExport: prepareExportPayload,
+  writePreparedExport: writePreparedAndroidExport,
+  sharePreparedExport: sharePreparedAndroidExport,
+  async shareExport(fileName: string, mimeType: string, bytes: Uint8Array): Promise<void> {
+    const prepared = await prepareExportPayload(fileName, mimeType, bytes, "share");
+    await sharePreparedAndroidExport(prepared);
+  },
   async writeExport(target: string, bytes: Uint8Array): Promise<void> {
     if (isTauri()) {
+      if (isAndroid()) {
+        const prepared = await prepareExportPayload(
+          "LeafMark-export.bin",
+          "application/octet-stream",
+          bytes,
+          "save",
+        );
+        await writePreparedAndroidExport(target, prepared);
+        return;
+      }
       await invoke("write_export", bytes, {
         headers: { "LeafMark-Target": encodeURIComponent(target) },
       });

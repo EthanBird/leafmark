@@ -34,8 +34,21 @@ const CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IMPORTED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
+const EXPORT_STAGE_DIRECTORY: &str = "export-staging";
+const SHARED_EXPORT_DIRECTORY: &str = "shared-exports";
+const MAX_EXPORT_FILE_NAME_BYTES: usize = 220;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
 const SETTINGS_SCHEMA_VERSION: u32 = 5;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedExport {
+    path: String,
+    file_name: String,
+    mime_type: String,
+    size: u64,
+    purpose: String,
+}
 
 fn default_font_family() -> String {
     "system".into()
@@ -327,6 +340,14 @@ fn agent_vcs_finish_turn(
 ) -> Result<agent_vcs::VersionSummary, String> {
     let inner = app_state.0.lock();
     vcs_state.0.lock().finish_turn(&inner.workspace, &inner.library, &turn_id, &outcome)
+}
+
+#[tauri::command]
+fn agent_vcs_version_for_turn(
+    turn_id: String,
+    vcs_state: State<'_, AgentVcsState>,
+) -> Option<agent_vcs::VersionSummary> {
+    vcs_state.0.lock().version_for_turn(&turn_id)
 }
 
 #[tauri::command]
@@ -862,7 +883,26 @@ fn write_export(request: tauri::ipc::Request, app: AppHandle) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn set_workspace(path: String, state: State<'_, AppState>) -> Result<BootstrapPayload, String> {
+fn prepare_export(
+    request: tauri::ipc::Request,
+    app: AppHandle,
+) -> Result<PreparedExport, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("导出数据必须使用二进制传输".into());
+    };
+    let file_name = decode_invoke_header(&request, "LeafMark-File-Name")?;
+    let mime_type = decode_invoke_header(&request, "LeafMark-Mime-Type")?;
+    let purpose = decode_invoke_header(&request, "LeafMark-Purpose")?;
+    let cache_root = app.path().app_cache_dir().map_err(error_string)?;
+    stage_export_bytes(&cache_root, &file_name, &mime_type, &purpose, bytes)
+}
+
+#[tauri::command]
+fn set_workspace(
+    path: String,
+    state: State<'_, AppState>,
+    vcs_state: State<'_, AgentVcsState>,
+) -> Result<BootstrapPayload, String> {
     let requested = PathBuf::from(path);
     if !requested.is_absolute() {
         return Err("文档库必须使用绝对路径".into());
@@ -873,6 +913,12 @@ fn set_workspace(path: String, state: State<'_, AppState>) -> Result<BootstrapPa
         return Err("文档库路径不是文件夹".into());
     }
     let mut inner = state.0.lock();
+    // Keep the lock order identical to begin/finish (AppState -> AgentVcs)
+    // and refuse a workspace switch even if a compromised/stale WebView skips
+    // the UI guard. A pending snapshot belongs to its original workspace.
+    if vcs_state.0.lock().has_pending_turn() {
+        return Err("Agent 回合尚未完成，不能切换文档库".into());
+    }
     inner.workspace = workspace.clone();
     inner.settings.workspace_path = workspace.to_string_lossy().into_owned();
     inner.cache.clear();
@@ -1529,6 +1575,178 @@ fn local_path_from_opened_url(_app: &AppHandle, url: &tauri::Url) -> Result<Path
     Err(format!("不支持的文档地址：{}", url.scheme()))
 }
 
+fn decode_invoke_header(request: &tauri::ipc::Request, name: &str) -> Result<String, String> {
+    let encoded = request
+        .headers()
+        .get(name)
+        .ok_or_else(|| format!("导出请求头缺失：{name}"))?
+        .to_str()
+        .map_err(error_string)?;
+    percent_encoding::percent_decode_str(encoded)
+        .decode_utf8()
+        .map(String::from)
+        .map_err(error_string)
+}
+
+fn sanitize_export_file_name(value: &str) -> String {
+    let leaf = value
+        .rsplit(['/', '\\'])
+        .find(|part| !part.trim().is_empty())
+        .unwrap_or_default();
+    let mut safe: String = leaf
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+        })
+        .collect();
+    while safe.ends_with(' ') || safe.ends_with('.') {
+        safe.pop();
+    }
+    if safe.is_empty() || matches!(safe.as_str(), "." | "..") {
+        return "LeafMark-export.bin".into();
+    }
+    if safe.len() <= MAX_EXPORT_FILE_NAME_BYTES {
+        return safe;
+    }
+
+    if let Some(extension_start) = safe
+        .rfind('.')
+        .filter(|index| *index > 0 && *index + 1 < safe.len())
+    {
+        let extension = &safe[extension_start..];
+        if extension.len() < MAX_EXPORT_FILE_NAME_BYTES {
+            let stem_budget = MAX_EXPORT_FILE_NAME_BYTES - extension.len();
+            let truncated_stem = truncate_utf8_to_bytes(&safe[..extension_start], stem_budget)
+                .trim_end_matches([' ', '.']);
+            let stem = if truncated_stem.is_empty() {
+                truncate_utf8_to_bytes("LeafMark-export", stem_budget)
+            } else {
+                truncated_stem
+            };
+            if !stem.is_empty() {
+                return format!("{stem}{extension}");
+            }
+        }
+    }
+
+    let truncated = truncate_utf8_to_bytes(&safe, MAX_EXPORT_FILE_NAME_BYTES)
+        .trim_end_matches([' ', '.'])
+        .to_string();
+    if truncated.is_empty() {
+        "LeafMark-export.bin".into()
+    } else {
+        truncated
+    }
+}
+
+fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn normalize_export_mime(value: &str) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "text/markdown"
+            | "text/x-markdown"
+            | "application/x-markdown"
+            | "text/plain"
+            | "text/html"
+            | "image/png"
+            | "application/pdf"
+            | "application/octet-stream"
+    ) {
+        Ok(normalized)
+    } else {
+        Err(format!("不支持的导出 MIME 类型：{value}"))
+    }
+}
+
+fn stage_export_bytes(
+    cache_root: &Path,
+    file_name: &str,
+    mime_type: &str,
+    purpose: &str,
+    bytes: &[u8],
+) -> Result<PreparedExport, String> {
+    let purpose = purpose.trim().to_ascii_lowercase();
+    let root_name = match purpose.as_str() {
+        "save" => EXPORT_STAGE_DIRECTORY,
+        "share" => SHARED_EXPORT_DIRECTORY,
+        _ => return Err("导出用途必须是 save 或 share".into()),
+    };
+    let file_name = sanitize_export_file_name(file_name);
+    let mime_type = normalize_export_mime(mime_type)?;
+    let root = cache_root.join(root_name);
+    fs::create_dir_all(&root).map_err(error_string)?;
+    prune_stale_export_stages(&root);
+
+    let mut stage_dir = None;
+    for attempt in 0..128_u16 {
+        let candidate = root.join(format!(
+            "{}-{}-{attempt}",
+            now_ms(),
+            std::process::id()
+        ));
+        match fs::create_dir(&candidate) {
+            Ok(()) => {
+                stage_dir = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error_string(error)),
+        }
+    }
+    let stage_dir = stage_dir.ok_or_else(|| "无法创建唯一导出暂存目录".to_string())?;
+    let target = stage_dir.join(&file_name);
+    if let Err(error) = atomic_write(&target, bytes) {
+        let _ = fs::remove_dir_all(&stage_dir);
+        return Err(error);
+    }
+    let path = target.canonicalize().map_err(error_string)?;
+    Ok(PreparedExport {
+        path: path.to_string_lossy().into_owned(),
+        file_name,
+        mime_type,
+        size: bytes.len() as u64,
+        purpose,
+    })
+}
+
+fn prune_stale_export_stages(root: &Path) {
+    let Some(cutoff) = SystemTime::now().checked_sub(Duration::from_secs(48 * 60 * 60)) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if stale {
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(path);
+            } else {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+}
+
 fn write_export_target(app: &AppHandle, target: &str, bytes: &[u8]) -> Result<(), String> {
     #[cfg(target_os = "android")]
     if let Ok(url) = tauri::Url::parse(target) {
@@ -1810,6 +2028,7 @@ pub fn run() {
             import_directory,
             export_file,
             write_export,
+            prepare_export,
             set_workspace,
             save_settings,
             agent_oauth_start,
@@ -1822,6 +2041,7 @@ pub fn run() {
             agent_terminal_kill,
             agent_vcs_begin_turn,
             agent_vcs_finish_turn,
+            agent_vcs_version_for_turn,
             agent_vcs_status,
             agent_vcs_undo,
             agent_vcs_redo,
@@ -2008,6 +2228,55 @@ mod tests {
 
         assert_eq!(result.root_path, "notes (1)");
         assert!(workspace.join("notes (1)/one.md").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sanitizes_export_names_and_rejects_unknown_mime_types() {
+        assert_eq!(
+            sanitize_export_file_name("../../报告:最终?.pdf"),
+            "报告最终.pdf"
+        );
+        assert_eq!(sanitize_export_file_name(".."), "LeafMark-export.bin");
+        assert_eq!(normalize_export_mime(" Application/PDF ").unwrap(), "application/pdf");
+        assert!(normalize_export_mime("application/x-executable").is_err());
+    }
+
+    #[test]
+    fn truncates_export_names_by_utf8_bytes_and_preserves_extension() {
+        let sanitized = sanitize_export_file_name(&format!("{}.pdf", "叶".repeat(100)));
+
+        assert_eq!(sanitized.len(), MAX_EXPORT_FILE_NAME_BYTES);
+        assert_eq!(sanitized, format!("{}.pdf", "叶".repeat(72)));
+        assert!(sanitized.ends_with(".pdf"));
+        assert!(sanitized.is_char_boundary(sanitized.len()));
+    }
+
+    #[test]
+    fn stages_exact_export_bytes_in_a_purpose_scoped_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "leafmark-export-stage-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let payload = b"%PDF-1.7\nLeafMark\0binary";
+
+        let prepared = stage_export_bytes(
+            &root,
+            "测试文档.pdf",
+            "application/pdf",
+            "share",
+            payload,
+        )
+        .unwrap();
+
+        assert_eq!(prepared.file_name, "测试文档.pdf");
+        assert_eq!(prepared.mime_type, "application/pdf");
+        assert_eq!(prepared.size, payload.len() as u64);
+        assert_eq!(fs::read(&prepared.path).unwrap(), payload);
+        assert!(Path::new(&prepared.path).starts_with(root.join(SHARED_EXPORT_DIRECTORY)));
+        assert!(stage_export_bytes(&root, "x.pdf", "application/pdf", "upload", payload).is_err());
         let _ = fs::remove_dir_all(root);
     }
 }

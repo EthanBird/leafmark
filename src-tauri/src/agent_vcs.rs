@@ -374,6 +374,19 @@ impl AgentVcs {
         })
     }
 
+    /// Find the durable version associated with a conversation turn. Startup
+    /// recovery may have converted a pending turn before the WebView is
+    /// recreated, so callers cannot rely on `finish_turn` succeeding twice.
+    pub(crate) fn version_for_turn(&self, turn_id: &str) -> Option<VersionSummary> {
+        self.index.versions.iter().rev()
+            .find(|record| record.turn_id == turn_id)
+            .map(VersionRecord::summary)
+    }
+
+    pub(crate) fn has_pending_turn(&self) -> bool {
+        !self.index.pending.is_empty()
+    }
+
     pub(crate) fn undo(
         &mut self,
         workspace: &Path,
@@ -954,6 +967,24 @@ mod tests {
         vcs.redo(&workspace, &mut library).unwrap();
         assert_eq!(String::from_utf8(library.vcs_snapshot(&id).unwrap().1).unwrap(), "LeafMark 编辑");
         assert_eq!(fs::read_to_string(&source).unwrap(), "微信原文");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn finds_a_version_after_startup_recovered_the_pending_turn() {
+        let base = root("turn-lookup");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("note.md"), "before").unwrap();
+        let library = DocumentArchive::load(base.join("archive")).unwrap();
+        let mut vcs = AgentVcs::load(base.join("vcs")).unwrap();
+        vcs.begin_turn(&workspace, &library, "session".into(), "turn-lookup".into(), "恢复".into(), None).unwrap();
+        fs::write(workspace.join("note.md"), "after").unwrap();
+        let recovered = vcs.recover_pending(&workspace, &library).unwrap();
+        let found = vcs.version_for_turn("turn-lookup").unwrap();
+        assert_eq!(found.id, recovered[0].id);
+        assert_eq!(found.outcome, "recovered");
+        assert!(vcs.version_for_turn("missing").is_none());
         let _ = fs::remove_dir_all(base);
     }
 }

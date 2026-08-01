@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   activeAgentMessages,
+  agentTurnPersisted,
   newAgentSession,
   relevantMemoryPrompt,
   saveAgentSession,
@@ -27,6 +28,16 @@ describe("lightweight agent storage", () => {
     session.messages.push({ role: "user", content: "你好", createdAt: Date.now() });
     session.cursor = session.messages.length;
     expect(saveAgentSession(session)[0].messages[0].content).toBe("你好");
+  });
+
+  it("verifies a terminal Agent turn with a storage read-after-write", () => {
+    const session = newAgentSession();
+    session.messages.push({ id: "answer", turnId: "turn", role: "assistant", content: "完成", createdAt: 1 });
+    session.cursor = 1;
+    expect(agentTurnPersisted(session.id, "turn")).toBe(false);
+    saveAgentSession(session);
+    expect(agentTurnPersisted(session.id, "turn")).toBe(true);
+    expect(agentTurnPersisted(session.id, "turn", "missing-version")).toBe(false);
   });
 
   it("moves message history with an Agent file version and preserves redo messages", () => {

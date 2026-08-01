@@ -41,6 +41,19 @@ export function saveAgentSession(session: AgentSession): AgentSession[] {
   return next;
 }
 
+/** Verify the terminal assistant message really made it through localStorage.
+ * saveAgentSession intentionally keeps the UI responsive when storage throws,
+ * so the active-turn journal must use this read-after-write check before it is
+ * allowed to delete the only recovery copy. */
+export function agentTurnPersisted(sessionId: string, turnId: string, expectedVersionId?: string): boolean {
+  const session = loadAgentSessions().find((item) => item.id === sessionId);
+  return Boolean(session?.messages.some((message) => (
+    message.turnId === turnId
+    && message.role === "assistant"
+    && (!expectedVersionId || message.version?.id === expectedVersionId)
+  )));
+}
+
 export function removeAgentSession(id: string): AgentSession[] {
   const next = loadAgentSessions().filter((session) => session.id !== id);
   writeJson(SESSIONS_KEY, next);

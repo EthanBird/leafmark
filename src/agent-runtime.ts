@@ -41,8 +41,27 @@ export interface AgentToolDefinition {
 
 export interface AgentRuntimeTool {
   definition: AgentToolDefinition;
-  execute: (input: Record<string, unknown>, signal: AbortSignal) => Promise<string>;
+  execute: (input: Record<string, unknown>, signal: AbortSignal) => Promise<AgentToolExecutionResult>;
+  /** A tool that opens an exclusive raw-text response channel. */
+  exclusiveTextSink?: boolean;
 }
+
+export interface AgentTextSink {
+  /** Human-readable target shown in deterministic completion messages. */
+  label: string;
+  /** Called with decoded model text. Implementations should batch expensive UI work. */
+  onDelta: (delta: string) => void;
+  /** Flush the final buffer and return the compact message stored in chat history. */
+  complete: () => Promise<string>;
+  /** Preserve or restore partial output according to the host transaction policy. */
+  abort: (error: unknown) => Promise<void>;
+}
+
+export type AgentToolExecutionResult = string | {
+  output: string;
+  /** The next model response is raw text for this sink, with tools disabled. */
+  textSink: AgentTextSink;
+};
 
 export interface AgentToolActivity {
   id: string;
@@ -77,39 +96,93 @@ export async function runAgentTurn(options: RunAgentOptions): Promise<RunAgentRe
     ...options.messages.map((message) => ({ role: message.role, content: message.content } as RuntimeMessage)),
   ];
   let finalContent = "";
+  let pendingTextSink: AgentTextSink | null = null;
+  let pendingSinkActivity: AgentToolActivity | null = null;
   const maxRounds = Math.max(1, Math.min(16, options.settings.maxToolRounds));
+  let round = 0;
 
-  for (let round = 0; round < maxRounds; round += 1) {
-    assertNotAborted(options.signal);
-    options.onPhase?.(round === 0 ? "Agent 正在思考…" : "正在分析工具结果并继续思考…");
-    const response = await requestCompletion(messages, options, true);
-    finalContent += response.content;
-    if (!response.toolCalls.length) {
-      options.onPhase?.("正在整理最终回答…");
-      return { content: finalContent, rounds: round + 1 };
-    }
-
-    messages.push({ role: "assistant", content: response.content || null, tool_calls: response.toolCalls, provider_items: response.providerItems });
-    options.onPhase?.(`准备执行 ${response.toolCalls.length} 个工具…`);
-    for (const call of response.toolCalls) {
-      const tool = options.tools.find((candidate) => candidate.definition.function.name === call.function.name);
-      const input = safeJsonObject(call.function.arguments);
-      const activity: AgentToolActivity = { id: call.id, name: call.function.name, input, status: "running" };
-      options.onTool(activity);
-      let output: string;
-      try {
-        output = tool
-          ? await tool.execute(input, options.signal)
-          : `未知工具：${call.function.name}`;
-        options.onTool({ ...activity, status: tool ? "done" : "error", output });
-      } catch (error) {
-        output = `工具执行失败：${error instanceof Error ? error.message : String(error)}`;
-        options.onTool({ ...activity, status: "error", output });
+  try {
+    // A writer tool consumes one ordinary tool round, then receives exactly
+    // one tools-disabled raw-text response. That sink response is allowed even
+    // when the writer started on the final configured tool round.
+    while (round < maxRounds || pendingTextSink) {
+      assertNotAborted(options.signal);
+      const activeSink = pendingTextSink;
+      options.onPhase?.(activeSink
+        ? `正在流式写入 ${activeSink.label}…`
+        : round === 0 ? "Agent 正在思考…" : "正在分析工具结果并继续思考…");
+      round += 1;
+      const roundOptions = activeSink ? {
+        ...options,
+        tools: [],
+        onText: (delta: string) => activeSink.onDelta(delta),
+      } : options;
+      const response = await requestCompletion(messages, roundOptions, true);
+      if (activeSink) {
+        if (response.toolCalls.length) throw new Error("文档流式输出阶段不能继续调用工具");
+        options.onPhase?.(`正在保存 ${activeSink.label}…`);
+        const summary = await activeSink.complete();
+        if (pendingSinkActivity) options.onTool({ ...pendingSinkActivity, status: "done", output: summary });
+        pendingTextSink = null;
+        pendingSinkActivity = null;
+        return { content: summary, rounds: round };
       }
-      messages.push({ role: "tool", tool_call_id: call.id, content: truncateToolOutput(output) });
+
+      finalContent += response.content;
+      if (!response.toolCalls.length) {
+        options.onPhase?.("正在整理最终回答…");
+        return { content: finalContent, rounds: round };
+      }
+
+      const exclusiveCalls = response.toolCalls.filter((call) => options.tools
+        .find((candidate) => candidate.definition.function.name === call.function.name)
+        ?.exclusiveTextSink);
+      if (exclusiveCalls.length && (exclusiveCalls.length !== 1 || response.toolCalls.length !== 1)) {
+        throw new Error("文档流式输出工具必须单独调用，不能与终端或其他工具并行执行");
+      }
+
+      messages.push({ role: "assistant", content: response.content || null, tool_calls: response.toolCalls, provider_items: response.providerItems });
+      options.onPhase?.(`准备执行 ${response.toolCalls.length} 个工具…`);
+      for (const call of response.toolCalls) {
+        const tool = options.tools.find((candidate) => candidate.definition.function.name === call.function.name);
+        const input = safeJsonObject(call.function.arguments);
+        const activity: AgentToolActivity = { id: call.id, name: call.function.name, input, status: "running" };
+        options.onTool(activity);
+        let output: string;
+        try {
+          const result = tool
+            ? await tool.execute(input, options.signal)
+            : `未知工具：${call.function.name}`;
+          if (typeof result === "string") {
+            output = result;
+            options.onTool({ ...activity, status: tool ? "done" : "error", output });
+          } else {
+            if (pendingTextSink) throw new Error("一次模型响应只能启动一个文档流式输出");
+            output = result.output;
+            pendingTextSink = result.textSink;
+            pendingSinkActivity = activity;
+            options.onTool({ ...activity, status: "running", output });
+          }
+        } catch (error) {
+          output = `工具执行失败：${error instanceof Error ? error.message : String(error)}`;
+          options.onTool({ ...activity, status: "error", output });
+        }
+        messages.push({ role: "tool", tool_call_id: call.id, content: truncateToolOutput(output) });
+      }
     }
+    throw new Error(`Agent 连续执行了 ${maxRounds} 轮工具仍未结束，请缩小任务范围或提高最大工具轮数`);
+  } catch (error) {
+    if (pendingTextSink) {
+      try { await pendingTextSink.abort(error); }
+      catch { /* the original provider/tool error remains primary */ }
+      if (pendingSinkActivity) options.onTool({
+        ...pendingSinkActivity,
+        status: "error",
+        output: `流式写入失败：${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+    throw error;
   }
-  throw new Error(`Agent 连续执行了 ${maxRounds} 轮工具仍未结束，请缩小任务范围或提高最大工具轮数`);
 }
 
 interface CompletionResult {
@@ -207,19 +280,21 @@ async function requestOpenAiResponses(messages: RuntimeMessage[], options: RunAg
     model: options.settings.model.trim() || profile.model,
     instructions: messages.find((message) => message.role === "system")?.content || "",
     input,
-    tools: options.tools.map((tool) => ({
+    stream: true,
+    store: false,
+    include: ["reasoning.encrypted_content"],
+  };
+  if (options.tools.length) {
+    body.tools = options.tools.map((tool) => ({
       type: "function",
       name: tool.definition.function.name,
       description: tool.definition.function.description,
       parameters: tool.definition.function.parameters,
       strict: false,
-    })),
-    tool_choice: "auto",
-    parallel_tool_calls: false,
-    stream: true,
-    store: false,
-    include: ["reasoning.encrypted_content"],
-  };
+    }));
+    body.tool_choice = "auto";
+    body.parallel_tool_calls = false;
+  }
   if (options.settings.reasoningEffort !== "none") body.reasoning = { effort: options.settings.reasoningEffort, summary: "auto" };
   const headers: Record<string, string> = {
     Authorization: `Bearer ${credential.accessToken}`,

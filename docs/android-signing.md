@@ -1,59 +1,46 @@
 # Android 发布签名
 
-Android 只允许签名证书相同的 APK 覆盖更新。LeafMark 的正式构建不得使用 Android Studio
-自动生成的 debug keystore；GitHub Actions 缺少固定 release 密钥或证书指纹时会直接停止，
-不会发布一个下次无法升级的 APK。
+Android 只允许签名证书相同的 APK 覆盖更新。从 LeafMark 0.7.0 开始，官方 GitHub Release
+固定使用仓库内的 `LeafMark Community Update Key v1`。证书有效期至 2126 年，SHA-256
+指纹固定为：
 
-## 一次性生成并备份密钥
-
-在可信的离线环境运行：
-
-```powershell
-keytool -genkeypair -v `
-  -keystore leafmark-release.jks `
-  -storetype JKS `
-  -alias leafmark `
-  -keyalg RSA `
-  -keysize 4096 `
-  -validity 10000 `
-  -dname "CN=LeafMark, OU=Release, O=LeafMark, C=CN"
+```text
+68:d7:80:73:6d:ce:e9:17:40:e0:8c:24:69:d4:ad:7a:
+0f:52:90:32:c3:73:ca:1e:c4:3e:6c:1e:7f:21:4c:e7
 ```
 
-把 `leafmark-release.jks` 与密码放入两个独立的安全备份位置。丢失私钥后无法再向已安装用户
-发布可覆盖升级的 APK。仓库会忽略 `*.jks` 和 `*.keystore`，不得提交私钥。
+## 为什么密钥在仓库中
 
-读取需要固定在 CI 中的公开证书指纹：
+项目目前没有受保护的正式发布证书。为保证每次 GitHub Actions 构建都能覆盖安装，项目选择
+一个长期固定、公开可复现的社区更新密钥：
+
+- `.github/leafmark-community-release.jks.b64` 是 JKS 的 Base64 文本；
+- `.github/android-signing-cert.sha256` 固定公开证书指纹；
+- 发布工作流在构建前和 APK 生成后各校验一次指纹；
+- alias 为 `leafmark-community`，公开密码为 `leafmark-community-release-v1`。
+
+这个方案只提供“后续版本使用同一 Android 更新身份”，**不提供发布者真实性或私钥保密性**。
+任何获得仓库内容的人理论上都能用该密钥签名同 applicationId 的 APK。请只从项目的官方
+GitHub Releases 下载，并在安装前核对 Release 页面、提交与哈希。未来若改用受保护的正式
+证书，由于 Android 的签名规则，需要新 applicationId 或受支持的签名迁移流程。
+
+## 本机构建
+
+先把仓库中的 Base64 文本还原为临时 JKS，再构建 ARM64 APK：
 
 ```powershell
-keytool -J-Duser.language=en -list -v `
-  -keystore leafmark-release.jks `
-  -alias leafmark
+[IO.File]::WriteAllBytes(
+  "$env:TEMP\leafmark-community-release-v1.jks",
+  [Convert]::FromBase64String(
+    (Get-Content .github\leafmark-community-release.jks.b64 -Raw).Trim()
+  )
+)
+$env:ANDROID_KEYSTORE_PATH = "$env:TEMP\leafmark-community-release-v1.jks"
+$env:ANDROID_KEYSTORE_PASSWORD = "leafmark-community-release-v1"
+$env:ANDROID_KEY_ALIAS = "leafmark-community"
+$env:ANDROID_KEY_PASSWORD = "leafmark-community-release-v1"
+npm run tauri -- android build --apk --target aarch64 --split-per-abi
 ```
-
-记录输出中的 `SHA256`，冒号和字母大小写不影响工作流校验。首次发布前，用这个值替换
-`.github/android-signing-cert.sha256` 中的 `UNCONFIGURED` 占位内容并提交。证书指纹不敏感，
-把它纳入版本控制可以防止误换全部 Secrets 后悄悄破坏已有用户的升级链；固定签名首版发布后
-不得再修改这个文件。
-
-## GitHub Actions Secrets
-
-在仓库 `Settings → Secrets and variables → Actions` 配置：
-
-- `ANDROID_KEYSTORE_BASE64`：JKS 文件的单行 Base64；PowerShell 可用
-  `[Convert]::ToBase64String([IO.File]::ReadAllBytes("leafmark-release.jks"))`
-- `ANDROID_KEYSTORE_PASSWORD`：keystore 密码
-- `ANDROID_KEY_ALIAS`：默认是 `leafmark`
-- `ANDROID_KEY_PASSWORD`：私钥密码
-
-工作流会把 keystore 与仓库中固定的证书指纹比较，并在构建后再次校验 APK 内的签名证书。
-任一值缺失或不一致都会失败。修改密码时可以重新加密同一私钥；不得用新密钥覆盖这些
-Secrets，也不得同步修改已发布的固定指纹来绕过检查。
-
-## 从旧临时证书迁移
-
-0.6.0 及更早的 Android APK 使用 CI 临时生成的 debug 证书，其私钥无法恢复。第一次安装固定
-release 证书版本时，Android 会拒绝直接覆盖旧包。请先在 LeafMark 中确认重要文档已经导出或
-备份，然后卸载旧版并安装新 APK 一次。从固定证书版开始，后续版本即可直接覆盖更新。
 
 发布后可用 Android SDK 验证：
 
@@ -61,3 +48,9 @@ release 证书版本时，Android 会拒绝直接覆盖旧包。请先在 LeafMa
 apksigner verify --verbose --print-certs LeafMark.apk
 adb install -r LeafMark.apk
 ```
+
+## 从旧临时证书迁移
+
+0.6.0 及更早 Android APK 的 debug 私钥无法恢复，所以第一次安装 0.7.0 时 Android 会拒绝
+覆盖旧包。请先确认重要文档已经导出或备份，卸载旧 APK 后安装 0.7.0。此后只要继续使用上面
+固定的社区证书，就可以直接覆盖更新。
