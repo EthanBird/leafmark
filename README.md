@@ -23,6 +23,7 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - Windows 启动、文件关联检测与默认应用设置全程不创建命令行窗口
 - Android 文件管理器、聊天、网盘等应用通过 `ACTION_VIEW`、`ACTION_EDIT` 或分享 Intent 打开 Markdown
 - Android 手机抽屉导航、触控热区、系统安全区与系统字体扫描
+- Android Agent 支持在系统默认浏览器登录 ChatGPT/Codex 等订阅；授权回调只监听本机 IPv4/IPv6 loopback，并提供重新打开与复制链接兜底
 - 最近打开历史与收藏；打开时自动保存独立文档副本，并可一键保存到我的文档库
 - 文档库、历史和收藏均提供右键菜单，可直接在系统文件管理器中定位源文档或保留副本
 - 源文件被移动或删除后，仍可从历史/收藏读取、编辑和导出保留副本
@@ -80,19 +81,27 @@ Android APK：
 
 ```powershell
 npm run tauri -- android init
+$env:ANDROID_KEYSTORE_PATH = "C:\secure\leafmark-release.jks"
+$env:ANDROID_KEYSTORE_PASSWORD = "<store password>"
+$env:ANDROID_KEY_ALIAS = "leafmark"
+$env:ANDROID_KEY_PASSWORD = "<key password>"
 npm run tauri -- android build --apk --target aarch64 --split-per-abi
 ```
 
 GitHub Release 只发布适用于现代 Android 手机的 `arm64-v8a` 优化 APK。发布构建会启用
 Rust LTO/strip、R8、资源裁剪和原生库压缩，并在上传后自动验证 APK 只包含 ARM64
-动态库且不超过 16 MiB。
+动态库且不超过 16 MiB。正式 APK 必须使用永久固定的 release keystore；密钥准备、Secrets
+配置与证书迁移规则见 [Android 发布签名](docs/android-signing.md)。
 
 ## 下载
 
 可以从 [GitHub Releases](https://github.com/EthanBird/leafmark/releases/latest)
-下载 Android APK、Windows NSIS 安装包、Linux AppImage 或 Debian 安装包。Android APK 是使用开发密钥签名、可直接安装
-的优化 release 构建；Windows 安装后可在 LeafMark 的“设置 → 系统集成”中完成
+下载 Android APK、Windows NSIS 安装包、Linux AppImage 或 Debian 安装包。Android APK 是使用
+固定 release 证书签名的优化构建；Windows 安装后可在 LeafMark 的“设置 → 系统集成”中完成
 Markdown 默认应用确认。
+
+旧 Android 包使用了无法恢复的临时 debug 证书，因此第一次迁移到固定签名版需要先备份文档、
+卸载旧 APK，再安装一次；固定签名版之后的更新可直接覆盖安装。
 
 发布工作流支持可选 Authenticode 代码签名。未配置证书时仍可生成安装包，但 Windows
 SmartScreen 可能显示未知发布者提示。证书配置见 [Windows 发布签名](docs/windows-code-signing.md)。
@@ -118,7 +127,7 @@ src-tauri/src/
   lib.rs                  扫描、渲染、缓存、文件系统与设置
   library.rs              历史/收藏索引与独立文档快照
   system_integration.rs   文件启动参数与系统文件关联状态
-  agent_auth.rs           桌面订阅 OAuth、设备登录、令牌续期与账户状态
+  agent_auth.rs           桌面/Android 订阅 OAuth、设备登录、令牌续期与账户状态
   agent_terminal.rs       无窗口 PowerShell / shell 前后台执行 harness
   agent_vcs.rs            Agent 原生 CAS、清单差分、事务回退与重做
 src-tauri/gen/android/    Android Studio 工程、Manifest 与 Gradle 配置

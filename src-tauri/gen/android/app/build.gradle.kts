@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.GradleException
 
 plugins {
     id("com.android.application")
@@ -13,6 +14,17 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+val releaseSigningConfigured = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     compileSdk = 36
     namespace = "com.leafmark.desktop"
@@ -25,6 +37,16 @@ android {
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
         ndk {
             abiFilters += "arm64-v8a"
+        }
+    }
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseKeystorePath))
+                storePassword = requireNotNull(releaseKeystorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
         }
     }
     buildTypes {
@@ -41,9 +63,9 @@ android {
             }
         }
         getByName("release") {
-            // Until a private production key is configured, sign the optimized
-            // release with Android's installable debug key.
-            signingConfig = signingConfigs.getByName("debug")
+            // Never fall back to Android's per-machine debug key: changing the
+            // signing certificate makes an installed app impossible to update.
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -80,6 +102,15 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
+}
+
+gradle.taskGraph.whenReady {
+    if (allTasks.any { it.name.contains("release", ignoreCase = true) } && !releaseSigningConfigured) {
+        throw GradleException(
+            "Release signing is required. Configure ANDROID_KEYSTORE_PATH, " +
+                "ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD."
+        )
+    }
 }
 
 apply(from = "tauri.build.gradle.kts")

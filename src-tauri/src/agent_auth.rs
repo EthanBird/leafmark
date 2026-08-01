@@ -1,6 +1,7 @@
-//! Desktop-only OAuth harness adapted from jcode's MIT-licensed auth flows.
+//! Native OAuth harness adapted from jcode's MIT-licensed auth flows.
 //! It deliberately keeps browser login and token refresh native so subscription
 //! credentials never pass through localStorage or the webview settings model.
+//! Android uses the same RFC 8252 loopback flow through the system browser.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use parking_lot::Mutex;
@@ -18,7 +19,64 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
+
+struct CallbackListener {
+    ipv4: TcpListener,
+    ipv6: Option<TcpListener>,
+    port: u16,
+}
+
+impl CallbackListener {
+    async fn bind(provider: &str) -> Result<Self, String> {
+        let requested_ports: &[u16] = if provider == "openai-oauth" {
+            // Codex authorizes both ports. 1457 lets a restarted login proceed
+            // while an abandoned 1455 flow is still winding down.
+            &[1455, 1457]
+        } else {
+            &[0]
+        };
+        let mut last_error = None;
+        for requested_port in requested_ports {
+            match TcpListener::bind(("127.0.0.1", *requested_port)).await {
+                Ok(ipv4) => {
+                    let port = ipv4
+                        .local_addr()
+                        .map_err(|error| format!("无法读取 OAuth 回调地址：{error}"))?
+                        .port();
+                    // Android browsers may resolve `localhost` to ::1 first.
+                    // Keep IPv4 as the portable baseline and add IPv6 whenever
+                    // the platform exposes an IPv6 loopback socket.
+                    let ipv6 = if provider == "gemini-oauth" {
+                        None
+                    } else {
+                        TcpListener::bind(("::1", port)).await.ok()
+                    };
+                    return Ok(Self { ipv4, ipv6, port });
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(format!(
+            "无法启动 OAuth 回调监听：{}",
+            last_error.map_or_else(|| "没有可用回调端口".into(), |error| error.to_string())
+        ))
+    }
+
+    async fn accept(&self) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+        if let Some(ipv6) = &self.ipv6 {
+            tokio::select! {
+                result = self.ipv4.accept() => result,
+                result = ipv6.accept() => result,
+            }
+        } else {
+            self.ipv4.accept().await
+        }
+    }
+}
 
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
@@ -141,13 +199,8 @@ pub async fn start(
         return Err(format!("{provider} 不支持浏览器 OAuth 登录"));
     }
 
-    let listener = if provider == "openai-oauth" {
-        TcpListener::bind("127.0.0.1:1455").await
-    } else {
-        TcpListener::bind("127.0.0.1:0").await
-    }
-    .map_err(|error| format!("无法启动 OAuth 回调监听：{error}"))?;
-    let port = listener.local_addr().map_err(|error| error.to_string())?.port();
+    let listener = CallbackListener::bind(&provider).await?;
+    let port = listener.port;
     let callback_path = if provider == "openai-oauth" { "/auth/callback" } else if provider == "gemini-oauth" { "/oauth2callback" } else { "/callback" };
     let redirect_uri = format!("http://{}:{port}{callback_path}", if provider == "gemini-oauth" { "127.0.0.1" } else { "localhost" });
     let (verifier, challenge) = pkce();
@@ -281,7 +334,7 @@ fn authorize_url(provider: &str, redirect: &str, challenge: &str, state: &str) -
     })
 }
 
-async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<String, String> {
+async fn wait_for_callback(listener: CallbackListener, expected_state: &str) -> Result<String, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

@@ -18,3 +18,5 @@ src-tauri/icons/*
 .idea/
 .vscode/
 *.log
+*.jks
+*.keystore

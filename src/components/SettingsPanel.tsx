@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AgentAuthAccountStatus, AgentAuthChallenge, AppSettings, AssociationStatus, ThemeMode, ThemePalette } from "../types";
 import { api } from "../api";
 import { AGENT_PROVIDER_PROFILES, PROVIDER_DEFAULTS, REASONING_EFFORT_LABELS, defaultReasoningEffort, isOAuthProvider, providerProfile, reasoningEffortsForProvider } from "../agent-providers";
@@ -76,7 +77,7 @@ export function SettingsPanel({
   }, [fontFamilies, section]);
 
   useEffect(() => {
-    if (section !== "agent" || isAndroid || !isOAuthProvider(settings.agent.provider)) {
+    if (section !== "agent" || !isOAuthProvider(settings.agent.provider)) {
       setAgentAuth(null);
       return;
     }
@@ -85,7 +86,7 @@ export function SettingsPanel({
       .then((status) => { if (active) setAgentAuth(status); })
       .catch((error) => { if (active) setAgentAuth({ provider: settings.agent.provider, connected: false, email: null, expiresAt: null, detail: String(error) }); });
     return () => { active = false; };
-  }, [isAndroid, section, settings.agent.provider]);
+  }, [section, settings.agent.provider]);
 
   const startAgentLogin = async () => {
     setAuthWorking(true);
@@ -201,14 +202,17 @@ export function SettingsPanel({
                     options={AGENT_PROVIDER_PROFILES.map((item): [string, string] => [item.id, item.name])}
                   />
                 </SettingRow>
-                {!isAndroid && isOAuthProvider(settings.agent.provider) && (
+                {isOAuthProvider(settings.agent.provider) && (
                   <div className="agent-auth-card">
                     <div>
                       <small>SUBSCRIPTION OAUTH</small>
                       <strong>{agentAuth?.connected ? agentAuth.email || "订阅账户已连接" : `登录 ${providerProfile(settings.agent.provider).name}`}</strong>
                       <p>{authChallenge?.message || authError || agentAuth?.detail || "凭据由 Rust harness 保存；不会写入设置或 WebView localStorage。"}</p>
                       {authChallenge?.userCode && <button type="button" className="agent-device-code" onClick={() => void navigator.clipboard?.writeText(authChallenge.userCode!)} title="点击复制设备代码">{authChallenge.userCode}</button>}
-                      {authChallenge?.authorizeUrl && <button type="button" className="agent-device-code" onClick={() => void navigator.clipboard?.writeText(authChallenge.authorizeUrl)} title="复制后粘贴到任意浏览器">复制登录链接</button>}
+                      {authChallenge?.authorizeUrl && <>
+                        <button type="button" className="agent-device-code agent-login-link" onClick={() => void openUrl(authChallenge.authorizeUrl)} title="再次使用系统默认浏览器打开"><ExternalLink size={13} /> 重新打开登录页</button>
+                        <button type="button" className="agent-device-code agent-login-link" onClick={() => void navigator.clipboard?.writeText(authChallenge.authorizeUrl)} title="复制后粘贴到任意浏览器">复制登录链接</button>
+                      </>}
                     </div>
                     {agentAuth?.connected
                       ? <button type="button" className="secondary-button" disabled={authWorking} onClick={() => void logoutAgent()}>退出登录</button>

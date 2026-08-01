@@ -932,6 +932,7 @@ button:disabled { opacity: .42; cursor: default !important; }
 .agent-auth-card { display: flex; align-items: center; justify-content: space-between; min-height: 92px; gap: 20px; padding: 15px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface-raised)); }
 .agent-auth-card > div { min-width: 0; }.agent-auth-card small { display: block; color: var(--accent-strong); font-size: 8px; font-weight: 700; letter-spacing: .1em; }.agent-auth-card strong { display: block; margin-top: 4px; font-size: 11px; }.agent-auth-card p { margin: 4px 0 0; color: var(--text-secondary); font-size: 9px; line-height: 1.5; }
 .agent-device-code { margin-top: 8px; padding: 5px 9px; border: 1px dashed var(--accent); border-radius: 6px; background: var(--surface-raised); color: var(--accent-strong); cursor: copy; font: 700 13px var(--mono); letter-spacing: .08em; }
+.agent-login-link { display: inline-flex; align-items: center; gap: 5px; margin-right: 6px; cursor: pointer; font-family: inherit; font-size: 10px; font-weight: 650; letter-spacing: 0; }
 .skill-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 11px; }
 .skill-options label { display: flex; align-items: center; min-height: 34px; gap: 7px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text-secondary); cursor: pointer; font-size: 9px; }
 .skill-options input { accent-color: var(--accent); }
@@ -1100,6 +1101,8 @@ button:disabled { opacity: .42; cursor: default !important; }
   .agent-setting-field { grid-template-columns: 1fr; gap: 10px; padding: 16px 0; }
   .agent-setting-field input, .number-field { width: 100%; min-height: 42px; font-size: 12px; }
   .agent-setting-area textarea { min-height: 120px; font-size: 12px; }
+  .agent-auth-card { align-items: stretch; flex-direction: column; gap: 12px; }
+  .agent-auth-card > .primary-button, .agent-auth-card > .secondary-button { width: 100%; }
   .skill-options { grid-template-columns: repeat(2, 1fr); }
   .skill-options label { min-height: 42px; font-size: 11px; }
   .layout-reset-card { align-items: stretch; flex-direction: column; }

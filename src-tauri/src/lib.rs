@@ -2,7 +2,7 @@ mod library;
 mod agent_vcs;
 mod system_fonts;
 mod system_integration;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 mod agent_auth;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod agent_terminal;
@@ -1583,7 +1583,7 @@ fn default_workspace(app: &AppHandle, config_dir: &Path) -> Result<PathBuf, Stri
         .join("LeafMark"))
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 #[tauri::command]
 async fn agent_oauth_start(
     provider: String,
@@ -1593,13 +1593,13 @@ async fn agent_oauth_start(
     agent_auth::start(app, state.inner().clone(), provider).await
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 #[tauri::command]
 async fn agent_oauth_start(_provider: String) -> Result<serde_json::Value, String> {
-    Err("移动端不启用桌面订阅 OAuth harness".into())
+    Err("iOS 暂未启用订阅 OAuth".into())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 #[tauri::command]
 fn agent_oauth_poll(
     flow_id: String,
@@ -1608,13 +1608,13 @@ fn agent_oauth_poll(
     agent_auth::poll(state.inner().clone(), flow_id)
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 #[tauri::command]
 fn agent_oauth_poll(_flow_id: String) -> serde_json::Value {
-    serde_json::json!({"status":"error","message":"移动端不支持此登录方式"})
+    serde_json::json!({"status":"error","message":"iOS 暂未启用订阅 OAuth"})
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 #[tauri::command]
 async fn agent_auth_status(
     provider: String,
@@ -1623,25 +1623,25 @@ async fn agent_auth_status(
     agent_auth::account_status(app, provider).await
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 #[tauri::command]
 async fn agent_auth_status(provider: String) -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({"provider":provider,"connected":false,"detail":"移动端未启用桌面 OAuth"}))
+    Ok(serde_json::json!({"provider":provider,"connected":false,"detail":"iOS 暂未启用订阅 OAuth"}))
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 #[tauri::command]
 fn agent_oauth_logout(provider: String, app: AppHandle) -> Result<(), String> {
     agent_auth::logout(app, provider)
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 #[tauri::command]
 fn agent_oauth_logout(_provider: String) -> Result<(), String> {
-    Err("移动端不支持此登录方式".into())
+    Err("iOS 暂未启用订阅 OAuth".into())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(not(target_os = "ios"))]
 #[tauri::command]
 async fn agent_auth_credential(
     provider: String,
@@ -1650,10 +1650,10 @@ async fn agent_auth_credential(
     agent_auth::credential(app, provider).await
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 #[tauri::command]
 async fn agent_auth_credential(_provider: String) -> Result<serde_json::Value, String> {
-    Err("移动端不支持此登录方式".into())
+    Err("iOS 暂未启用订阅 OAuth".into())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1718,10 +1718,10 @@ fn agent_terminal_kill(_job_id: String) -> Result<serde_json::Value, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
+    #[cfg(not(target_os = "ios"))]
+    let builder = builder.manage(agent_auth::AgentAuthManager::default());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let builder = builder
-        .manage(agent_auth::AgentAuthManager::default())
-        .manage(agent_terminal::TerminalManager::default());
+    let builder = builder.manage(agent_terminal::TerminalManager::default());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
         let paths = markdown_paths_from_args(args, Path::new(&cwd));
