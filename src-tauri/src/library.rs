@@ -157,9 +157,37 @@ impl DocumentArchive {
         if !canonical.is_file() {
             return Err("目标不是文件".into());
         }
+        let key = path_key(&canonical);
+        if let Some(id) = self
+            .index
+            .documents
+            .iter()
+            .find(|entry| path_key(Path::new(&entry.source_path)) == key)
+            .map(|entry| entry.id.clone())
+        {
+            // External documents are imported as retained copies. Reopening the
+            // same source must never overwrite edits made to that copy.
+            return self.open(&id);
+        }
         let metadata = fs::metadata(&canonical).map_err(error_string)?;
         let bytes = fs::read(&canonical).map_err(error_string)?;
         let content = super::decode_text(&bytes);
+        let duplicate_id = self.index.documents.iter().find_map(|entry| {
+            let snapshot = fs::read(self.snapshot_path(&entry.id)).ok()?;
+            (super::decode_text(&snapshot) == content).then(|| entry.id.clone())
+        });
+        if let Some(id) = duplicate_id {
+            if let Some(entry) = self.index.documents.iter_mut().find(|entry| entry.id == id) {
+                entry.name = canonical.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                entry.source_path = canonical.to_string_lossy().into_owned();
+                entry.source_exists = true;
+                entry.modified_ms = modified_ms(&metadata);
+            }
+            // WeChat and other apps often expose the same attachment through a
+            // new temporary path. Exact content matching reuses the retained
+            // snapshot instead of multiplying copies.
+            return self.open(&id);
+        }
         let entry = self.record(
             &canonical,
             &content,
@@ -473,6 +501,46 @@ mod tests {
             fs::read_to_string(&source).unwrap(),
             "# changed by another app"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reopening_external_source_reuses_edited_retained_copy() {
+        let root = test_root("external-reopen");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("wechat.md");
+        fs::write(&source, "# original").unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+
+        let first = archive.open_source(&source).unwrap();
+        archive.write(&first.entry.id, "# retained edit").unwrap();
+        fs::write(&source, "# source changed").unwrap();
+        let reopened = archive.open_source(&source).unwrap();
+
+        assert_eq!(reopened.entry.id, first.entry.id);
+        assert_eq!(reopened.content, "# retained edit");
+        assert_eq!(archive.entries().unwrap().len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn identical_external_content_at_new_path_reuses_snapshot() {
+        let root = test_root("content-dedup");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let first_path = source_dir.join("wechat-a.md");
+        let second_path = source_dir.join("wechat-b.md");
+        fs::write(&first_path, "# same attachment").unwrap();
+        fs::write(&second_path, "# same attachment").unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+
+        let first = archive.open_source(&first_path).unwrap();
+        let second = archive.open_source(&second_path).unwrap();
+
+        assert_eq!(second.entry.id, first.entry.id);
+        assert_eq!(archive.entries().unwrap().len(), 1);
+        assert_eq!(second.content, "# same attachment");
         let _ = fs::remove_dir_all(root);
     }
 

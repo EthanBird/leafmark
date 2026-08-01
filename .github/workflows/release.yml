@@ -127,6 +127,11 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
+            - Agent 对话区新增 jcode 完整推理强度档位：关闭、极简、低、中、高、极高、最大；Codex gpt-5.6-sol 默认迁移为 low
+            - Agent 回复改为安全的流式 Markdown 实时渲染，标题、列表、表格、代码、引用和链接会边生成边排版
+            - 新增可持久化的执行时间线：思考过程、当前阶段、工具参数、PowerShell 命令与执行结果均可展开查看
+            - 修复发送消息后输入框失焦；生成期间可继续输入下一条消息
+            - 外部 Markdown 优先按规范路径复用已有保留副本，并以精确内容比对合并来自微信临时路径的重复文档，不再覆盖副本编辑
             - 修复 Windows OAuth 点击“浏览器登录”无反应：改由 Rust 原生层打开系统默认浏览器，不再依赖 WebView opener 调用
             - OAuth 页面现在会显示明确启动错误，并提供“复制登录链接”兜底；GitHub Copilot 设备登录同样适用
             - 新增 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth 登录、自动续期和账户状态 UI

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_PROVIDER_PROFILES, isOAuthProvider, providerProfile } from "./agent-providers";
+import { AGENT_PROVIDER_PROFILES, defaultReasoningEffort, isOAuthProvider, providerProfile, reasoningEffortsForProvider } from "./agent-providers";
 import { normalizeAgentSettings } from "./settings-defaults";
 
 describe("agent provider catalog", () => {
@@ -16,5 +16,10 @@ describe("agent provider catalog", () => {
     expect(normalized.provider).toBe("openai-api");
     expect(normalized.apiKey).toBe("test");
     expect(normalized.terminalToolsEnabled).toBe(true);
+  });
+
+  it("matches jcode's complete OpenAI reasoning ladder", () => {
+    expect(reasoningEffortsForProvider("openai-oauth")).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(defaultReasoningEffort("openai-oauth")).toBe("low");
   });
 });

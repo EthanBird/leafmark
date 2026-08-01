@@ -33,12 +33,16 @@ export function normalizeAgentSettings(value: unknown): AgentSettings {
   const input = value as Partial<AgentSettings>;
   const rawProvider = (value as { provider?: string }).provider;
   const provider = rawProvider === "openai" ? "openai-api" : rawProvider;
-  return { ...defaults, ...input, provider: (provider || defaults.provider) as AgentSettings["provider"] };
+  const rawEffort = String(input.reasoningEffort || "");
+  const normalizedEffort = ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(rawEffort)
+    ? rawEffort as AgentSettings["reasoningEffort"]
+    : defaults.reasoningEffort;
+  return { ...defaults, ...input, reasoningEffort: normalizedEffort, provider: (provider || defaults.provider) as AgentSettings["provider"] };
 }
 
 export function defaultAppSettings(workspacePath = ""): AppSettings {
   return {
-    settingsSchemaVersion: 4,
+    settingsSchemaVersion: 5,
     workspacePath,
     theme: "system",
     themePalette: "leaf",

@@ -56,6 +56,7 @@ import { startPngExport } from "./png-export";
 import { collectOutline, enhanceDocument, type OutlineItem } from "./rendering";
 import { buildTree, joinPath, parentPath, resolveMarkdownLink } from "./tree";
 import type {
+  AgentReasoningEffort,
   AppSettings,
   ArchiveEntry,
   AssociationStatus,
@@ -1085,6 +1086,10 @@ export default function App() {
 
   const dockLayout = normalizeDesktopDockLayout(settings.desktopLayout);
   const updateDockLayout = (layout: AppSettings["desktopLayout"]) => setSettings((current) => ({ ...current, desktopLayout: normalizeDesktopDockLayout(layout) }));
+  const updateAgentReasoningEffort = (reasoningEffort: AgentReasoningEffort) => setSettings((current) => ({
+    ...current,
+    agent: { ...current.agent, reasoningEffort },
+  }));
   const activatePanel = (panel: DockPanelId) => {
     updateDockLayout(activateDockPanel(dockLayout, panel));
     if (panel === "workspace" || panel === "history" || panel === "favorites" || panel === "agent") setSidebarView(panel);
@@ -1233,7 +1238,7 @@ export default function App() {
   </div>;
 
   const renderDockPanel = (panel: DockPanelId) => {
-    if (panel === "agent") return <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} />;
+    if (panel === "agent") return <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} onReasoningEffortChange={updateAgentReasoningEffort} />;
     if (panel === "outline") return renderOutlinePanel();
     return <div className="dock-library-shell">{renderSidebarToolbar()}{renderLibraryContent(panel)}</div>;
   };
@@ -1251,7 +1256,7 @@ export default function App() {
           <button className={sidebarView === "agent" ? "active" : ""} type="button" onClick={() => setSidebarView("agent")} title="AI Agent"><Bot size={14} /> Agent</button>
         </div>
         {sidebarView === "agent"
-          ? <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} />
+          ? <AgentPanel settings={settings.agent} host={agentHost} onOpenSettings={() => setSettingsOpen(true)} onReasoningEffortChange={updateAgentReasoningEffort} />
           : renderLibraryContent(sidebarView)}
       </aside>}
       {android && sidebarOpen && <button className="sidebar-scrim" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭文档抽屉" />}

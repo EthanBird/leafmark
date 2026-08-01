@@ -1,4 +1,4 @@
-import type { AgentProvider } from "./types";
+import type { AgentProvider, AgentReasoningEffort } from "./types";
 
 export interface AgentProviderProfile {
   id: AgentProvider;
@@ -74,4 +74,30 @@ export function providerProfile(provider: AgentProvider) {
 
 export function isOAuthProvider(provider: AgentProvider) {
   return providerProfile(provider).auth === "oauth";
+}
+
+export const REASONING_EFFORT_LABELS: Record<AgentReasoningEffort, string> = {
+  none: "关闭",
+  minimal: "极简",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最大",
+};
+
+export function reasoningEffortsForProvider(provider: AgentProvider): AgentReasoningEffort[] {
+  if (provider === "openai-oauth" || provider === "openai-api") {
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  }
+  if (provider === "claude-oauth" || provider === "anthropic-api" || provider === "copilot") {
+    return ["none", "low", "medium", "high", "xhigh", "max"];
+  }
+  if (provider === "deepseek") return ["none", "low", "medium", "high", "max"];
+  return ["none", "minimal", "low", "medium", "high", "xhigh"];
+}
+
+export function defaultReasoningEffort(provider: AgentProvider): AgentReasoningEffort {
+  if (provider === "openai-oauth") return "low";
+  return "none";
 }

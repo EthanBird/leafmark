@@ -9,6 +9,8 @@ export interface AgentConversationMessage {
   role: "user" | "assistant";
   content: string;
   createdAt: number;
+  reasoning?: string;
+  activities?: AgentToolActivity[];
 }
 
 interface RuntimeMessage {
@@ -55,6 +57,7 @@ export interface RunAgentOptions {
   signal: AbortSignal;
   onText: (delta: string) => void;
   onReasoning?: (delta: string) => void;
+  onPhase?: (message: string) => void;
   onTool: (activity: AgentToolActivity) => void;
 }
 
@@ -75,11 +78,16 @@ export async function runAgentTurn(options: RunAgentOptions): Promise<RunAgentRe
 
   for (let round = 0; round < maxRounds; round += 1) {
     assertNotAborted(options.signal);
+    options.onPhase?.(round === 0 ? "Agent 正在思考…" : "正在分析工具结果并继续思考…");
     const response = await requestCompletion(messages, options, true);
     finalContent += response.content;
-    if (!response.toolCalls.length) return { content: finalContent, rounds: round + 1 };
+    if (!response.toolCalls.length) {
+      options.onPhase?.("正在整理最终回答…");
+      return { content: finalContent, rounds: round + 1 };
+    }
 
     messages.push({ role: "assistant", content: response.content || null, tool_calls: response.toolCalls, provider_items: response.providerItems });
+    options.onPhase?.(`准备执行 ${response.toolCalls.length} 个工具…`);
     for (const call of response.toolCalls) {
       const tool = options.tools.find((candidate) => candidate.definition.function.name === call.function.name);
       const input = safeJsonObject(call.function.arguments);

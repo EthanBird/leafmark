@@ -34,7 +34,7 @@ const MAX_IMPORTED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
-const SETTINGS_SCHEMA_VERSION: u32 = 4;
+const SETTINGS_SCHEMA_VERSION: u32 = 5;
 
 fn default_font_family() -> String {
     "system".into()
@@ -144,6 +144,12 @@ impl AppSettings {
         if self.settings_schema_version < 4 {
             self.desktop_layout = default_desktop_layout();
             self.agent = default_agent_settings();
+        }
+        if self.settings_schema_version < 5
+            && self.agent.get("provider").and_then(serde_json::Value::as_str) == Some("openai-oauth")
+            && self.agent.get("reasoningEffort").and_then(serde_json::Value::as_str) == Some("none")
+        {
+            self.agent["reasoningEffort"] = serde_json::Value::String("low".into());
         }
         if self.settings_schema_version < SETTINGS_SCHEMA_VERSION {
             self.settings_schema_version = SETTINGS_SCHEMA_VERSION;
@@ -1849,6 +1855,19 @@ mod tests {
 
         assert!(!migrated.live_editing);
         assert_eq!(migrated.theme_palette, "leaf");
+        assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_existing_codex_subscription_to_jcode_low_effort_default() {
+        let mut settings = AppSettings::defaults(Path::new("/tmp/leafmark"));
+        settings.settings_schema_version = 4;
+        settings.agent["provider"] = serde_json::Value::String("openai-oauth".into());
+        settings.agent["reasoningEffort"] = serde_json::Value::String("none".into());
+
+        let migrated = settings.normalize();
+
+        assert_eq!(migrated.agent["reasoningEffort"], "low");
         assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
     }
 

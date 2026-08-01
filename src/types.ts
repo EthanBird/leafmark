@@ -48,6 +48,8 @@ export type AgentProvider =
   | "lmstudio"
   | "custom";
 
+export type AgentReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface DockZoneState {
   panels: DockPanelId[];
   active: DockPanelId | null;
@@ -74,7 +76,7 @@ export interface AgentSettings {
   contextChars: number;
   maxToolRounds: number;
   maxParallelAgents: number;
-  reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh";
+  reasoningEffort: AgentReasoningEffort;
   systemPrompt: string;
   allowDocumentEdits: boolean;
   memoryEnabled: boolean;

@@ -15,7 +15,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AgentAuthAccountStatus, AgentAuthChallenge, AppSettings, AssociationStatus, ThemeMode, ThemePalette } from "../types";
 import { api } from "../api";
-import { AGENT_PROVIDER_PROFILES, PROVIDER_DEFAULTS, isOAuthProvider, providerProfile } from "../agent-providers";
+import { AGENT_PROVIDER_PROFILES, PROVIDER_DEFAULTS, REASONING_EFFORT_LABELS, defaultReasoningEffort, isOAuthProvider, providerProfile, reasoningEffortsForProvider } from "../agent-providers";
 import { defaultDesktopDockLayout } from "../dock-layout";
 
 interface SettingsPanelProps {
@@ -196,7 +196,7 @@ export function SettingsPanel({
                     value={settings.agent.provider}
                     onChange={(provider) => {
                       const next = provider as AppSettings["agent"]["provider"];
-                      patchAgent({ provider: next, ...PROVIDER_DEFAULTS[next] });
+                      patchAgent({ provider: next, ...PROVIDER_DEFAULTS[next], reasoningEffort: defaultReasoningEffort(next) });
                     }}
                     options={AGENT_PROVIDER_PROFILES.map((item): [string, string] => [item.id, item.name])}
                   />
@@ -222,7 +222,7 @@ export function SettingsPanel({
                 <SettingSlider title="Top P" value={settings.agent.topP} min={0.05} max={1} step={0.05} unit="" onChange={(topP) => patchAgent({ topP })} />
                 <SettingRow title="推理强度" description="兼容支持 reasoning_effort 的模型；普通模型会忽略该参数。">
                   <Select value={settings.agent.reasoningEffort} onChange={(reasoningEffort) => patchAgent({ reasoningEffort: reasoningEffort as AppSettings["agent"]["reasoningEffort"] })} options={[
-                    ["none", "关闭"], ["low", "低"], ["medium", "中"], ["high", "高"], ["xhigh", "极高"],
+                    ...reasoningEffortsForProvider(settings.agent.provider).map((effort): [string, string] => [effort, REASONING_EFFORT_LABELS[effort]]),
                   ]} />
                 </SettingRow>
                 <SettingRow title="最大输出" description="单次模型响应的 token 上限。">

@@ -13,7 +13,10 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import DOMPurify from "dompurify";
+import { marked } from "marked";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   fetchWebText,
   loadMcpTools,
@@ -35,8 +38,9 @@ import {
   type AgentMemory,
   type AgentSession,
 } from "../agent-storage";
-import type { AgentSettings, DocumentEntry } from "../types";
+import type { AgentReasoningEffort, AgentSettings, DocumentEntry } from "../types";
 import { api } from "../api";
+import { REASONING_EFFORT_LABELS, reasoningEffortsForProvider } from "../agent-providers";
 
 export interface AgentDocumentHost {
   current: { path: string; content: string } | null;
@@ -53,6 +57,7 @@ interface AgentPanelProps {
   settings: AgentSettings;
   host: AgentDocumentHost;
   onOpenSettings: () => void;
+  onReasoningEffortChange: (effort: AgentReasoningEffort) => void;
 }
 
 const BUILTIN_SKILLS: Record<string, string> = {
@@ -64,7 +69,7 @@ const BUILTIN_SKILLS: Record<string, string> = {
   research: "研究：区分已知事实、推断和待验证信息，必要时使用工具取证。",
 };
 
-export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) {
+export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortChange }: AgentPanelProps) {
   const initial = useMemo(() => loadAgentSessions()[0] ?? newAgentSession(), []);
   const [session, setSession] = useState<AgentSession>(initial);
   const [sessions, setSessions] = useState<AgentSession[]>(() => loadAgentSessions());
@@ -78,6 +83,9 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
   const [memories, setMemories] = useState<AgentMemory[]>(() => loadAgentMemories());
   const controllerRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const reasoningRef = useRef("");
+  const activitiesRef = useRef<AgentToolActivity[]>([]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -87,6 +95,10 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
   }, [activities, draft, session.messages, working]);
 
   useEffect(() => () => controllerRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!working) composerRef.current?.focus();
+  }, [working]);
 
   const persist = (next: AgentSession) => {
     setSession(next);
@@ -100,6 +112,8 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
     setDraft("");
     setReasoning("");
     setActivities([]);
+    reasoningRef.current = "";
+    activitiesRef.current = [];
   };
 
   const selectSession = (id: string) => {
@@ -144,8 +158,11 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
     setDraft("");
     setReasoning("");
     setActivities([]);
+    reasoningRef.current = "";
+    activitiesRef.current = [];
     setWorking(true);
     setNotice("正在连接模型…");
+    composerRef.current?.focus();
     let streamed = "";
     try {
       const localTools = buildTools(settings, host, workingSession, () => setMemories(loadAgentMemories()));
@@ -166,19 +183,35 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
           streamed += delta;
           setDraft(streamed);
         },
-        onReasoning: (delta) => setReasoning((current) => current + delta),
-        onTool: (activity) => setActivities((current) => {
-          const index = current.findIndex((item) => item.id === activity.id);
-          if (index < 0) return [...current, activity];
-          const next = [...current];
-          next[index] = activity;
-          return next;
-        }),
+        onReasoning: (delta) => {
+          reasoningRef.current += delta;
+          setReasoning(reasoningRef.current);
+          setNotice("Agent 正在思考…");
+        },
+        onPhase: (phase) => setNotice(phase),
+        onTool: (activity) => {
+          const index = activitiesRef.current.findIndex((item) => item.id === activity.id);
+          const next = index < 0
+            ? [...activitiesRef.current, activity]
+            : activitiesRef.current.map((item, itemIndex) => itemIndex === index ? activity : item);
+          activitiesRef.current = next;
+          setActivities(next);
+          if (activity.status === "running") {
+            setNotice(activity.name === "terminal_execute" ? "正在执行 PowerShell 命令…" : `正在调用 ${activity.name}…`);
+          }
+        },
       });
-      const assistant = { role: "assistant" as const, content: result.content || streamed || "任务已完成。", createdAt: Date.now() };
+      const assistant = {
+        role: "assistant" as const,
+        content: result.content || streamed || "任务已完成。",
+        createdAt: Date.now(),
+        reasoning: reasoningRef.current,
+        activities: compactActivities(activitiesRef.current),
+      };
       persist({ ...workingSession, updatedAt: Date.now(), messages: [...workingSession.messages, assistant] });
       setDraft("");
       setReasoning("");
+      setActivities([]);
       setNotice(`完成 · ${result.rounds} 轮`);
     } catch (error) {
       if (controller.signal.aborted) setNotice("已停止，已生成内容仍保留在会话中");
@@ -187,13 +220,22 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
         persist({
           ...workingSession,
           updatedAt: Date.now(),
-          messages: [...workingSession.messages, { role: "assistant", content: streamed, createdAt: Date.now() }],
+          messages: [...workingSession.messages, {
+            role: "assistant",
+            content: streamed,
+            createdAt: Date.now(),
+            reasoning: reasoningRef.current,
+            activities: compactActivities(activitiesRef.current),
+          }],
         });
         setDraft("");
+        setReasoning("");
+        setActivities([]);
       }
     } finally {
       controllerRef.current = null;
       setWorking(false);
+      composerRef.current?.focus();
     }
   };
 
@@ -241,32 +283,40 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
         ) : session.messages.map((message, index) => (
           <article key={`${message.createdAt}-${index}`} className={`agent-message ${message.role}`}>
             <small>{message.role === "user" ? "你" : "Agent"}</small>
-            <p>{message.content}</p>
+            {message.role === "assistant" ? <AgentMarkdown content={message.content} /> : <p>{message.content}</p>}
+            {message.reasoning && <ReasoningActivity content={message.reasoning} />}
+            {message.activities?.map((activity) => <ToolActivity key={activity.id} activity={activity} />)}
           </article>
         ))}
-        {reasoning && <details className="agent-reasoning"><summary>推理过程</summary><p>{reasoning}</p></details>}
-        {activities.map((activity) => (
-          <div key={activity.id} className={`agent-tool ${activity.status}`} title={activity.output}>
-            {activity.status === "running" ? <LoaderCircle size={13} className="spin" /> : <Wrench size={13} />}
-            <span><strong>{activity.name}</strong><small>{activity.status === "running" ? "执行中" : activity.status === "done" ? "已完成" : "失败"}</small></span>
-          </div>
-        ))}
-        {draft && <article className="agent-message assistant streaming"><small>Agent</small><p>{draft}</p><i /></article>}
+        {working && <div className="agent-phase"><LoaderCircle size={12} className="spin" /><span>{notice}</span></div>}
+        {reasoning && <ReasoningActivity content={reasoning} streaming />}
+        {activities.map((activity) => <ToolActivity key={activity.id} activity={activity} />)}
+        {draft && <article className="agent-message assistant streaming"><small>Agent</small><AgentMarkdown content={draft} /><i /></article>}
       </div>
 
       <div className="agent-composer">
-        <div className="agent-context"><FilePenLine size={11} /><span>{host.current?.path || "未选择文档"}</span><small>{notice}</small></div>
+        <div className="agent-context">
+          <FilePenLine size={11} />
+          <span>{host.current?.path || "未选择文档"}</span>
+          <label title="推理强度会随下一条消息立即生效">思考
+            <select value={settings.reasoningEffort} onChange={(event) => onReasoningEffortChange(event.target.value as AgentReasoningEffort)}>
+              {reasoningEffortsForProvider(settings.provider).map((effort) => <option key={effort} value={effort}>{REASONING_EFFORT_LABELS[effort]}</option>)}
+            </select>
+          </label>
+          <small>{notice}</small>
+        </div>
         <textarea
+          ref={composerRef}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (!working && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void send();
             }
           }}
-          placeholder="交给 Agent…（Shift+Enter 换行）"
-          disabled={working}
+          placeholder={working ? "可以继续输入下一条消息…" : "交给 Agent…（Shift+Enter 换行）"}
+          aria-busy={working}
           rows={3}
         />
         <button className={working ? "stop" : "send"} type="button" onClick={working ? stop : () => void send()} disabled={!working && !prompt.trim()} title={working ? "停止" : "发送"}>
@@ -275,6 +325,57 @@ export function AgentPanel({ settings, host, onOpenSettings }: AgentPanelProps) 
       </div>
     </section>
   );
+}
+
+function AgentMarkdown({ content }: { content: string }) {
+  const deferred = useDeferredValue(content);
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(deferred, {
+    async: false,
+    breaks: true,
+    gfm: true,
+  }) as string), [deferred]);
+  return <div
+    className="agent-markdown"
+    dangerouslySetInnerHTML={{ __html: html }}
+    onClick={(event) => {
+      const anchor = (event.target as HTMLElement).closest("a");
+      if (!anchor?.href) return;
+      event.preventDefault();
+      if (api.isTauri()) void openUrl(anchor.href);
+      else window.open(anchor.href, "_blank", "noopener,noreferrer");
+    }}
+  />;
+}
+
+function ReasoningActivity({ content, streaming = false }: { content: string; streaming?: boolean }) {
+  return <details className="agent-reasoning" open={streaming}>
+    <summary>{streaming ? "正在思考" : "思考过程"}</summary>
+    <AgentMarkdown content={content} />
+  </details>;
+}
+
+function ToolActivity({ activity }: { activity: AgentToolActivity }) {
+  const terminalCommand = activity.name === "terminal_execute" ? String(activity.input.command || "") : "";
+  const status = activity.status === "running" ? "执行中" : activity.status === "done" ? "已完成" : "失败";
+  return <details className={`agent-tool ${activity.status}`} open={activity.status === "running"}>
+    <summary>
+      {activity.status === "running" ? <LoaderCircle size={13} className="spin" /> : <Wrench size={13} />}
+      <span><strong>{terminalCommand ? "PowerShell" : activity.name}</strong><small>{status}</small></span>
+    </summary>
+    {terminalCommand && <code className="agent-command">PS&gt; {terminalCommand}</code>}
+    <div className="agent-tool-detail">
+      <strong>参数</strong>
+      <pre>{JSON.stringify(activity.input, null, 2)}</pre>
+      {activity.output !== undefined && <><strong>结果</strong><pre>{activity.output.slice(0, 12_000)}</pre></>}
+    </div>
+  </details>;
+}
+
+function compactActivities(activities: AgentToolActivity[]) {
+  return activities.map((activity) => ({
+    ...activity,
+    output: activity.output?.slice(0, 12_000),
+  }));
 }
 
 function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["current"], query: string) {
