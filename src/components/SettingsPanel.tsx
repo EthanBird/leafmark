@@ -448,6 +448,7 @@ function PalettePicker({ value, onChange }: { value: ThemePalette; onChange: (va
     { value: "qingchuan", label: "清川蓝", colors: ["#39769c", "#dcecf4"] },
     { value: "amber", label: "暖杏金", colors: ["#9a6a2f", "#f3e7d2"] },
     { value: "wisteria", label: "藤萝紫", colors: ["#75659b", "#e8e2f3"] },
+    { value: "monochrome", label: "黑白灰", colors: ["#4d5359", "#e3e5e7"] },
   ];
   return (
     <div className="palette-picker">

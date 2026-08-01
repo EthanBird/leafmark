@@ -85,7 +85,50 @@ export interface PreparedExport {
 
 const ANDROID_EXPORT_RESULT_EVENT = "leafmark-android-export-result";
 const ANDROID_EXPORT_TIMEOUT_MS = 10 * 60 * 1000;
+// Tauri's Android IPC transport cannot carry InvokeBody::Raw. Base64 is the
+// compact byte-safe representation recommended by Tauri for its JSON-only
+// Android bridge. Keep the limit in sync with MAX_EXPORT_PAYLOAD_BYTES in Rust.
+const MAX_ANDROID_EXPORT_BYTES = 64 * 1024 * 1024;
+const ANDROID_BASE64_CHUNK_BYTES = 48 * 1024;
 let androidExportRequestSequence = 0;
+
+interface AndroidBase64ExportPayload {
+  [key: string]: unknown;
+  encoding: "base64";
+  byteLength: number;
+  data: string;
+}
+
+async function encodeAndroidExportPayload(bytes: Uint8Array): Promise<AndroidBase64ExportPayload> {
+  if (bytes.byteLength > MAX_ANDROID_EXPORT_BYTES) {
+    throw new Error("Android 单次导出不能超过 64 MiB");
+  }
+
+  const encodedChunks: string[] = [];
+  for (let offset = 0, chunkIndex = 0; offset < bytes.byteLength; offset += ANDROID_BASE64_CHUNK_BYTES, chunkIndex += 1) {
+    const chunk = bytes.subarray(offset, Math.min(offset + ANDROID_BASE64_CHUNK_BYTES, bytes.byteLength));
+    let binary = "";
+    // Avoid spreading the entire export into one function call. Some Android
+    // WebViews have a much smaller argument limit than desktop browsers.
+    for (let characterOffset = 0; characterOffset < chunk.byteLength; characterOffset += 8 * 1024) {
+      binary += String.fromCharCode(...chunk.subarray(characterOffset, characterOffset + 8 * 1024));
+    }
+    encodedChunks.push(window.btoa(binary));
+
+    // Yield periodically so encoding a large PDF/PNG does not monopolize the
+    // WebView UI thread. Every non-final chunk is divisible by three, so the
+    // independently encoded chunks can be joined without padding in-between.
+    if (chunkIndex % 32 === 31) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+  }
+
+  return {
+    encoding: "base64",
+    byteLength: bytes.byteLength,
+    data: encodedChunks.join(""),
+  };
+}
 
 async function prepareExportPayload(
   fileName: string,
@@ -94,7 +137,11 @@ async function prepareExportPayload(
   purpose: ExportDeliveryPurpose,
 ): Promise<PreparedExport> {
   if (!isTauri()) throw new Error("浏览器预览无法暂存导出文件");
-  return invoke<PreparedExport>("prepare_export", bytes, {
+  // Android always delivers an InvokeBody::Json to Rust, even when invoke()
+  // receives a Uint8Array. Desktop custom-protocol IPC supports raw bytes and
+  // keeps the zero-copy-friendly path.
+  const payload = isAndroid() ? await encodeAndroidExportPayload(bytes) : bytes;
+  return invoke<PreparedExport>("prepare_export", payload, {
     headers: {
       "LeafMark-File-Name": encodeURIComponent(fileName),
       "LeafMark-Mime-Type": encodeURIComponent(mimeType),

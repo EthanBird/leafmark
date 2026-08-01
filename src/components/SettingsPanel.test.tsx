@@ -101,3 +101,40 @@ describe("SettingsPanel Android OAuth", () => {
     expect(tauriMocks.openUrl).toHaveBeenCalledWith("https://auth.openai.com/oauth/authorize?test=1");
   });
 });
+
+describe("SettingsPanel appearance palettes", () => {
+  it("offers the monochrome palette and emits a compatible settings value", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    cleanup = () => {
+      act(() => root.unmount());
+      container.remove();
+      cleanup = () => {};
+    };
+    const settings = defaultAppSettings("/documents");
+    const onChange = vi.fn();
+
+    await act(async () => {
+      root.render(<SettingsPanel
+        settings={settings}
+        associationStatus={{ supported: true, registered: true, isDefault: true, message: "ok" }}
+        onChange={onChange}
+        onWorkspaceChange={async () => {}}
+        onAssociationChange={async () => {}}
+        onClose={() => {}}
+      />);
+    });
+
+    const appearanceSection = [...container.querySelectorAll<HTMLButtonElement>(".settings-nav button")]
+      .find((button) => button.textContent?.includes("外观"));
+    await act(async () => appearanceSection?.click());
+
+    const monochrome = [...container.querySelectorAll<HTMLButtonElement>(".palette-picker button")]
+      .find((button) => button.textContent?.includes("黑白灰"));
+    expect(monochrome).toBeDefined();
+    await act(async () => monochrome?.click());
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ themePalette: "monochrome" }));
+  });
+});

@@ -80,4 +80,71 @@ describe("AgentPanel", () => {
     expect(efforts).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
     expect(document.activeElement).toBe(container.querySelector("textarea"));
   });
+
+  it("keeps tool details in an accessible disclosure without disturbing adjacent cards", async () => {
+    const longValue = `https://example.com/${"unbroken".repeat(80)}`;
+    localStorage.setItem("leafmark.agent.sessions.v1", JSON.stringify([{
+      id: "session-tools",
+      title: "工具卡片",
+      createdAt: 1,
+      updatedAt: 1,
+      cursor: 1,
+      messages: [{
+        role: "assistant",
+        content: "工具执行结果",
+        createdAt: 1,
+        activities: [{
+          id: "tool-one",
+          name: "web_fetch_with_a_very_long_provider_tool_name",
+          status: "done",
+          input: { url: longValue },
+          output: longValue,
+        }, {
+          id: "tool-two",
+          name: "read_document",
+          status: "done",
+          input: { path: "第二份文档.md" },
+          output: "完成",
+        }],
+      }],
+    }]));
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    cleanup = () => {
+      act(() => root.unmount());
+      container.remove();
+      cleanup = () => {};
+    };
+
+    await act(async () => {
+      root.render(<AgentPanel
+        settings={defaultAgentSettings()}
+        host={host}
+        onOpenSettings={() => {}}
+        onReasoningEffortChange={() => {}}
+        onActivityChange={() => {}}
+      />);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+
+    const cards = [...container.querySelectorAll<HTMLElement>(".agent-tool")];
+    const firstToggle = cards[0].querySelector<HTMLButtonElement>(".agent-tool-summary")!;
+    const firstContent = cards[0].querySelector<HTMLElement>(".agent-tool-content")!;
+    const secondToggle = cards[1].querySelector<HTMLButtonElement>(".agent-tool-summary")!;
+    expect(cards).toHaveLength(2);
+    expect(firstToggle.getAttribute("aria-controls")).toBe(firstContent.id);
+    expect(firstToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(firstContent.hidden).toBe(true);
+
+    await act(async () => {
+      firstToggle.querySelector("strong")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(firstToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(firstContent.hidden).toBe(false);
+    expect(firstContent.textContent).toContain(longValue);
+    expect(secondToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(cards[1].querySelector<HTMLElement>(".agent-tool-content")!.hidden).toBe(true);
+  });
 });

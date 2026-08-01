@@ -73,6 +73,7 @@ import type {
   DocumentOrigin,
   EntryKind,
   LoadedDocument,
+  ThemePalette,
   TreeNode,
   ViewMode,
 } from "./types";
@@ -151,6 +152,15 @@ type AndroidBackWindow = Window & {
 const isCompactLayout = () => window.matchMedia("(max-width: 620px)").matches;
 
 const EMPTY_SETTINGS: AppSettings = defaultAppSettings();
+
+const THEME_CANVAS_COLORS: Record<ThemePalette, { light: string; dark: string }> = {
+  leaf: { light: "#f2f3ef", dark: "#171a17" },
+  sakura: { light: "#f6f1f2", dark: "#1b1719" },
+  qingchuan: { light: "#eef4f6", dark: "#141a1e" },
+  amber: { light: "#f5f2eb", dark: "#191815" },
+  wisteria: { light: "#f3f1f6", dark: "#18171c" },
+  monochrome: { light: "#eff0f1", dark: "#111214" },
+};
 
 const EMPTY_ASSOCIATION_STATUS: AssociationStatus = {
   supported: false,
@@ -271,7 +281,8 @@ export default function App() {
     (window as AndroidBackWindow).LeafMarkAndroid?.setDarkMode(resolved === "dark");
     const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if (themeColor) {
-      themeColor.content = resolved === "dark" ? "#171b18" : "#f5f6f2";
+      const paletteColors = THEME_CANVAS_COLORS[next.themePalette] ?? THEME_CANVAS_COLORS.leaf;
+      themeColor.content = paletteColors[resolved === "dark" ? "dark" : "light"];
     }
   }, []);
 

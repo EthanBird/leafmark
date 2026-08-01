@@ -1,6 +1,7 @@
 import {
   Bot,
   BrainCircuit,
+  ChevronDown,
   FilePenLine,
   History,
   LoaderCircle,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   fetchWebText,
@@ -769,20 +770,37 @@ function ReasoningActivity({ content, streaming = false }: { content: string; st
 }
 
 function ToolActivity({ activity }: { activity: AgentToolActivity }) {
+  const [expanded, setExpanded] = useState(activity.status === "running");
+  const contentId = useId();
   const terminalCommand = activity.name === "terminal_execute" ? String(activity.input.command || "") : "";
   const status = activity.status === "running" ? "执行中" : activity.status === "done" ? "已完成" : "失败";
-  return <details className={`agent-tool ${activity.status}`} open={activity.status === "running"}>
-    <summary>
+
+  // A running tool opens automatically and collapses once its status changes.
+  // Afterwards the disclosure remains under the user's control even while the
+  // rest of the streaming Agent panel continues to re-render.
+  useEffect(() => setExpanded(activity.status === "running"), [activity.status]);
+
+  return <section className={`agent-tool ${activity.status}`} data-expanded={expanded ? "true" : "false"}>
+    <button
+      type="button"
+      className="agent-tool-summary"
+      aria-expanded={expanded}
+      aria-controls={contentId}
+      onClick={() => setExpanded((open) => !open)}
+    >
       {activity.status === "running" ? <LoaderCircle size={13} className="spin" /> : <Wrench size={13} />}
       <span><strong>{terminalCommand ? "PowerShell" : activity.name}</strong><small>{status}</small></span>
-    </summary>
-    {terminalCommand && <code className="agent-command">PS&gt; {terminalCommand}</code>}
-    <div className="agent-tool-detail">
-      <strong>参数</strong>
-      <pre>{JSON.stringify(activity.input, null, 2)}</pre>
-      {activity.output !== undefined && <><strong>结果</strong><pre>{activity.output.slice(0, 12_000)}</pre></>}
+      <ChevronDown className="agent-tool-chevron" size={13} aria-hidden="true" />
+    </button>
+    <div id={contentId} className="agent-tool-content" hidden={!expanded}>
+      {terminalCommand && <code className="agent-command">PS&gt; {terminalCommand}</code>}
+      <div className="agent-tool-detail">
+        <strong>参数</strong>
+        <pre>{JSON.stringify(activity.input, null, 2)}</pre>
+        {activity.output !== undefined && <><strong>结果</strong><pre>{activity.output.slice(0, 12_000)}</pre></>}
+      </div>
     </div>
-  </details>;
+  </section>;
 }
 
 function VersionActivity({

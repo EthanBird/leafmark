@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe("Android export bridge", () => {
-  it("stages raw bytes before writing a content URI through the native bridge", async () => {
+  it("stages Base64 bytes before writing a content URI through the native bridge", async () => {
     const payload = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
     const prepared: PreparedExport = {
       path: "/data/user/0/com.leafmark.desktop/cache/export-staging/1/LeafMark-export.bin",
@@ -66,7 +66,11 @@ describe("Android export bridge", () => {
 
     expect(invokeMock).toHaveBeenCalledOnce();
     expect(invokeMock.mock.calls[0][0]).toBe("prepare_export");
-    expect(invokeMock.mock.calls[0][1]).toBe(payload);
+    expect(invokeMock.mock.calls[0][1]).toEqual({
+      encoding: "base64",
+      byteLength: payload.byteLength,
+      data: "JVBERg==",
+    });
     expect(invokeMock.mock.calls[0][2].headers).toEqual({
       "LeafMark-File-Name": "LeafMark-export.bin",
       "LeafMark-Mime-Type": "application%2Foctet-stream",
@@ -109,6 +113,38 @@ describe("Android export bridge", () => {
       "LeafMark-Purpose": "share",
     });
     expect(sharePreparedExport).toHaveBeenCalledOnce();
+  });
+
+  it("preserves every UTF-8 Markdown byte through Android's JSON-only IPC", async () => {
+    // Cross the 48 KiB encoder boundary as well as exercising multibyte UTF-8.
+    const payload = new TextEncoder().encode(`# 标题\n\n中文标点：，。！与 $x^2$\n${"跨块内容".repeat(5_000)}\n`);
+    const prepared: PreparedExport = {
+      path: "/data/user/0/com.leafmark.desktop/cache/export-staging/1/document.md",
+      fileName: "document.md",
+      mimeType: "text/markdown",
+      size: payload.byteLength,
+      purpose: "save",
+    };
+    invokeMock.mockResolvedValueOnce(prepared);
+    window.LeafMarkAndroid = {
+      setDarkMode: vi.fn(),
+      writePreparedExport: (_targetUri, _stagedPath, requestId) => {
+        queueMicrotask(() => dispatchNativeResult({
+          requestId,
+          operation: "write",
+          ok: true,
+          bytesWritten: payload.byteLength,
+        }));
+      },
+      sharePreparedExport: vi.fn(),
+    };
+
+    await api.writeExport("content://com.android.externalstorage.documents/document/primary%3Atest%2F1.md", payload);
+
+    const encoded = invokeMock.mock.calls[0][1] as { encoding: string; byteLength: number; data: string };
+    expect(encoded.encoding).toBe("base64");
+    expect(encoded.byteLength).toBe(payload.byteLength);
+    expect(Array.from(window.atob(encoded.data), (value) => value.charCodeAt(0))).toEqual(Array.from(payload));
   });
 
   it("propagates native provider failures instead of reporting a false success", async () => {

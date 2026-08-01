@@ -127,34 +127,13 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 新增不依赖 Git 的 Agent 原生版本控制：SHA-256 内容对象、前后文件清单和全局文档库时间线全部保存在本机
-            - 一次用户消息、Agent 回复、文档工具和 PowerShell 文件变化组成同一回合；支持消息与文件一起回退、重做和回退到较早消息
-            - 重做只恢复已记录的新文件字节，绝不重新执行 PowerShell；新增、修改、删除、重命名、空目录、二进制文件均纳入版本
-            - 外部 Markdown 的 LeafMark 保留副本同样可回退，但绝不会写回微信等来源文件
-            - 回退前进行精确冲突校验，恢复后冻结旧自动保存并重载全部标签；失败、中止和崩溃恢复回合也会保留可撤销版本
-            - Agent 对话区新增 jcode 完整推理强度档位：关闭、极简、低、中、高、极高、最大；Codex gpt-5.6-sol 默认迁移为 low
-            - Agent 回复改为安全的流式 Markdown 实时渲染，标题、列表、表格、代码、引用和链接会边生成边排版
-            - 新增可持久化的执行时间线：思考过程、当前阶段、工具参数、PowerShell 命令与执行结果均可展开查看
-            - 修复发送消息后输入框失焦；生成期间可继续输入下一条消息
-            - 外部 Markdown 优先按规范路径复用已有保留副本，并以精确内容比对合并来自微信临时路径的重复文档，不再覆盖副本编辑
-            - 修复 Windows OAuth 点击“浏览器登录”无反应：改由 Rust 原生层打开系统默认浏览器，不再依赖 WebView opener 调用
-            - OAuth 页面现在会显示明确启动错误，并提供“复制登录链接”兜底；GitHub Copilot 设备登录同样适用
-            - 新增 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth 登录、自动续期和账户状态 UI
-            - 订阅请求分别走 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 原生协议，不回退到按量 API Key
-            - Provider 列表与 jcode 的 OpenAI-compatible catalog 对齐，保留自定义兼容端点和本地 Ollama / LM Studio
-            - 新增本机终端工具：Windows 固定使用不显示窗口的 PowerShell；版本化回合以前台方式执行，支持超时与破坏性命令拦截
-            - 修复 Windows WebView 下 Dock 目标无法放置和禁止鼠标问题，改为可靠的应用内指针拖放
-            - Android 设置页现已原生启用 ChatGPT/Codex、Claude、Gemini 与 Copilot 订阅登录；系统浏览器授权和本机回调与桌面端共用同一安全流程
-            - Android 的 localhost OAuth 回调同时监听 IPv4/IPv6，修复部分手机点击登录无反应或授权后无法返回；仍保留重新打开及复制登录链接兜底
-            - Android 新增真实文件分享：Markdown 原文、主题 HTML、高清 PNG、长页 PDF 与标准分页 PDF 均可直接发送到微信、邮件和网盘
-            - 修复 Android SAF 导出创建后始终为 0 B：改由原生 ContentResolver 完整关闭提交，兼容本机 DocumentsProvider 与云盘 content URI
-            - Android Agent 增加可见前台服务、限时唤醒锁、通知停止操作和增量任务日志；切换侧栏不再中止，极端中断后恢复部分回复并安全收束文件版本
-            - Agent 新增 create/replace/append 两阶段文档流，可直接打开或新建标签并把 Markdown 增量写入编辑窗口；中止后的部分内容仍可随整轮版本回退
-            - Android 正式包改用长期固定的社区更新证书并在 CI 校验证书指纹，彻底禁止回退到每次变化的 debug 签名
-            - Agent 不包含 jcode GUI 或云端控制能力；Android 仍不启用系统终端工具，继续发布 ARM64 手机包
+            - 修复 Android 导出始终提示“导出数据必须使用二进制传输”：Android 改用 Tauri 支持的 JSON/Base64 字节协议，桌面端继续使用 Raw IPC
+            - 导出会校验声明长度、Base64 完整性并设置适合手机内存的 64 MiB 安全上限；编码期间主动让出 UI 线程，Markdown、PDF、PNG 与分享共用同一可靠链路
+            - 修复 Agent 工具调用卡片展开后覆盖后续内容：使用受控展开组件，参数、命令和结果在卡片内部换行或滚动
+            - 新增正式的“黑白灰”主题，提供独立调校的浅色与深色配色，Android 系统栏颜色同步跟随
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
-            Android APK 使用仓库内公开的固定社区更新证书签名：它保证本版之后可以覆盖更新，但不提供私钥保密或发布者真实性，请只从本项目官方 GitHub Releases 下载。由于旧版使用了无法恢复的临时 debug 证书，首次迁移到本版需先备份文档并卸载旧 APK；从本版起后续版本可直接覆盖更新。Windows 未签名构建可能触发 SmartScreen 提示。
+            Android APK 继续使用 v0.7.0 起固定的社区更新证书，可直接覆盖更新；该公开证书不提供私钥保密或发布者真实性，请只从本项目官方 GitHub Releases 下载。Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true

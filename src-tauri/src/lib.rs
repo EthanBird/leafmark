@@ -8,12 +8,14 @@ mod agent_auth;
 mod agent_terminal;
 
 use atomicwrites::{AllowOverwrite, AtomicFile};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ignore::WalkBuilder;
 use library::{ArchiveEntry, ArchivedContent, DocumentArchive};
 use parking_lot::Mutex;
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::{HashSet, VecDeque},
     fs,
     io::Write,
@@ -37,6 +39,7 @@ const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const EXPORT_STAGE_DIRECTORY: &str = "export-staging";
 const SHARED_EXPORT_DIRECTORY: &str = "shared-exports";
 const MAX_EXPORT_FILE_NAME_BYTES: usize = 220;
+const MAX_EXPORT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
 const SETTINGS_SCHEMA_VERSION: u32 = 5;
 
@@ -173,7 +176,7 @@ impl AppSettings {
         }
         if !matches!(
             self.theme_palette.as_str(),
-            "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria"
+            "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria" | "monochrome"
         ) {
             self.theme_palette = default_theme_palette();
         }
@@ -867,9 +870,7 @@ fn export_file(
 
 #[tauri::command]
 fn write_export(request: tauri::ipc::Request, app: AppHandle) -> Result<(), String> {
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("导出数据必须使用二进制传输".into());
-    };
+    let bytes = decode_export_request_body(request.body())?;
     let encoded_target = request
         .headers()
         .get("LeafMark-Target")
@@ -879,7 +880,7 @@ fn write_export(request: tauri::ipc::Request, app: AppHandle) -> Result<(), Stri
     let target_path = percent_encoding::percent_decode_str(encoded_target)
         .decode_utf8()
         .map_err(error_string)?;
-    write_export_target(&app, &target_path, bytes)
+    write_export_target(&app, &target_path, bytes.as_ref())
 }
 
 #[tauri::command]
@@ -887,14 +888,12 @@ fn prepare_export(
     request: tauri::ipc::Request,
     app: AppHandle,
 ) -> Result<PreparedExport, String> {
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("导出数据必须使用二进制传输".into());
-    };
+    let bytes = decode_export_request_body(request.body())?;
     let file_name = decode_invoke_header(&request, "LeafMark-File-Name")?;
     let mime_type = decode_invoke_header(&request, "LeafMark-Mime-Type")?;
     let purpose = decode_invoke_header(&request, "LeafMark-Purpose")?;
     let cache_root = app.path().app_cache_dir().map_err(error_string)?;
-    stage_export_bytes(&cache_root, &file_name, &mime_type, &purpose, bytes)
+    stage_export_bytes(&cache_root, &file_name, &mime_type, &purpose, bytes.as_ref())
 }
 
 #[tauri::command]
@@ -1588,6 +1587,89 @@ fn decode_invoke_header(request: &tauri::ipc::Request, name: &str) -> Result<Str
         .map_err(error_string)
 }
 
+/// Decodes both transports used by export commands:
+///
+/// - desktop uses Tauri's binary `InvokeBody::Raw` path;
+/// - Android only supports `InvokeBody::Json`, so the frontend sends a
+///   length-tagged Base64 object (the representation recommended by Tauri).
+///
+/// Numeric JSON arrays are accepted as a compatibility fallback for the 0.7.0
+/// frontend, where Android converted its attempted `Uint8Array` upload into an
+/// array before it reached Rust.
+fn decode_export_request_body(
+    body: &tauri::ipc::InvokeBody,
+) -> Result<Cow<'_, [u8]>, String> {
+    match body {
+        tauri::ipc::InvokeBody::Raw(bytes) => {
+            validate_export_payload_size(bytes.len())?;
+            Ok(Cow::Borrowed(bytes))
+        }
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Object(payload)) => {
+            let encoding = payload
+                .get("encoding")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Android 导出数据缺少 encoding".to_string())?;
+            if encoding != "base64" {
+                return Err(format!("不支持的 Android 导出编码：{encoding}"));
+            }
+            let declared_size = payload
+                .get("byteLength")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|size| usize::try_from(size).ok())
+                .ok_or_else(|| "Android 导出数据的 byteLength 无效".to_string())?;
+            validate_export_payload_size(declared_size)?;
+            let encoded = payload
+                .get("data")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Android 导出数据缺少 Base64 内容".to_string())?;
+            let expected_encoded_size = declared_size
+                .checked_add(2)
+                .and_then(|size| size.checked_div(3))
+                .and_then(|size| size.checked_mul(4))
+                .ok_or_else(|| "Android 导出数据长度溢出".to_string())?;
+            if encoded.len() != expected_encoded_size {
+                return Err(format!(
+                    "Android 导出 Base64 长度不匹配：声明 {declared_size} 字节，收到 {} 个字符",
+                    encoded.len()
+                ));
+            }
+            let decoded = BASE64_STANDARD
+                .decode(encoded)
+                .map_err(|error| format!("Android 导出 Base64 数据无效：{error}"))?;
+            if decoded.len() != declared_size {
+                return Err(format!(
+                    "Android 导出数据长度不匹配：声明 {declared_size} 字节，解码得到 {} 字节",
+                    decoded.len()
+                ));
+            }
+            Ok(Cow::Owned(decoded))
+        }
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Array(values)) => {
+            validate_export_payload_size(values.len())?;
+            let mut decoded = Vec::with_capacity(values.len());
+            for (index, value) in values.iter().enumerate() {
+                let byte = value
+                    .as_u64()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .ok_or_else(|| format!("旧版 Android 导出数据第 {index} 项不是有效字节"))?;
+                decoded.push(byte);
+            }
+            Ok(Cow::Owned(decoded))
+        }
+        tauri::ipc::InvokeBody::Json(_) => {
+            Err("Android 导出数据必须使用 Base64 编码".into())
+        }
+    }
+}
+
+fn validate_export_payload_size(size: usize) -> Result<(), String> {
+    if size > MAX_EXPORT_PAYLOAD_BYTES {
+        Err("单次导出不能超过 64 MiB".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn sanitize_export_file_name(value: &str) -> String {
     let leaf = value
         .rsplit(['/', '\\'])
@@ -2152,6 +2234,18 @@ mod tests {
     }
 
     #[test]
+    fn preserves_the_monochrome_palette_during_settings_normalization() {
+        let settings = AppSettings {
+            theme_palette: "monochrome".into(),
+            ..AppSettings::defaults(Path::new("/tmp/leafmark"))
+        };
+        let normalized = settings.normalize();
+
+        assert_eq!(normalized.theme_palette, "monochrome");
+        assert_eq!(normalized.settings_schema_version, SETTINGS_SCHEMA_VERSION);
+    }
+
+    #[test]
     fn migrates_existing_codex_subscription_to_jcode_low_effort_default() {
         let mut settings = AppSettings::defaults(Path::new("/tmp/leafmark"));
         settings.settings_schema_version = 4;
@@ -2240,6 +2334,59 @@ mod tests {
         assert_eq!(sanitize_export_file_name(".."), "LeafMark-export.bin");
         assert_eq!(normalize_export_mime(" Application/PDF ").unwrap(), "application/pdf");
         assert!(normalize_export_mime("application/x-executable").is_err());
+    }
+
+    #[test]
+    fn decodes_android_base64_and_legacy_json_export_payloads_exactly() {
+        let raw_body = tauri::ipc::InvokeBody::Raw(vec![0, 1, 127, 128, 255]);
+        let base64_body = tauri::ipc::InvokeBody::Json(serde_json::json!({
+            "encoding": "base64",
+            "byteLength": 5,
+            "data": "AAF/gP8="
+        }));
+        let legacy_body = tauri::ipc::InvokeBody::Json(serde_json::json!([0, 1, 127, 128, 255]));
+
+        assert_eq!(
+            decode_export_request_body(&raw_body).unwrap().as_ref(),
+            &[0, 1, 127, 128, 255]
+        );
+        assert_eq!(
+            decode_export_request_body(&base64_body).unwrap().as_ref(),
+            &[0, 1, 127, 128, 255]
+        );
+        assert_eq!(
+            decode_export_request_body(&legacy_body).unwrap().as_ref(),
+            &[0, 1, 127, 128, 255]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_oversized_or_length_mismatched_android_export_payloads() {
+        let invalid_base64 = tauri::ipc::InvokeBody::Json(serde_json::json!({
+            "encoding": "base64",
+            "byteLength": 3,
+            "data": "!!!!"
+        }));
+        let mismatched_length = tauri::ipc::InvokeBody::Json(serde_json::json!({
+            "encoding": "base64",
+            "byteLength": 5,
+            "data": "AQIDBA=="
+        }));
+        let invalid_legacy_byte =
+            tauri::ipc::InvokeBody::Json(serde_json::json!([0, 256]));
+
+        assert!(decode_export_request_body(&invalid_base64)
+            .unwrap_err()
+            .contains("Base64 数据无效"));
+        assert!(decode_export_request_body(&mismatched_length)
+            .unwrap_err()
+            .contains("数据长度不匹配"));
+        assert!(decode_export_request_body(&invalid_legacy_byte)
+            .unwrap_err()
+            .contains("不是有效字节"));
+        assert!(validate_export_payload_size(MAX_EXPORT_PAYLOAD_BYTES + 1)
+            .unwrap_err()
+            .contains("64 MiB"));
     }
 
     #[test]

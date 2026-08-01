@@ -1,7 +1,7 @@
 export type EntryKind = "file" | "directory";
 export type ViewMode = "read" | "source" | "split" | "live";
 export type ThemeMode = "system" | "light" | "dark";
-export type ThemePalette = "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria";
+export type ThemePalette = "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria" | "monochrome";
 export type DocumentOrigin = "workspace" | "archive";
 export type DockPanelId = "workspace" | "history" | "favorites" | "agent" | "outline";
 export type DockZone = "left" | "right" | "top" | "bottom";
