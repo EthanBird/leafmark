@@ -17,6 +17,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
 
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -155,6 +156,7 @@ pub async fn start(
     let authorize_url = authorize_url(&provider, &redirect_uri, &challenge, &state)?;
     let flow_id = random_token(18);
     manager.flows.lock().insert(flow_id.clone(), AuthFlowStatus { status: "pending", message: "等待浏览器授权…".into() });
+    let browser_message = open_authorization_url(&app, &authorize_url);
 
     let task_flow = flow_id.clone();
     let task_provider = provider.clone();
@@ -178,7 +180,7 @@ pub async fn start(
         provider,
         authorize_url,
         user_code: None,
-        message: "请在浏览器完成登录；完成后此页面会自动更新。".into(),
+        message: browser_message,
     })
 }
 
@@ -194,6 +196,7 @@ async fn start_copilot(app: AppHandle, manager: AgentAuthManager) -> Result<Auth
     let device: DeviceCodeResponse = response.json().await.map_err(http_error)?;
     let flow_id = random_token(18);
     manager.flows.lock().insert(flow_id.clone(), AuthFlowStatus { status: "pending", message: format!("在 GitHub 输入代码 {}", device.user_code) });
+    let browser_message = open_authorization_url(&app, &device.verification_uri);
     let task_flow = flow_id.clone();
     let task_manager = manager.clone();
     let device_code = device.device_code.clone();
@@ -213,8 +216,15 @@ async fn start_copilot(app: AppHandle, manager: AgentAuthManager) -> Result<Auth
         provider: "copilot".into(),
         authorize_url: device.verification_uri,
         user_code: Some(device.user_code),
-        message: "打开 GitHub 设备登录页并输入上面的代码。".into(),
+        message: browser_message,
     })
+}
+
+fn open_authorization_url(app: &AppHandle, url: &str) -> String {
+    match app.opener().open_url(url, None::<&str>) {
+        Ok(()) => "已打开系统默认浏览器；授权完成后此页面会自动更新。".into(),
+        Err(error) => format!("未能自动打开默认浏览器（{error}）。请点击“复制登录链接”，粘贴到浏览器中继续。"),
+    }
 }
 
 pub fn poll(manager: AgentAuthManager, flow_id: String) -> AuthFlowStatus {

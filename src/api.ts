@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AgentAuthAccountStatus,
   AgentAuthChallenge,
@@ -94,9 +93,7 @@ export const api = {
   },
   async startAgentOAuth(provider: AgentProvider): Promise<AgentAuthChallenge> {
     if (!isTauri()) throw new Error("浏览器预览无法启动本机 OAuth");
-    const challenge = await invoke<AgentAuthChallenge>("agent_oauth_start", { provider });
-    await openUrl(challenge.authorizeUrl);
-    return challenge;
+    return invoke<AgentAuthChallenge>("agent_oauth_start", { provider });
   },
   async pollAgentOAuth(flowId: string): Promise<AgentAuthFlowStatus> {
     if (!isTauri()) return { status: "error", message: "浏览器预览不支持 OAuth" };

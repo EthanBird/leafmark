@@ -127,6 +127,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
+            - 修复 Windows OAuth 点击“浏览器登录”无反应：改由 Rust 原生层打开系统默认浏览器，不再依赖 WebView opener 调用
+            - OAuth 页面现在会显示明确启动错误，并提供“复制登录链接”兜底；GitHub Copilot 设备登录同样适用
             - 新增 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth 登录、自动续期和账户状态 UI
             - 订阅请求分别走 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 原生协议，不回退到按量 API Key
             - Provider 列表与 jcode 的 OpenAI-compatible catalog 对齐，保留自定义兼容端点和本地 Ollama / LM Studio

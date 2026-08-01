@@ -44,6 +44,7 @@ export function SettingsPanel({
   const [fontFamilies, setFontFamilies] = useState<string[] | null>(null);
   const [agentAuth, setAgentAuth] = useState<AgentAuthAccountStatus | null>(null);
   const [authChallenge, setAuthChallenge] = useState<AgentAuthChallenge | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [authWorking, setAuthWorking] = useState(false);
   const fontListId = useId();
   const sections = useMemo(() => [
@@ -89,6 +90,7 @@ export function SettingsPanel({
   const startAgentLogin = async () => {
     setAuthWorking(true);
     setAuthChallenge(null);
+    setAuthError(null);
     try {
       const challenge = await api.startAgentOAuth(settings.agent.provider);
       setAuthChallenge(challenge);
@@ -104,7 +106,9 @@ export function SettingsPanel({
       }
       throw new Error("登录等待超时，请重新开始");
     } catch (error) {
-      setAuthChallenge((current) => current ? { ...current, message: error instanceof Error ? error.message : String(error) } : null);
+      const message = error instanceof Error ? error.message : String(error);
+      setAuthError(message);
+      setAuthChallenge((current) => current ? { ...current, message } : current);
     } finally {
       setAuthWorking(false);
     }
@@ -116,6 +120,7 @@ export function SettingsPanel({
       await api.logoutAgentOAuth(settings.agent.provider);
       setAgentAuth(await api.getAgentAuthStatus(settings.agent.provider));
       setAuthChallenge(null);
+      setAuthError(null);
     } finally {
       setAuthWorking(false);
     }
@@ -201,8 +206,9 @@ export function SettingsPanel({
                     <div>
                       <small>SUBSCRIPTION OAUTH</small>
                       <strong>{agentAuth?.connected ? agentAuth.email || "订阅账户已连接" : `登录 ${providerProfile(settings.agent.provider).name}`}</strong>
-                      <p>{authChallenge?.message || agentAuth?.detail || "凭据由 Rust harness 保存；不会写入设置或 WebView localStorage。"}</p>
+                      <p>{authChallenge?.message || authError || agentAuth?.detail || "凭据由 Rust harness 保存；不会写入设置或 WebView localStorage。"}</p>
                       {authChallenge?.userCode && <button type="button" className="agent-device-code" onClick={() => void navigator.clipboard?.writeText(authChallenge.userCode!)} title="点击复制设备代码">{authChallenge.userCode}</button>}
+                      {authChallenge?.authorizeUrl && <button type="button" className="agent-device-code" onClick={() => void navigator.clipboard?.writeText(authChallenge.authorizeUrl)} title="复制后粘贴到任意浏览器">复制登录链接</button>}
                     </div>
                     {agentAuth?.connected
                       ? <button type="button" className="secondary-button" disabled={authWorking} onClick={() => void logoutAgent()}>退出登录</button>
