@@ -242,6 +242,37 @@ impl DocumentArchive {
         Ok(result)
     }
 
+    /// Raw access for the Agent-native version store. The bytes belong to the
+    /// retained LeafMark copy; the original source (for example a WeChat temp
+    /// file) is never read or written by undo/redo.
+    pub(crate) fn vcs_snapshot(&self, id: &str) -> Result<(String, Vec<u8>), String> {
+        let entry = self
+            .index
+            .documents
+            .iter()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| "历史记录不存在".to_string())?;
+        let bytes = fs::read(self.snapshot_path(id))
+            .map_err(|error| format!("LeafMark 保留副本无法读取：{error}"))?;
+        Ok((entry.name.clone(), bytes))
+    }
+
+    pub(crate) fn vcs_restore(&mut self, id: &str, bytes: &[u8]) -> Result<(), String> {
+        let position = self
+            .index
+            .documents
+            .iter()
+            .position(|entry| entry.id == id)
+            .ok_or_else(|| "历史记录不存在".to_string())?;
+        atomic_write(&self.snapshot_path(id), bytes)?;
+        let entry = &mut self.index.documents[position];
+        entry.size = bytes.len() as u64;
+        entry.modified_ms = now_ms();
+        entry.last_opened_ms = now_ms();
+        entry.source_exists = Path::new(&entry.source_path).is_file();
+        self.persist()
+    }
+
     pub(crate) fn set_favorite(
         &mut self,
         id: &str,

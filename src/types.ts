@@ -125,6 +125,33 @@ export interface AgentTerminalResult {
   durationMs: number;
 }
 
+export interface AgentVersionChange {
+  target: string;
+  kind: "created" | "modified" | "deleted";
+  size: number;
+}
+
+export interface AgentVersionSummary {
+  id: string;
+  sessionId: string;
+  turnId: string;
+  label: string;
+  createdMs: number;
+  outcome: "completed" | "failed" | "interrupted" | "recovered";
+  changes: AgentVersionChange[];
+}
+
+export interface AgentVersionOperation {
+  version: AgentVersionSummary;
+  direction: "undo" | "redo";
+}
+
+export interface AgentVersionStatus {
+  undo: AgentVersionSummary | null;
+  redo: AgentVersionSummary | null;
+  pending: boolean;
+}
+
 export interface DocumentEntry {
   path: string;
   name: string;

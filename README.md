@@ -31,7 +31,8 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - 内置按需启动的流式文档 Agent；原生支持 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth，并完整提供 jcode 的 OpenAI-compatible provider catalog
 - 订阅模式分别使用 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 协议，不会把订阅账户错误回退到按量 API Key
 - Agent 支持自动刷新登录、文档读写、并行只读子 Agent、会话检索、长期记忆、Skills、网页读取、Streamable HTTP MCP 和本机终端
-- Windows 终端工具固定使用隐藏窗口 PowerShell；支持超时、后台任务查询/终止和破坏性命令 Rust 级拦截，不会弹出黑色命令行
+- Agent 每轮对话都建立不依赖 Git 的本地文件版本；消息、文档工具和 PowerShell 修改可一起回退或重做，重做不会再次执行命令
+- Windows 终端工具固定使用隐藏窗口 PowerShell；版本化回合采用可完整捕获的前台命令，支持超时和破坏性命令 Rust 级拦截，不会弹出黑色命令行
 
 ## 系统打开与文档保留
 
@@ -119,5 +120,8 @@ src-tauri/src/
   system_integration.rs   文件启动参数与系统文件关联状态
   agent_auth.rs           桌面订阅 OAuth、设备登录、令牌续期与账户状态
   agent_terminal.rs       无窗口 PowerShell / shell 前后台执行 harness
+  agent_vcs.rs            Agent 原生 CAS、清单差分、事务回退与重做
 src-tauri/gen/android/    Android Studio 工程、Manifest 与 Gradle 配置
 ```
+
+Agent 本地版本格式、冲突行为和安全边界见 [Agent 本地版本控制](docs/AGENT_LOCAL_VERSION_CONTROL.md)。

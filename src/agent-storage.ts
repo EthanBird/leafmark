@@ -11,6 +11,8 @@ export interface AgentSession {
   createdAt: number;
   updatedAt: number;
   messages: AgentConversationMessage[];
+  /** Number of visible/applied messages. Messages after the cursor form redo history. */
+  cursor: number;
 }
 
 export interface AgentMemory {
@@ -23,16 +25,16 @@ export interface AgentMemory {
 
 export function newAgentSession(): AgentSession {
   const now = Date.now();
-  return { id: crypto.randomUUID(), title: "新会话", createdAt: now, updatedAt: now, messages: [] };
+  return { id: crypto.randomUUID(), title: "新会话", createdAt: now, updatedAt: now, messages: [], cursor: 0 };
 }
 
 export function loadAgentSessions(): AgentSession[] {
   const sessions = readJson<AgentSession[]>(SESSIONS_KEY, []);
-  return Array.isArray(sessions) ? sessions.filter(validSession).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS) : [];
+  return Array.isArray(sessions) ? sessions.filter(validSession).map(normalizeSession).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS) : [];
 }
 
 export function saveAgentSession(session: AgentSession): AgentSession[] {
-  const next = [session, ...loadAgentSessions().filter((item) => item.id !== session.id)]
+  const next = [normalizeSession(session), ...loadAgentSessions().filter((item) => item.id !== session.id)]
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, MAX_SESSIONS);
   writeJson(SESSIONS_KEY, next);
@@ -48,10 +50,42 @@ export function removeAgentSession(id: string): AgentSession[] {
 export function searchAgentSessions(query: string, limit = 8): string[] {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return [];
-  return loadAgentSessions().flatMap((session) => session.messages
+  return loadAgentSessions().flatMap((session) => activeAgentMessages(session)
     .filter((message) => message.content.toLocaleLowerCase().includes(needle))
     .map((message) => `[${session.title}] ${message.role}: ${message.content.slice(0, 500)}`))
     .slice(0, limit);
+}
+
+export function activeAgentMessages(session: AgentSession): AgentConversationMessage[] {
+  const cursor = Math.max(0, Math.min(session.messages.length, session.cursor));
+  return session.messages.slice(0, cursor);
+}
+
+/** Move the conversation cursor only after the native file transaction succeeds. */
+export function setAgentTurnApplied(sessionId: string, turnId: string, applied: boolean): AgentSession[] {
+  const sessions = loadAgentSessions();
+  const next = sessions.map((session) => {
+    if (session.id !== sessionId) return session;
+    const indexes = session.messages.flatMap((message, index) => message.turnId === turnId ? [index] : []);
+    if (!indexes.length) return session;
+    const cursor = applied
+      ? Math.max(session.cursor, indexes[indexes.length - 1] + 1)
+      : Math.min(session.cursor, indexes[0]);
+    return { ...session, cursor };
+  });
+  writeJson(SESSIONS_KEY, next);
+  return next;
+}
+
+/** Starting a new turn after undo creates a new branch, so stale redo messages
+ * must not remain callable after the native VCS clears its redo ref. */
+export function discardAgentRedoBranches(): AgentSession[] {
+  const next = loadAgentSessions().map((session) => {
+    const messages = activeAgentMessages(session);
+    return messages.length === session.messages.length ? session : { ...session, messages, cursor: messages.length };
+  });
+  writeJson(SESSIONS_KEY, next);
+  return next;
 }
 
 export function storeAgentMemory(content: string, tags: string[] = []): AgentMemory {
@@ -155,6 +189,13 @@ function writeJson(key: string, value: unknown) {
 
 function validSession(value: AgentSession) {
   return Boolean(value && typeof value.id === "string" && typeof value.title === "string" && Array.isArray(value.messages));
+}
+
+function normalizeSession(session: AgentSession): AgentSession {
+  const cursor = Number.isInteger(session.cursor)
+    ? Math.max(0, Math.min(session.messages.length, session.cursor))
+    : session.messages.length;
+  return { ...session, cursor };
 }
 
 function validMemory(value: AgentMemory) {

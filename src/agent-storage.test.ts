@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { newAgentSession, relevantMemoryPrompt, saveAgentSession, searchAgentMemories, storeAgentMemory } from "./agent-storage";
+import {
+  activeAgentMessages,
+  newAgentSession,
+  relevantMemoryPrompt,
+  saveAgentSession,
+  searchAgentMemories,
+  setAgentTurnApplied,
+  storeAgentMemory,
+} from "./agent-storage";
 
 describe("lightweight agent storage", () => {
   beforeEach(() => localStorage.clear());
@@ -17,6 +25,22 @@ describe("lightweight agent storage", () => {
     const session = newAgentSession();
     session.title = "测试会话";
     session.messages.push({ role: "user", content: "你好", createdAt: Date.now() });
+    session.cursor = session.messages.length;
     expect(saveAgentSession(session)[0].messages[0].content).toBe("你好");
+  });
+
+  it("moves message history with an Agent file version and preserves redo messages", () => {
+    const session = newAgentSession();
+    session.messages.push(
+      { id: "user", turnId: "turn-1", role: "user", content: "修改", createdAt: 1 },
+      { id: "assistant", turnId: "turn-1", role: "assistant", content: "完成", createdAt: 2 },
+    );
+    session.cursor = 2;
+    saveAgentSession(session);
+    const undone = setAgentTurnApplied(session.id, "turn-1", false)[0];
+    expect(activeAgentMessages(undone)).toHaveLength(0);
+    expect(undone.messages).toHaveLength(2);
+    const redone = setAgentTurnApplied(session.id, "turn-1", true)[0];
+    expect(activeAgentMessages(redone).map((message) => message.content)).toEqual(["修改", "完成"]);
   });
 });

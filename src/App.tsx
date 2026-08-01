@@ -57,6 +57,8 @@ import { collectOutline, enhanceDocument, type OutlineItem } from "./rendering";
 import { buildTree, joinPath, parentPath, resolveMarkdownLink } from "./tree";
 import type {
   AgentReasoningEffort,
+  AgentVersionOperation,
+  AgentVersionStatus,
   AppSettings,
   ArchiveEntry,
   AssociationStatus,
@@ -1114,8 +1116,51 @@ export default function App() {
     else hidePanel("outline");
   };
 
+  const flushAgentChanges = async () => {
+    if (!await persistCurrent(true)) throw new Error("当前文档保存失败，未建立 Agent 版本");
+    await saveQueueRef.current;
+  };
+
+  const reconcileAgentFiles = async () => {
+    // A restored/terminal-written disk state must become authoritative before
+    // any old React/autosave state has a chance to write again.
+    documentVersionRef.current += 1;
+    queuedSaveRef.current = null;
+    const nextEntries = await api.listEntries();
+    const workspaceFiles = new Set(nextEntries.filter((entry) => entry.kind === "file").map((entry) => entry.path));
+    const previousTabs = tabsRef.current;
+    const restoredTabs: OpenDocumentTab[] = [];
+    for (const tab of previousTabs) {
+      try {
+        if (tab.origin === "workspace") {
+          if (!workspaceFiles.has(tab.path)) continue;
+          restoredTabs.push(tabFromLoadedDocument(await api.readDocument(tab.path)));
+        } else {
+          restoredTabs.push(tabFromLoadedDocument(await api.openArchivedDocument(tab.archiveId)));
+        }
+      } catch {
+        // A deleted or inaccessible target is removed from the tab strip; the
+        // filesystem transaction itself remains committed and recoverable.
+      }
+    }
+    const active = restoredTabs.find((tab) => tab.key === activeTabKeyRef.current)
+      ?? restoredTabs.at(-1)
+      ?? null;
+    tabsRef.current = restoredTabs;
+    setOpenTabs(restoredTabs);
+    setEntries(nextEntries);
+    await refreshLibrary();
+    if (active) applyTabSnapshot(active);
+    else clearCurrentDocument();
+  };
+
   const agentHost: AgentDocumentHost = {
-    current: selectedPath ? { path: selectedPath, content } : null,
+    current: selectedPath ? {
+      path: documentOrigin === "archive" ? nativeFileName(sourcePath || selectedPath) : selectedPath,
+      content,
+      origin: documentOrigin,
+      archiveId,
+    } : null,
     documents: entries,
     readDocument: async (path) => {
       if (!path || path === selectedRef.current) return contentRef.current;
@@ -1126,6 +1171,7 @@ export default function App() {
       setContent(next);
       contentRef.current = next;
       setRenderedHtml(await api.render(next));
+      if (!await persistCurrent(true)) throw new Error("Agent 修改未能安全保存");
     },
     replaceText: async (path, searchText, replacement, all) => {
       if (!searchText) throw new Error("search 不能为空");
@@ -1139,6 +1185,7 @@ export default function App() {
         contentRef.current = next;
         setContent(next);
         setRenderedHtml(await api.render(next));
+        if (!await persistCurrent(true)) throw new Error("Agent 替换未能安全保存");
       } else {
         await api.write(target, next);
         setOpenTabs((tabs) => tabs.map((tab) => tab.origin === "workspace" && tab.path === target ? { ...tab, content: next, savedContent: next, renderedHtml: "" } : tab));
@@ -1171,6 +1218,36 @@ export default function App() {
         } catch { /* one inaccessible document must not abort the search */ }
       }
       return results;
+    },
+    flushDocumentChanges: flushAgentChanges,
+    reconcileExternalChanges: reconcileAgentFiles,
+    beginVersionTurn: async (sessionId, turnId, label) => {
+      await flushAgentChanges();
+      await api.beginAgentTurn(
+        sessionId,
+        turnId,
+        label,
+        originRef.current === "archive" ? archiveIdRef.current : undefined,
+      );
+    },
+    finishVersionTurn: async (turnId, outcome) => {
+      await flushAgentChanges();
+      const version = await api.finishAgentTurn(turnId, outcome);
+      await reconcileAgentFiles();
+      return version;
+    },
+    versionStatus: (): Promise<AgentVersionStatus> => api.getAgentVersionStatus(),
+    undoVersion: async (): Promise<AgentVersionOperation> => {
+      await flushAgentChanges();
+      const operation = await api.undoAgentVersion();
+      await reconcileAgentFiles();
+      return operation;
+    },
+    redoVersion: async (): Promise<AgentVersionOperation> => {
+      await flushAgentChanges();
+      const operation = await api.redoAgentVersion();
+      await reconcileAgentFiles();
+      return operation;
     },
   };
 

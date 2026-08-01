@@ -5,6 +5,9 @@ import type {
   AgentAuthFlowStatus,
   AgentCredential,
   AgentTerminalResult,
+  AgentVersionOperation,
+  AgentVersionStatus,
+  AgentVersionSummary,
   AgentProvider,
   AppSettings,
   ArchiveEntry,
@@ -18,6 +21,7 @@ import type {
 import { defaultAppSettings, normalizeAgentSettings } from "./settings-defaults";
 
 const browserSettings: AppSettings = defaultAppSettings("浏览器预览");
+const browserAgentTurns = new Map<string, { sessionId: string; label: string; createdMs: number }>();
 
 const sample = `# 欢迎使用 LeafMark
 
@@ -127,6 +131,31 @@ export const api = {
   async killAgentTerminal(jobId: string): Promise<AgentTerminalResult> {
     if (!isTauri()) throw new Error("浏览器预览无法停止终端任务");
     return invoke("agent_terminal_kill", { jobId });
+  },
+  async beginAgentTurn(sessionId: string, turnId: string, label: string, archiveId?: string): Promise<void> {
+    if (isTauri()) {
+      await invoke("agent_vcs_begin_turn", { sessionId, turnId, label, archiveId: archiveId || null });
+      return;
+    }
+    browserAgentTurns.set(turnId, { sessionId, label, createdMs: Date.now() });
+  },
+  async finishAgentTurn(turnId: string, outcome: AgentVersionSummary["outcome"]): Promise<AgentVersionSummary> {
+    if (isTauri()) return invoke("agent_vcs_finish_turn", { turnId, outcome });
+    const pending = browserAgentTurns.get(turnId) ?? { sessionId: "browser", label: "Agent 回合", createdMs: Date.now() };
+    browserAgentTurns.delete(turnId);
+    return { id: `browser-${turnId}`, sessionId: pending.sessionId, turnId, label: pending.label, createdMs: pending.createdMs, outcome, changes: [] };
+  },
+  async getAgentVersionStatus(): Promise<AgentVersionStatus> {
+    if (isTauri()) return invoke("agent_vcs_status");
+    return { undo: null, redo: null, pending: browserAgentTurns.size > 0 };
+  },
+  async undoAgentVersion(): Promise<AgentVersionOperation> {
+    if (isTauri()) return invoke("agent_vcs_undo");
+    throw new Error("浏览器预览没有可回退的本地文件版本");
+  },
+  async redoAgentVersion(): Promise<AgentVersionOperation> {
+    if (isTauri()) return invoke("agent_vcs_redo");
+    throw new Error("浏览器预览没有可重做的本地文件版本");
   },
   async listEntries(): Promise<DocumentEntry[]> {
     if (isTauri()) return invoke("list_entries");

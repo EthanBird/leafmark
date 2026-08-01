@@ -1,16 +1,19 @@
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { PROVIDER_DEFAULTS, providerProfile } from "./agent-providers";
 import { api } from "./api";
-import type { AgentSettings } from "./types";
+import type { AgentSettings, AgentVersionSummary } from "./types";
 
 export type AgentRole = "system" | "user" | "assistant" | "tool";
 
 export interface AgentConversationMessage {
+  id?: string;
+  turnId?: string;
   role: "user" | "assistant";
   content: string;
   createdAt: number;
   reasoning?: string;
   activities?: AgentToolActivity[];
+  version?: AgentVersionSummary;
 }
 
 interface RuntimeMessage {

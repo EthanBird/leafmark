@@ -9,7 +9,7 @@ import { AgentPanel, type AgentDocumentHost } from "./AgentPanel";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const host: AgentDocumentHost = {
-  current: { path: "测试.md", content: "# 测试" },
+  current: { path: "测试.md", content: "# 测试", origin: "workspace", archiveId: "archive-test" },
   documents: [],
   readDocument: async () => "# 测试",
   replaceCurrentDocument: async () => {},
@@ -17,6 +17,21 @@ const host: AgentDocumentHost = {
   createDocument: async () => "ok",
   openDocument: async () => {},
   searchDocuments: async () => [],
+  flushDocumentChanges: async () => {},
+  reconcileExternalChanges: async () => {},
+  beginVersionTurn: async () => {},
+  finishVersionTurn: async (turnId, outcome) => ({
+    id: `version-${turnId}`,
+    sessionId: "session-test",
+    turnId,
+    label: "测试",
+    createdMs: Date.now(),
+    outcome,
+    changes: [],
+  }),
+  versionStatus: async () => ({ undo: null, redo: null, pending: false }),
+  undoVersion: async () => { throw new Error("no undo"); },
+  redoVersion: async () => { throw new Error("no redo"); },
 };
 
 let cleanup = () => {};

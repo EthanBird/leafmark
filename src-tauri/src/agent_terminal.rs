@@ -53,6 +53,9 @@ pub async fn execute(
 ) -> Result<TerminalResult, String> {
     let command = command.trim().to_string();
     if command.is_empty() { return Err("终端命令不能为空".into()); }
+    if background || looks_detached(&command) {
+        return Err("为保证终端造成的文件修改都能完整回退，Agent 版本事务不允许后台或脱管进程；请改用会正常退出的前台命令".into());
+    }
     if looks_destructive(&command) && !allow_destructive {
         return Err("命令包含删除、格式化或强制覆盖操作；请在 Agent 设置中单独允许破坏性终端命令".into());
     }
@@ -166,6 +169,16 @@ fn looks_destructive(command: &str) -> bool {
         || [" rm ", " del ", " rd "].iter().any(|needle| words.contains(needle))
 }
 
+fn looks_detached(command: &str) -> bool {
+    let value = command.to_ascii_lowercase();
+    [
+        "start-process", "start-job", "start-threadjob", "register-scheduledtask",
+        "schtasks ", "cmd /c start", "cmd.exe /c start", " nohup ", " disown",
+        " setsid ",
+    ].iter().any(|needle| value.contains(needle))
+        || value.trim_end().ends_with('&')
+}
+
 fn read_capture(path: &Path) -> String {
     let bytes = fs::read(path).unwrap_or_default();
     let start = bytes.len().saturating_sub(MAX_CAPTURE_BYTES);
@@ -187,5 +200,13 @@ mod tests {
         assert!(looks_destructive("rm notes.md"));
         assert!(looks_destructive("del notes.md"));
         assert!(!looks_destructive("Get-ChildItem | Select-Object Name"));
+    }
+
+    #[test]
+    fn detached_processes_are_gated_for_complete_version_capture() {
+        assert!(looks_detached("Start-Process powershell -ArgumentList test.ps1"));
+        assert!(looks_detached("nohup ./writer &"));
+        assert!(looks_detached("./writer &"));
+        assert!(!looks_detached("cargo test"));
     }
 }

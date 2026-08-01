@@ -1,4 +1,5 @@
 mod library;
+mod agent_vcs;
 mod system_fonts;
 mod system_integration;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -294,6 +295,72 @@ struct InnerState {
 }
 
 struct AppState(Mutex<InnerState>);
+
+struct AgentVcsState(Mutex<agent_vcs::AgentVcs>);
+
+#[tauri::command]
+fn agent_vcs_begin_turn(
+    session_id: String,
+    turn_id: String,
+    label: String,
+    archive_id: Option<String>,
+    app_state: State<'_, AppState>,
+    vcs_state: State<'_, AgentVcsState>,
+) -> Result<(), String> {
+    let inner = app_state.0.lock();
+    vcs_state.0.lock().begin_turn(
+        &inner.workspace,
+        &inner.library,
+        session_id,
+        turn_id,
+        label,
+        archive_id,
+    )
+}
+
+#[tauri::command]
+fn agent_vcs_finish_turn(
+    turn_id: String,
+    outcome: String,
+    app_state: State<'_, AppState>,
+    vcs_state: State<'_, AgentVcsState>,
+) -> Result<agent_vcs::VersionSummary, String> {
+    let inner = app_state.0.lock();
+    vcs_state.0.lock().finish_turn(&inner.workspace, &inner.library, &turn_id, &outcome)
+}
+
+#[tauri::command]
+fn agent_vcs_status(
+    app_state: State<'_, AppState>,
+    vcs_state: State<'_, AgentVcsState>,
+) -> Result<agent_vcs::VersionStatus, String> {
+    let inner = app_state.0.lock();
+    vcs_state.0.lock().status(&inner.workspace)
+}
+
+#[tauri::command]
+fn agent_vcs_undo(
+    app_state: State<'_, AppState>,
+    vcs_state: State<'_, AgentVcsState>,
+) -> Result<agent_vcs::VersionOperation, String> {
+    let mut inner = app_state.0.lock();
+    let workspace = inner.workspace.clone();
+    let result = vcs_state.0.lock().undo(&workspace, &mut inner.library)?;
+    inner.cache.clear();
+    Ok(result)
+}
+
+#[tauri::command]
+fn agent_vcs_redo(
+    app_state: State<'_, AppState>,
+    vcs_state: State<'_, AgentVcsState>,
+) -> Result<agent_vcs::VersionOperation, String> {
+    let mut inner = app_state.0.lock();
+    let workspace = inner.workspace.clone();
+    let result = vcs_state.0.lock().redo(&workspace, &mut inner.library)?;
+    inner.cache.clear();
+    Ok(result)
+}
 
 #[tauri::command]
 fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapPayload, String> {
@@ -1696,14 +1763,15 @@ pub fn run() {
             };
             settings.workspace_path = workspace.to_string_lossy().into_owned();
             persist_settings(&settings_path, &settings)?;
-            let archive_root = app
-                .path()
-                .app_data_dir()
-                .map_err(error_string)?
-                .join("document-library");
-            let library = DocumentArchive::load(archive_root)?;
+            let app_data_dir = app.path().app_data_dir().map_err(error_string)?;
+            let archive_root = app_data_dir.join("document-library");
+            let mut library = DocumentArchive::load(archive_root)?;
+            let mut agent_vcs = agent_vcs::AgentVcs::load(app_data_dir.join("agent-vcs"))?;
+            agent_vcs.recover_restore(&workspace, &mut library)?;
+            agent_vcs.recover_pending(&workspace, &library)?;
             let cwd = std::env::current_dir().unwrap_or_else(|_| workspace.clone());
             let pending_open_paths = markdown_paths_from_args(std::env::args_os(), &cwd);
+            app.manage(AgentVcsState(Mutex::new(agent_vcs)));
             app.manage(AppState(Mutex::new(InnerState {
                 settings,
                 settings_path,
@@ -1752,6 +1820,11 @@ pub fn run() {
             agent_terminal_execute,
             agent_terminal_status,
             agent_terminal_kill,
+            agent_vcs_begin_turn,
+            agent_vcs_finish_turn,
+            agent_vcs_status,
+            agent_vcs_undo,
+            agent_vcs_redo,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build LeafMark");
