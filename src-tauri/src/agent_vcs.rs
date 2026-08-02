@@ -564,6 +564,29 @@ impl AgentVcs {
                 }
             }
         }
+        // A workspace rename is represented by a deleted path plus a created
+        // path with identical bytes. Keep history/favorite source metadata on
+        // the same path as the restored file; otherwise undoing an Agent move
+        // would leave its retained-copy entry pointing at the now-missing
+        // destination. Only unambiguous one-to-one byte-identical pairs count
+        // as moves, so ordinary copy/delete operations are never guessed.
+        for (before_index, after_index) in unique_workspace_moves(changes) {
+            let ChangeTarget::Workspace { path: before_path } = &changes[before_index].target else { continue };
+            let ChangeTarget::Workspace { path: after_path } = &changes[after_index].target else { continue };
+            let restore_before = states[before_index].is_some() && states[after_index].is_none();
+            let restore_after = states[before_index].is_none() && states[after_index].is_some();
+            let (previous, next) = if restore_before {
+                (after_path, before_path)
+            } else if restore_after {
+                (before_path, after_path)
+            } else {
+                continue;
+            };
+            library.rename_sources(
+                &secure_workspace_target(workspace, previous)?,
+                &secure_workspace_target(workspace, next)?,
+            )?;
+        }
         Ok(())
     }
 
@@ -753,6 +776,36 @@ fn diff_snapshots(before: &Snapshot, after: &Snapshot) -> Vec<FileChange> {
     changes
 }
 
+fn unique_workspace_moves(changes: &[FileChange]) -> Vec<(usize, usize)> {
+    let deleted: Vec<usize> = changes.iter().enumerate().filter_map(|(index, change)| {
+        if !matches!(&change.target, ChangeTarget::Workspace { .. }) { return None; }
+        match (&change.before, &change.after) {
+            (Some(state), None) if state.kind == EntryKind::File => Some(index),
+            _ => None,
+        }
+    }).collect();
+    let created: Vec<usize> = changes.iter().enumerate().filter_map(|(index, change)| {
+        if !matches!(&change.target, ChangeTarget::Workspace { .. }) { return None; }
+        match (&change.before, &change.after) {
+            (None, Some(state)) if state.kind == EntryKind::File => Some(index),
+            _ => None,
+        }
+    }).collect();
+
+    deleted.iter().copied().filter_map(|before_index| {
+        let state = changes[before_index].before.as_ref()?;
+        let matches: Vec<usize> = created.iter().copied()
+            .filter(|after_index| changes[*after_index].after.as_ref() == Some(state))
+            .collect();
+        if matches.len() != 1 { return None; }
+        let after_index = matches[0];
+        let reverse_matches = deleted.iter()
+            .filter(|candidate| changes[**candidate].before.as_ref() == changes[after_index].after.as_ref())
+            .count();
+        (reverse_matches == 1).then_some((before_index, after_index))
+    }).collect()
+}
+
 fn change_summary(change: &FileChange) -> VersionChangeSummary {
     let kind = match (&change.before, &change.after) {
         (None, Some(_)) => "created",
@@ -893,6 +946,39 @@ mod tests {
         assert_eq!(fs::read(workspace.join("中文.md")).unwrap(), b"after\n");
         assert!(!workspace.join("bytes.bin").exists());
         assert_eq!(fs::read(workspace.join("nested/new.bin")).unwrap(), [9, 0, 8]);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn moved_document_path_is_undone_and_redone_without_replaying_the_move() {
+        let base = root("move-document");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(workspace.join("待整理")).unwrap();
+        fs::create_dir_all(workspace.join("归档/2026")).unwrap();
+        let source = workspace.join("待整理/note.md");
+        let target = workspace.join("归档/2026/note.md");
+        fs::write(&source, "# 不丢内容\n").unwrap();
+        let mut library = DocumentArchive::load(base.join("archive")).unwrap();
+        let archive_id = library.open_source(&source).unwrap().entry.id;
+        let mut vcs = AgentVcs::load(base.join("vcs")).unwrap();
+
+        vcs.begin_turn(&workspace, &library, "session".into(), "turn-move".into(), "整理文档".into(), None).unwrap();
+        fs::rename(&source, &target).unwrap();
+        library.rename_sources(&source, &target).unwrap();
+        let version = vcs.finish_turn(&workspace, &library, "turn-move", "completed").unwrap();
+        assert!(version.changes.iter().any(|change| change.target == "待整理/note.md" && change.kind == "deleted"));
+        assert!(version.changes.iter().any(|change| change.target == "归档/2026/note.md" && change.kind == "created"));
+        assert_eq!(library.reveal_path(&archive_id).unwrap(), target);
+
+        vcs.undo(&workspace, &mut library).unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "# 不丢内容\n");
+        assert!(!target.exists());
+        assert_eq!(library.reveal_path(&archive_id).unwrap(), source);
+
+        vcs.redo(&workspace, &mut library).unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "# 不丢内容\n");
+        assert_eq!(library.reveal_path(&archive_id).unwrap(), target);
         let _ = fs::remove_dir_all(base);
     }
 

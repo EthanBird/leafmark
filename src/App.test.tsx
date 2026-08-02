@@ -43,6 +43,16 @@ describe("LeafMark workspace shell", () => {
     expect(container.querySelectorAll(".document-tab")).toHaveLength(1);
     expect(container.querySelector(".breadcrumbs")).toBeNull();
 
+    const treeRow = container.querySelector<HTMLElement>(".tree-row");
+    await act(async () => treeRow?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 20, clientY: 20 })));
+    const moveButton = [...container.querySelectorAll<HTMLButtonElement>(".context-menu button")]
+      .find((button) => button.textContent?.includes("移动文档到"));
+    expect(moveButton).toBeDefined();
+    await act(async () => moveButton?.click());
+    expect(container.querySelector(".move-dialog")?.textContent).toContain("选择文档库中的目标文件夹");
+    expect(container.querySelector<HTMLButtonElement>(".move-dialog .primary-button")?.disabled).toBe(true);
+    await act(async () => container.querySelector<HTMLButtonElement>(".move-dialog .secondary-button")?.click());
+
     const agentTab = [...container.querySelectorAll<HTMLButtonElement>(".dock-left .dock-tabs button")]
       .find((button) => button.textContent?.includes("Agent"));
     await act(async () => agentTab?.click());

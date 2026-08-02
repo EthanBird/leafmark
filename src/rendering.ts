@@ -1,8 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { renderMermaidSvgQueued } from "./pdf-mermaid";
 import type { AppSettings } from "./types";
 
-let diagramSequence = 0;
-let mermaidModule: Promise<typeof import("mermaid")> | null = null;
 let katexModule: Promise<typeof import("katex")> | null = null;
 let katexStyles: Promise<unknown> | null = null;
 
@@ -174,18 +173,13 @@ async function renderDiagram(node: HTMLElement) {
   node.dataset.mermaidRendered = "pending";
 
   try {
-    mermaidModule ??= import("mermaid");
-    const { default: mermaid } = await mermaidModule;
     const dark = document.documentElement.dataset.resolvedTheme === "dark";
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
+    const { svg, bindFunctions } = await renderMermaidSvgQueued(source, {
       theme: dark ? "dark" : "neutral",
       fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
-      flowchart: { htmlLabels: true, curve: "basis" },
+      htmlLabels: true,
+      idPrefix: "leafmark-diagram",
     });
-    const id = `leafmark-diagram-${++diagramSequence}`;
-    const { svg, bindFunctions } = await mermaid.render(id, source);
     const figure = document.createElement("figure");
     figure.className = "mermaid-block";
     figure.dataset.mermaidSource = source;

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { documentTabKey, nextTabAfterClose, upsertDocumentTab } from "./document-tabs";
+import {
+  documentTabKey,
+  nextTabAfterClose,
+  remapWorkspacePath,
+  remapWorkspaceTabs,
+  upsertDocumentTab,
+} from "./document-tabs";
 import type { LoadedDocument } from "./types";
 
 const loaded = (path: string, archiveId = ""): LoadedDocument => ({
@@ -33,5 +39,25 @@ describe("document tabs", () => {
     const tabs = upsertDocumentTab(upsertDocumentTab(upsertDocumentTab([], loaded("a.md")), loaded("b.md")), loaded("c.md"));
     expect(nextTabAfterClose(tabs, tabs[1].key)?.path).toBe("c.md");
     expect(nextTabAfterClose(tabs, tabs[2].key)?.path).toBe("b.md");
+  });
+
+  it("remaps an open workspace document after it is moved", () => {
+    const tabs = upsertDocumentTab(upsertDocumentTab([], loaded("draft.md")), loaded("notes/keep.md"));
+    const moved = remapWorkspaceTabs(tabs, "draft.md", "archive/draft.md");
+
+    expect(moved.map((tab) => tab.path)).toEqual(["archive/draft.md", "notes/keep.md"]);
+    expect(moved[0].key).toBe("workspace:archive/draft.md");
+    expect(moved[0].sourcePath).toBe("archive/draft.md");
+  });
+
+  it("remaps descendants for directory rename without touching retained-copy tabs", () => {
+    const workspace = upsertDocumentTab([], loaded("old/nested/a.md"));
+    const retained = upsertDocumentTab(workspace, loaded("old/nested/a.md", "copy-1"));
+    const moved = remapWorkspaceTabs(retained, "old", "new");
+
+    expect(remapWorkspacePath("old/nested/a.md", "old", "new")).toBe("new/nested/a.md");
+    expect(remapWorkspacePath("older/a.md", "old", "new")).toBe("older/a.md");
+    expect(moved[0].path).toBe("new/nested/a.md");
+    expect(moved[1]).toEqual(retained[1]);
   });
 });

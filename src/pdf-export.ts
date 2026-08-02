@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { preparePdfMermaidDiagrams } from "./pdf-mermaid";
 
 export type PdfExportMode = "long" | "pages";
 
@@ -7,20 +8,22 @@ export interface ExportProgress {
   message: string;
 }
 
+export interface PdfExportPalette {
+  text: string;
+  secondary: string;
+  accent: string;
+  accentSoft: string;
+  border: string;
+  surface: string;
+  codeSurface: string;
+}
+
 export interface PdfExportOptions {
   source: string;
   title: string;
   mode: PdfExportMode;
   fontFamily: string;
-  palette: {
-    text: string;
-    secondary: string;
-    accent: string;
-    accentSoft: string;
-    border: string;
-    surface: string;
-    codeSurface: string;
-  };
+  palette: PdfExportPalette;
   onProgress: (progress: ExportProgress) => void;
 }
 
@@ -60,17 +63,40 @@ export function startPdfExport(options: PdfExportOptions): PdfExportJob {
   });
   let settled = false;
   let rejectJob: (reason: Error) => void = () => undefined;
+  let reportedProgress = 0;
+  const abortController = new AbortController();
+  const report = (progress: ExportProgress) => {
+    reportedProgress = Math.max(reportedProgress, progress.progress);
+    options.onProgress({ ...progress, progress: reportedProgress });
+  };
 
   const promise = new Promise<Uint8Array>((resolve, reject) => {
     rejectJob = reject;
-    options.onProgress({ progress: 0.03, message: "正在读取系统字体…" });
+    report({ progress: 0.03, message: "正在读取系统字体…" });
     void api.loadExportFont(options.fontFamily, containsCjk(options.source))
-      .then((payload) => {
+      .then(async (payload) => {
         if (settled) return;
         const { metadata, bytes } = unpackFont(payload);
-        options.onProgress({
-          progress: 0.08,
-          message: `正在使用 ${metadata.family} 排版…`,
+        report({ progress: 0.05, message: `正在使用 ${metadata.family} 计算图表布局…` });
+        const diagrams = await preparePdfMermaidDiagrams(options.source, {
+          theme: "base",
+          themeVariables: mermaidThemeVariables(options.palette),
+          layoutFontFamily: metadata.family,
+          signal: abortController.signal,
+          onProgress: (completed, total) => {
+            if (!total || settled) return;
+            report({
+              progress: 0.05 + 0.06 * completed / total,
+              message: `正在矢量化 Mermaid 图表 ${completed}/${total}…`,
+            });
+          },
+        });
+        if (settled) return;
+        report({
+          progress: 0.11,
+          message: diagrams.length
+            ? `已载入 ${diagrams.length} 个矢量图表，正在使用 ${metadata.family} 排版…`
+            : `正在使用 ${metadata.family} 排版…`,
         });
         worker.postMessage({
           type: "generate",
@@ -80,24 +106,27 @@ export function startPdfExport(options: PdfExportOptions): PdfExportJob {
           font: metadata,
           fontBytes: bytes.buffer,
           palette: options.palette,
+          diagrams,
         }, [bytes.buffer]);
       })
       .catch((error: unknown) => {
         if (settled) return;
         settled = true;
+        abortController.abort();
         worker.terminate();
         reject(error instanceof Error ? error : new Error(String(error)));
       });
 
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       if (event.data.type === "progress") {
-        options.onProgress({
+        report({
           progress: event.data.progress,
           message: event.data.message,
         });
         return;
       }
       settled = true;
+      abortController.abort();
       worker.terminate();
       if (event.data.type === "complete") {
         resolve(new Uint8Array(event.data.bytes));
@@ -108,6 +137,7 @@ export function startPdfExport(options: PdfExportOptions): PdfExportJob {
     worker.onerror = (event) => {
       if (settled) return;
       settled = true;
+      abortController.abort();
       worker.terminate();
       reject(new Error(event.message || "PDF 后台任务异常终止"));
     };
@@ -118,9 +148,33 @@ export function startPdfExport(options: PdfExportOptions): PdfExportJob {
     cancel: () => {
       if (settled) return;
       settled = true;
+      abortController.abort();
       worker.terminate();
       rejectJob(new Error("导出已取消"));
     },
+  };
+}
+
+function mermaidThemeVariables(palette: PdfExportPalette): Record<string, string> {
+  return {
+    background: palette.surface,
+    primaryColor: palette.accentSoft,
+    primaryTextColor: palette.text,
+    primaryBorderColor: palette.accent,
+    secondaryColor: palette.codeSurface,
+    secondaryTextColor: palette.text,
+    secondaryBorderColor: palette.border,
+    tertiaryColor: palette.surface,
+    tertiaryTextColor: palette.text,
+    tertiaryBorderColor: palette.border,
+    lineColor: palette.secondary,
+    textColor: palette.text,
+    mainBkg: palette.accentSoft,
+    nodeBorder: palette.accent,
+    clusterBkg: palette.codeSurface,
+    clusterBorder: palette.border,
+    edgeLabelBackground: palette.surface,
+    titleColor: palette.text,
   };
 }
 

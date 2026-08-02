@@ -74,6 +74,7 @@ export interface AgentDocumentHost {
   replaceCurrentDocument: (content: string) => Promise<void>;
   replaceText: (path: string | undefined, search: string, replacement: string, all: boolean) => Promise<string>;
   createDocument: (path: string, content: string) => Promise<string>;
+  moveDocument: (path: string, destinationFolder: string) => Promise<string>;
   beginDocumentStream: (path: string | undefined, mode: AgentDocumentStreamMode) => Promise<AgentDocumentStreamHandle>;
   appendDocumentStream: (id: string, delta: string) => void;
   finishDocumentStream: (id: string) => Promise<AgentDocumentStreamResult>;
@@ -497,7 +498,7 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
       versionStarted = true;
       discardAgentRedoBranches();
       persist(workingSession);
-      const localTools = buildTools(settings, host, workingSession, () => setMemories(loadAgentMemories()));
+      const localTools = buildAgentTools(settings, host, workingSession, () => setMemories(loadAgentMemories()));
       let mcpTools: AgentRuntimeTool[] = [];
       if (settings.mcpServersJson.trim()) {
         setNotice("正在连接 MCP 工具…");
@@ -847,13 +848,13 @@ function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["
     : "\n\n当前没有打开文档。";
   return `${settings.systemPrompt.trim() || "你是一叶 LeafMark 内置的文档 Agent。先理解目标，再使用工具；修改文档前确认工具权限，保持 Markdown、公式、链接和代码完整。"}
 
-可用能力包括多轮工具调用、文档读写与检索、会话检索、长期记忆、Web 获取和已配置的 MCP 工具。不要声称执行了未实际调用的工具。
+可用能力包括多轮工具调用、文档读写、移动与检索、会话检索、长期记忆、Web 获取和已配置的 MCP 工具。不要声称执行了未实际调用的工具。
 需要新建、完整重写或续写较长 Markdown 时，优先单独调用 begin_document_output。工具就绪后的下一次回复必须只包含要写入文档的原始 Markdown，不要添加代码围栏、解释、前言或后记；该回复会直接流式进入编辑窗口。精确的小范围修改仍使用 replace_text。
 本轮对当前文档库和 LeafMark 保留副本的文件修改会被记录为一个可回退版本。终端重做只恢复文件快照，不会重新执行命令；不要修改文档库以外的路径，也不要启动脱管或后台进程。
 ${skills.length ? `\n已启用技能：\n- ${skills.join("\n- ")}` : ""}${settings.memoryEnabled ? relevantMemoryPrompt(query) : ""}${document}`;
 }
 
-function buildTools(settings: AgentSettings, host: AgentDocumentHost, session: AgentSession, refreshMemory: () => void): AgentRuntimeTool[] {
+export function buildAgentTools(settings: AgentSettings, host: AgentDocumentHost, session: AgentSession, refreshMemory: () => void): AgentRuntimeTool[] {
   const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[], execute: AgentRuntimeTool["execute"], exclusiveTextSink = false): AgentRuntimeTool => ({
     definition: { type: "function", function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false } } },
     execute,
@@ -881,6 +882,17 @@ function buildTools(settings: AgentSettings, host: AgentDocumentHost, session: A
     tool("create_document", "在文档库中新建 Markdown，并写入内容。", { path: { type: "string" }, content: { type: "string" } }, ["path", "content"], async (input) => {
       requireEdits(settings);
       return host.createDocument(stringArg(input.path), stringArg(input.content));
+    }),
+    tool("move_document", "把文档库中的 Markdown 移动到指定文件夹。路径均相对于文档库；目标文件夹留空表示根目录。同名文档已存在或路径越出文档库时会拒绝，不会覆盖。", {
+      path: { type: "string", description: "要移动的 Markdown 文档相对路径" },
+      destination_folder: { type: "string", description: "目标文件夹相对路径；空字符串表示文档库根目录" },
+    }, ["path", "destination_folder"], async (input) => {
+      requireEdits(settings);
+      const path = stringArg(input.path).trim();
+      if (!path) throw new Error("path 不能为空");
+      const destination = stringArg(input.destination_folder).trim();
+      const target = await host.moveDocument(path, destination);
+      return `已移动 ${path} → ${target}`;
     }),
     tool("begin_document_output", "开始把下一次模型回复作为原始 Markdown 流式写入编辑窗口。必须单独调用本工具；适合新建、完整重写或续写长文档。工具就绪后下一次回复只能输出 Markdown 正文，不能再调用工具。", {
       path: { type: "string", description: "文档库相对路径；留空操作当前文档。create 模式必须提供路径" },

@@ -2,9 +2,9 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultAgentSettings } from "../settings-defaults";
-import { AgentPanel, type AgentDocumentHost } from "./AgentPanel";
+import { AgentPanel, buildAgentTools, type AgentDocumentHost } from "./AgentPanel";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,6 +15,7 @@ const host: AgentDocumentHost = {
   replaceCurrentDocument: async () => {},
   replaceText: async () => "ok",
   createDocument: async () => "ok",
+  moveDocument: async (path, destinationFolder) => `${destinationFolder}/${path}`,
   beginDocumentStream: async (_path, mode) => ({ id: "stream-test", path: "流式.md", mode }),
   appendDocumentStream: () => {},
   finishDocumentStream: async () => ({ id: "stream-test", path: "流式.md", mode: "create", characters: 0, bytes: 0 }),
@@ -46,6 +47,40 @@ afterEach(() => {
 });
 
 describe("AgentPanel", () => {
+  it("offers a guarded document-library move tool with a destination folder", async () => {
+    const moveDocument = vi.fn(async (path: string, destinationFolder: string) => `${destinationFolder}/note.md`);
+    const tools = buildAgentTools(
+      { ...defaultAgentSettings(), allowDocumentEdits: true },
+      { ...host, moveDocument },
+      { id: "session-move", title: "移动", createdAt: 1, updatedAt: 1, messages: [], cursor: 0 },
+      () => {},
+    );
+    const move = tools.find((item) => item.definition.function.name === "move_document");
+
+    expect(move?.definition.function.parameters).toMatchObject({
+      required: ["path", "destination_folder"],
+      additionalProperties: false,
+    });
+    await expect(move?.execute({ path: "待整理/note.md", destination_folder: "归档/2026" }, new AbortController().signal))
+      .resolves.toBe("已移动 待整理/note.md → 归档/2026/note.md");
+    expect(moveDocument).toHaveBeenCalledWith("待整理/note.md", "归档/2026");
+  });
+
+  it("does not allow the move tool to bypass disabled document edits", async () => {
+    const moveDocument = vi.fn(async () => "归档/note.md");
+    const tools = buildAgentTools(
+      { ...defaultAgentSettings(), allowDocumentEdits: false },
+      { ...host, moveDocument },
+      { id: "session-readonly", title: "只读", createdAt: 1, updatedAt: 1, messages: [], cursor: 0 },
+      () => {},
+    );
+    const move = tools.find((item) => item.definition.function.name === "move_document");
+
+    await expect(move?.execute({ path: "note.md", destination_folder: "归档" }, new AbortController().signal))
+      .rejects.toThrow("尚未允许 Agent 修改文档");
+    expect(moveDocument).not.toHaveBeenCalled();
+  });
+
   it("renders saved and streaming-style assistant Markdown and exposes the full OpenAI effort ladder", async () => {
     localStorage.setItem("leafmark.agent.sessions.v1", JSON.stringify([{
       id: "session-1",

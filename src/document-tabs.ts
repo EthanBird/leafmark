@@ -48,3 +48,26 @@ export function nextTabAfterClose(tabs: OpenDocumentTab[], closingKey: string): 
   if (index < 0 || tabs.length <= 1) return null;
   return tabs[index + 1] ?? tabs[index - 1] ?? null;
 }
+
+export function remapWorkspacePath(path: string, source: string, target: string): string {
+  if (path === source) return target;
+  return path.startsWith(`${source}/`) ? `${target}${path.slice(source.length)}` : path;
+}
+
+export function remapWorkspaceTabs(
+  tabs: OpenDocumentTab[],
+  source: string,
+  target: string,
+): OpenDocumentTab[] {
+  return tabs.map((tab) => {
+    if (tab.origin !== "workspace") return tab;
+    const path = remapWorkspacePath(tab.path, source, target);
+    if (path === tab.path) return tab;
+    return {
+      ...tab,
+      key: `workspace:${path}`,
+      path,
+      sourcePath: path,
+    };
+  });
+}

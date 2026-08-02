@@ -15,6 +15,10 @@ import { SVG } from "mathjax-full/js/output/svg.js";
 import { liteAdaptor } from "mathjax-full/js/adaptors/liteAdaptor.js";
 import { RegisterHTMLHandler } from "mathjax-full/js/handlers/html.js";
 import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
+import {
+  createPdfMermaidContent,
+  type PdfMermaidDiagram,
+} from "./pdf-mermaid";
 
 interface GenerateMessage {
   type: "generate";
@@ -28,6 +32,7 @@ interface GenerateMessage {
   };
   fontBytes: ArrayBuffer;
   palette: Palette;
+  diagrams: PdfMermaidDiagram[];
 }
 
 interface Palette {
@@ -85,7 +90,7 @@ async function generatePdf(message: GenerateMessage) {
   const tokens = marked.lexer(message.source, { gfm: true });
   const mathTotal = tokens.reduce((count, token) => count + countMath(token), 0);
   let mathDone = 0;
-  const content = renderBlocks(tokens as TokenLike[], message.palette, () => {
+  const content = renderBlocks(tokens as TokenLike[], message.palette, message.diagrams ?? [], () => {
     mathDone += 1;
     if (mathDone === 1 || mathDone % 12 === 0 || mathDone === mathTotal) {
       post({
@@ -255,6 +260,7 @@ type TokenLike = {
 function renderBlocks(
   tokens: TokenLike[],
   palette: Palette,
+  diagrams: readonly PdfMermaidDiagram[],
   onMath: () => void,
 ): Content[] {
   const content: Content[] = [];
@@ -299,6 +305,11 @@ function renderBlocks(
       continue;
     }
     if (token.type === "code") {
+      const diagram = createPdfMermaidContent(token.lang, token.text ?? "", diagrams);
+      if (diagram) {
+        content.push(diagram as Content);
+        continue;
+      }
       const label = token.lang && token.lang !== "text" ? token.lang.toUpperCase() : "";
       const codeStack: Content[] = [
         ...(label ? [{
@@ -332,7 +343,7 @@ function renderBlocks(
           body: [[
             { text: "", fillColor: palette.accent, border: [false, false, false, false] },
             {
-              stack: renderBlocks(token.tokens ?? [], palette, onMath),
+              stack: renderBlocks(token.tokens ?? [], palette, diagrams, onMath),
               fillColor: palette.accentSoft,
               margin: [11, 8, 10, 2],
               border: [false, false, false, false],
@@ -346,7 +357,7 @@ function renderBlocks(
     }
     if (token.type === "list") {
       const items = (token.items ?? []).map((item) => {
-        const itemContent = renderBlocks(item.tokens ?? [], palette, onMath);
+        const itemContent = renderBlocks(item.tokens ?? [], palette, diagrams, onMath);
         if (item.task) {
           itemContent.unshift({
             text: item.checked ? "☑ " : "☐ ",

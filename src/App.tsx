@@ -10,6 +10,7 @@ import {
   FileCode2,
   FilePlus2,
   Files,
+  FolderInput,
   FolderOpen,
   FolderPlus,
   Italic,
@@ -95,6 +96,8 @@ import {
 } from "./dock-layout";
 import {
   nextTabAfterClose,
+  remapWorkspacePath,
+  remapWorkspaceTabs,
   tabFromLoadedDocument,
   upsertDocumentTab,
   type OpenDocumentTab,
@@ -121,6 +124,11 @@ interface ArchiveMenuState {
   x: number;
   y: number;
   entry: ArchiveEntry;
+}
+
+interface MoveDialogState {
+  source: DocumentEntry;
+  destination: string;
 }
 
 type MenuState = WorkspaceMenuState | ArchiveMenuState;
@@ -202,6 +210,7 @@ export default function App() {
   const [outline, setOutline] = useState<OutlineItem[]>([]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [entryDialog, setEntryDialog] = useState<EntryDialogState | null>(null);
+  const [moveDialog, setMoveDialog] = useState<MoveDialogState | null>(null);
   const [deleteEntry, setDeleteEntry] = useState<DocumentEntry | null>(null);
   const [rendering, setRendering] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
@@ -723,6 +732,7 @@ export default function App() {
     const previous = androidWindow.__LEAFMARK_ANDROID_BACK__;
     const closeAndroidLayer = () => {
       if (menu) setMenu(null);
+      else if (moveDialog) setMoveDialog(null);
       else if (deleteEntry) setDeleteEntry(null);
       else if (entryDialog) setEntryDialog(null);
       else if (exportOpen) {
@@ -744,7 +754,7 @@ export default function App() {
         androidWindow.__LEAFMARK_ANDROID_BACK__ = previous;
       }
     };
-  }, [android, deleteEntry, dirty, entryDialog, exportOpen, exporting, importOpen, menu, outlineOpen, persistCurrent, settingsOpen, sidebarOpen]);
+  }, [android, deleteEntry, dirty, entryDialog, exportOpen, exporting, importOpen, menu, moveDialog, outlineOpen, persistCurrent, settingsOpen, sidebarOpen]);
 
   const switchMode = async (next: ViewMode) => {
     if (agentTurnActiveRef.current || agentDocumentStreamRef.current?.tabKey === activeTabKeyRef.current) {
@@ -810,6 +820,81 @@ export default function App() {
     if (rejectDuringAgentTurn("重命名")) return;
     setMenu(null);
     setEntryDialog({ action: "rename", kind: entry.kind, source: entry, parent: parentPath(entry.path), value: entry.name });
+  };
+
+  const startMoveDocument = (entry: DocumentEntry) => {
+    if (rejectDuringAgentTurn("移动文档")) return;
+    if (entry.kind !== "file") return;
+    setMenu(null);
+    setMoveDialog({ source: entry, destination: parentPath(entry.path) });
+  };
+
+  const moveWorkspaceDocument = async (
+    requestedPath: string,
+    requestedDestination: string,
+    agentAuthorized = false,
+  ): Promise<string> => {
+    if (!agentAuthorized && rejectDuringAgentTurn("移动文档")) throw new Error("Agent 工作期间不能移动文档");
+    const path = requestedPath.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const destination = requestedDestination.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const currentEntries = await api.listEntries();
+    const source = currentEntries.find((entry) => entry.path === path);
+    if (!source || source.kind !== "file") throw new Error(`找不到文档：${path || requestedPath}`);
+    if (destination) {
+      const folder = currentEntries.find((entry) => entry.path === destination);
+      if (!folder || folder.kind !== "directory") throw new Error(`目标文件夹不存在：${destination}`);
+    }
+    const target = joinPath(destination, source.name);
+    if (target === path) throw new Error(destination ? "文档已经在所选文件夹中" : "文档已经在文档库根目录");
+    if (currentEntries.some((entry) => entry.path === target)) throw new Error(`目标位置已有同名文件：${target}`);
+    if (!await persistCurrent(true)) throw new Error("当前文档保存失败，未执行移动");
+
+    await api.rename(path, target);
+    const activeIndex = tabsRef.current.findIndex((tab) => tab.key === activeTabKeyRef.current);
+    const synchronizedTabs = tabsRef.current.map((tab, index) => index === activeIndex ? {
+      ...tab,
+      path: selectedRef.current,
+      origin: originRef.current,
+      archiveId: archiveIdRef.current,
+      sourcePath,
+      sourceExists,
+      content: contentRef.current,
+      savedContent: savedRef.current,
+      renderedHtml,
+    } : tab);
+    const nextTabs = remapWorkspaceTabs(synchronizedTabs, path, target);
+    const nextActive = activeIndex >= 0 ? nextTabs[activeIndex] : null;
+    tabsRef.current = nextTabs;
+    setOpenTabs(nextTabs);
+    if (nextActive && nextActive.key !== activeTabKeyRef.current) applyTabSnapshot(nextActive);
+    setSelectedEntryPath((current) => remapWorkspacePath(current, path, target));
+    setExpanded((current) => {
+      const next = new Set(current);
+      let folder = destination;
+      while (folder) {
+        next.add(folder);
+        folder = parentPath(folder);
+      }
+      return next;
+    });
+    await refresh(target);
+    await refreshLibrary();
+    return target;
+  };
+
+  const commitMoveDocument = async () => {
+    if (!moveDialog) return;
+    setBusy(true);
+    try {
+      const target = await moveWorkspaceDocument(moveDialog.source.path, moveDialog.destination);
+      revealEntry(target, false);
+      setMoveDialog(null);
+      setNotice(`已移动到 ${moveDialog.destination || "文档库根目录"}`);
+    } catch (error) {
+      setNotice(`移动失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const commitEntryDialog = async () => {
@@ -1621,6 +1706,7 @@ export default function App() {
       await openDocument(path, true, true);
       return `已创建并打开 ${path}`;
     },
+    moveDocument: (path, destinationFolder) => moveWorkspaceDocument(path, destinationFolder, true),
     beginDocumentStream: beginAgentDocumentStream,
     appendDocumentStream: appendAgentDocumentStream,
     finishDocumentStream: finishAgentDocumentStream,
@@ -1944,6 +2030,7 @@ export default function App() {
             <>
               {menu.entry?.kind === "file" && <button type="button" onClick={() => { void openDocument(menu.entry!.path); setMenu(null); }}><Eye size={14} /> 打开</button>}
               {!android && <button type="button" onClick={() => void revealWorkspaceLocation(menu.entry)}><FolderOpen size={14} /> {menu.entry?.kind === "file" ? "打开文档所在目录" : menu.entry ? "打开文件夹所在位置" : "打开文档库目录"}</button>}
+              {menu.entry?.kind === "file" && <button type="button" onClick={() => startMoveDocument(menu.entry!)}><FolderInput size={14} /> 移动文档到…</button>}
               <button type="button" onClick={() => startCreate("file", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FilePlus2 size={14} /> 新建文档</button>
               <button type="button" onClick={() => startCreate("directory", menu.entry?.kind === "directory" ? menu.entry.path : parentPath(menu.entry?.path ?? ""))}><FolderPlus size={14} /> 新建文件夹</button>
               {menu.entry && <><hr /><button type="button" onClick={() => startRename(menu.entry!)}><PencilLine size={14} /> 重命名</button><button className="danger" type="button" onClick={() => { setDeleteEntry(menu.entry); setMenu(null); }}><Trash2 size={14} /> 删除</button></>}
@@ -1958,6 +2045,17 @@ export default function App() {
             </>
           )}
         </div>
+      )}
+
+      {moveDialog && (
+        <MoveDocumentDialog
+          source={moveDialog.source}
+          entries={entries}
+          destination={moveDialog.destination}
+          onChange={(destination) => setMoveDialog({ ...moveDialog, destination })}
+          onCancel={() => setMoveDialog(null)}
+          onConfirm={() => void commitMoveDocument()}
+        />
       )}
 
       {entryDialog && (
@@ -2190,6 +2288,43 @@ function StartupWorkspace() {
     <div className="startup-workspace" role="status" aria-live="polite">
       <div className="startup-symbol"><BookOpen size={25} /></div>
       <span>正在载入文档…</span>
+    </div>
+  );
+}
+
+function MoveDocumentDialog({ source, entries, destination, onChange, onCancel, onConfirm }: {
+  source: DocumentEntry;
+  entries: DocumentEntry[];
+  destination: string;
+  onChange: (destination: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const current = parentPath(source.path);
+  const target = joinPath(destination, source.name);
+  const sameFolder = destination === current;
+  const conflict = !sameFolder && entries.some((entry) => entry.path === target);
+  const folders = entries.filter((entry) => entry.kind === "directory");
+  const issue = sameFolder
+    ? destination ? "文档已经在所选文件夹中" : "文档已经在文档库根目录"
+    : conflict ? "所选文件夹中已有同名文档，请先重命名其中一个文档" : "";
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <section className="small-dialog move-dialog" role="dialog" aria-modal="true" aria-labelledby="move-document-title" onKeyDown={(event) => event.key === "Escape" && onCancel()}>
+        <h2 id="move-document-title">移动文档到…</h2>
+        <p>为“{source.name}”选择文档库中的目标文件夹。不会覆盖已有文件。</p>
+        <label htmlFor="move-document-destination">目标文件夹</label>
+        <select id="move-document-destination" autoFocus value={destination} onChange={(event) => onChange(event.target.value)}>
+          <option value="">文档库根目录</option>
+          {folders.map((folder) => <option key={folder.path} value={folder.path}>{folder.path}</option>)}
+        </select>
+        <div className="move-target-preview"><span>移动后</span><strong title={target}>{target}</strong></div>
+        {issue && <div className="move-dialog-issue" role="status">{issue}</div>}
+        <footer>
+          <button className="secondary-button" type="button" onClick={onCancel}>取消</button>
+          <button className="primary-button" type="button" disabled={Boolean(issue)} onClick={onConfirm}>移动文档</button>
+        </footer>
+      </section>
     </div>
   );
 }

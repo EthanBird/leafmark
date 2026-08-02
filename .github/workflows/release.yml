@@ -127,10 +127,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 修复 Android 导出始终提示“导出数据必须使用二进制传输”：Android 改用 Tauri 支持的 JSON/Base64 字节协议，桌面端继续使用 Raw IPC
-            - 导出会校验声明长度、Base64 完整性并设置适合手机内存的 64 MiB 安全上限；编码期间主动让出 UI 线程，Markdown、PDF、PNG 与分享共用同一可靠链路
-            - 修复 Agent 工具调用卡片展开后覆盖后续内容：使用受控展开组件，参数、命令和结果在卡片内部换行或滚动
-            - 新增正式的“黑白灰”主题，提供独立调校的浅色与深色配色，Android 系统栏颜色同步跟随
+            - 修复全平台 PDF 导出未渲染 Mermaid：长页与标准分页模式现在都会把 Mermaid 图表嵌入为清晰的矢量 SVG
+            - Mermaid 图表会内联主题样式，并把 pdfmake 不兼容的 HTML 标签转换为 SVG 文字；中文节点也能随文档字体清晰输出
+            - 图表会按实际嵌入 PDF 的系统字体计算布局，避免中文或自定义字体造成标签溢出；导出进度会显示 Mermaid 矢量化状态
+            - 单个 Mermaid 语法错误会回退为可读源码，不再中止整份 PDF；正文仍为可搜索、可复制的真实文字
+            - 文档库右键菜单新增“移动文档到…”，可选择库内任意文件夹；同目录和同名冲突会安全阻止，不覆盖文件
+            - Agent 新增受文档编辑权限控制的 move_document 工具；Agent 版本历史可撤销、重做移动并同步历史与收藏来源路径
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
             Android APK 继续使用 v0.7.0 起固定的社区更新证书，可直接覆盖更新；该公开证书不提供私钥保密或发布者真实性，请只从本项目官方 GitHub Releases 下载。Windows 未签名构建可能触发 SmartScreen 提示。
