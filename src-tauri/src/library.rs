@@ -352,24 +352,23 @@ impl DocumentArchive {
         previous_root: &Path,
         next_root: &Path,
     ) -> Result<(), String> {
-        // The source has already moved when this runs, so canonicalizing the
-        // complete previous path is no longer possible. Resolve the nearest
-        // existing ancestor instead. This is especially important on Windows,
-        // where the same temp directory may be represented as RUNNER~1,
-        // runneradmin, or with a verbatim `\\?\` prefix.
-        let next_root = canonicalize_with_missing_tail(next_root);
         let mut changed = false;
         for entry in &mut self.index.documents {
             let source = Path::new(&entry.source_path);
-            let suffix = equivalent_path_suffix(source, previous_root);
-            #[cfg(all(test, windows))]
-            eprintln!(
-                "rename_sources source={source:?} previous={previous_root:?} suffix={suffix:?}"
-            );
-            let Some(suffix) = suffix else {
+            let Ok(suffix) = source.strip_prefix(previous_root) else {
                 continue;
             };
-            let next = next_root.join(&suffix);
+            if !safe_relative_suffix(suffix) {
+                continue;
+            }
+            // PathBuf::join("") appends a trailing separator on Windows. For
+            // a file-to-file move that makes is_file() false and forces
+            // history to reveal the retained snapshot instead.
+            let next = if suffix.as_os_str().is_empty() {
+                next_root.to_path_buf()
+            } else {
+                next_root.join(suffix)
+            };
             entry.source_path = next.to_string_lossy().into_owned();
             entry.name = next
                 .file_name()
@@ -455,215 +454,9 @@ fn path_key(path: &Path) -> String {
     }
 }
 
-fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
-    let mut cursor = path;
-    let mut missing = Vec::new();
-    loop {
-        if let Ok(mut resolved) = cursor.canonicalize() {
-            for component in missing.iter().rev() {
-                resolved.push(component);
-            }
-            return resolved;
-        }
-        let Some(name) = cursor.file_name() else {
-            return path.to_path_buf();
-        };
-        missing.push(name.to_os_string());
-        let Some(parent) = cursor.parent() else {
-            return path.to_path_buf();
-        };
-        cursor = parent;
-    }
-}
-
-fn equivalent_path_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
-    if let Ok(suffix) = path.strip_prefix(root) {
-        if safe_relative_suffix(suffix) {
-            return Some(suffix.to_path_buf());
-        }
-    }
-
-    #[cfg(windows)]
-    if let Some(suffix) = windows_identity_suffix(path, root) {
-        return Some(suffix);
-    }
-
-    let resolved_path = canonicalize_with_missing_tail(path);
-    let resolved_root = canonicalize_with_missing_tail(root);
-    if let Ok(suffix) = resolved_path.strip_prefix(&resolved_root) {
-        if safe_relative_suffix(suffix) {
-            return Some(suffix.to_path_buf());
-        }
-    }
-
-    if cfg!(windows) {
-        let path_components: Vec<_> = resolved_path.components().collect();
-        let root_components: Vec<_> = resolved_root.components().collect();
-        if root_components.len() <= path_components.len()
-            && root_components.iter().zip(&path_components).all(|(left, right)| {
-                left.as_os_str()
-                    .to_string_lossy()
-                    .to_lowercase()
-                    == right.as_os_str().to_string_lossy().to_lowercase()
-            })
-        {
-            let mut suffix = PathBuf::new();
-            for component in &path_components[root_components.len()..] {
-                suffix.push(component.as_os_str());
-            }
-            if safe_relative_suffix(&suffix) {
-                return Some(suffix);
-            }
-        }
-    }
-    None
-}
-
 fn safe_relative_suffix(path: &Path) -> bool {
     path.components()
         .all(|component| matches!(component, Component::Normal(_)))
-}
-
-#[cfg(windows)]
-fn windows_identity_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
-    let path_parts = existing_ancestor_and_tail(path);
-    let root_parts = existing_ancestor_and_tail(root);
-    #[cfg(test)]
-    eprintln!("windows_identity_suffix path_parts={path_parts:?} root_parts={root_parts:?}");
-    let (path_ancestor, path_tail) = path_parts?;
-    let (root_ancestor, root_tail) = root_parts?;
-    let path_identity = windows_file_identity(&path_ancestor);
-    let root_identity = windows_file_identity(&root_ancestor);
-    #[cfg(test)]
-    eprintln!(
-        "windows_identity_suffix path_identity={path_identity:?} root_identity={root_identity:?}"
-    );
-    if path_identity? != root_identity?
-        || root_tail.len() > path_tail.len()
-        || !root_tail.iter().zip(&path_tail).all(|(left, right)| {
-            left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
-        })
-    {
-        return None;
-    }
-    let mut suffix = PathBuf::new();
-    for component in &path_tail[root_tail.len()..] {
-        suffix.push(component);
-    }
-    safe_relative_suffix(&suffix).then_some(suffix)
-}
-
-#[cfg(windows)]
-fn existing_ancestor_and_tail(
-    path: &Path,
-) -> Option<(PathBuf, Vec<std::ffi::OsString>)> {
-    let mut cursor = path;
-    let mut tail = Vec::new();
-    loop {
-        if fs::metadata(cursor).is_ok() {
-            tail.reverse();
-            return Some((cursor.to_path_buf(), tail));
-        }
-        let name = cursor.file_name()?;
-        tail.push(name.to_os_string());
-        cursor = cursor.parent()?;
-    }
-}
-
-#[cfg(windows)]
-fn windows_file_identity(path: &Path) -> Option<(u32, u64)> {
-    use std::{iter, mem::MaybeUninit, os::windows::ffi::OsStrExt, ptr};
-
-    const FILE_SHARE_ALL: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_0004;
-    const OPEN_EXISTING: u32 = 3;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    let input: Vec<u16> = path.as_os_str().encode_wide().chain(iter::once(0)).collect();
-    let handle = unsafe {
-        create_file_w(
-            input.as_ptr(),
-            0,
-            FILE_SHARE_ALL,
-            ptr::null_mut(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            ptr::null_mut(),
-        )
-    };
-    if handle == (-1_isize as *mut std::ffi::c_void) {
-        #[cfg(test)]
-        eprintln!(
-            "windows_file_identity CreateFileW failed for {path:?}: {}",
-            std::io::Error::last_os_error()
-        );
-        return None;
-    }
-    let mut information = MaybeUninit::<WindowsFileInformation>::uninit();
-    let succeeded = unsafe { get_file_information_by_handle(handle, information.as_mut_ptr()) };
-    #[cfg(test)]
-    let information_error = (succeeded == 0).then(std::io::Error::last_os_error);
-    unsafe {
-        close_handle(handle);
-    }
-    if succeeded == 0 {
-        #[cfg(test)]
-        eprintln!(
-            "windows_file_identity GetFileInformationByHandle failed for {path:?}: {}",
-            information_error.unwrap()
-        );
-        return None;
-    }
-    let information = unsafe { information.assume_init() };
-    Some((
-        information.volume_serial_number,
-        (u64::from(information.file_index_high) << 32)
-            | u64::from(information.file_index_low),
-    ))
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct WindowsFileTime {
-    low_date_time: u32,
-    high_date_time: u32,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-struct WindowsFileInformation {
-    file_attributes: u32,
-    creation_time: WindowsFileTime,
-    last_access_time: WindowsFileTime,
-    last_write_time: WindowsFileTime,
-    volume_serial_number: u32,
-    file_size_high: u32,
-    file_size_low: u32,
-    number_of_links: u32,
-    file_index_high: u32,
-    file_index_low: u32,
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-extern "system" {
-    #[link_name = "CreateFileW"]
-    fn create_file_w(
-        file_name: *const u16,
-        desired_access: u32,
-        share_mode: u32,
-        security_attributes: *mut std::ffi::c_void,
-        creation_disposition: u32,
-        flags_and_attributes: u32,
-        template_file: *mut std::ffi::c_void,
-    ) -> *mut std::ffi::c_void;
-
-    #[link_name = "GetFileInformationByHandle"]
-    fn get_file_information_by_handle(
-        file: *mut std::ffi::c_void,
-        information: *mut WindowsFileInformation,
-    ) -> i32;
-
-    #[link_name = "CloseHandle"]
-    fn close_handle(object: *mut std::ffi::c_void) -> i32;
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -848,21 +641,32 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_suffix_is_component_bounded_and_cannot_escape() {
-        let root = Path::new("workspace/folder");
+    fn moved_file_source_keeps_a_file_path_without_a_trailing_separator() {
+        let root = test_root("move-source");
+        let source_dir = root.join("source");
+        let target_dir = root.join("target");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
+        let source = source_dir.join("note.md");
+        let target = target_dir.join("note.md");
+        fs::write(&source, "# moved").unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+        let opened = archive.open_source(&source).unwrap();
+        let source = source.canonicalize().unwrap();
+        fs::rename(&source, &target).unwrap();
+        let target = target.canonicalize().unwrap();
+
+        archive.rename_sources(&source, &target).unwrap();
+
+        assert_eq!(archive.reveal_path(&opened.entry.id).unwrap(), target);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relative_suffix_cannot_escape_a_moved_directory() {
+        assert!(safe_relative_suffix(Path::new("")));
         assert!(safe_relative_suffix(Path::new("nested/note.md")));
         assert!(!safe_relative_suffix(Path::new("../outside.md")));
-        assert_eq!(
-            equivalent_path_suffix(Path::new("workspace/folder/note.md"), root),
-            Some(PathBuf::from("note.md"))
-        );
-        assert_eq!(
-            equivalent_path_suffix(Path::new("workspace/folder-old/note.md"), root),
-            None
-        );
-        assert_eq!(
-            equivalent_path_suffix(Path::new("workspace/folder/../outside.md"), root),
-            None
-        );
+        assert!(!safe_relative_suffix(Path::new("/absolute/note.md")));
     }
 }
