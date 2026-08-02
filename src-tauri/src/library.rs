@@ -352,13 +352,19 @@ impl DocumentArchive {
         previous_root: &Path,
         next_root: &Path,
     ) -> Result<(), String> {
+        // The source has already moved when this runs, so canonicalizing the
+        // complete previous path is no longer possible. Resolve the nearest
+        // existing ancestor instead. This is especially important on Windows,
+        // where the same temp directory may be represented as RUNNER~1,
+        // runneradmin, or with a verbatim `\\?\` prefix.
+        let next_root = canonicalize_with_missing_tail(next_root);
         let mut changed = false;
         for entry in &mut self.index.documents {
             let source = Path::new(&entry.source_path);
-            let Ok(suffix) = source.strip_prefix(previous_root) else {
+            let Some(suffix) = equivalent_path_suffix(source, previous_root) else {
                 continue;
             };
-            let next = next_root.join(suffix);
+            let next = next_root.join(&suffix);
             entry.source_path = next.to_string_lossy().into_owned();
             entry.name = next
                 .file_name()
@@ -442,6 +448,59 @@ fn path_key(path: &Path) -> String {
     } else {
         value
     }
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
+    let mut cursor = path;
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(mut resolved) = cursor.canonicalize() {
+            for component in missing.iter().rev() {
+                resolved.push(component);
+            }
+            return resolved;
+        }
+        let Some(name) = cursor.file_name() else {
+            return path.to_path_buf();
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            return path.to_path_buf();
+        };
+        cursor = parent;
+    }
+}
+
+fn equivalent_path_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
+    if let Ok(suffix) = path.strip_prefix(root) {
+        return Some(suffix.to_path_buf());
+    }
+
+    let resolved_path = canonicalize_with_missing_tail(path);
+    let resolved_root = canonicalize_with_missing_tail(root);
+    if let Ok(suffix) = resolved_path.strip_prefix(&resolved_root) {
+        return Some(suffix.to_path_buf());
+    }
+
+    if cfg!(windows) {
+        let path_components: Vec<_> = resolved_path.components().collect();
+        let root_components: Vec<_> = resolved_root.components().collect();
+        if root_components.len() <= path_components.len()
+            && root_components.iter().zip(&path_components).all(|(left, right)| {
+                left.as_os_str()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    == right.as_os_str().to_string_lossy().to_lowercase()
+            })
+        {
+            let mut suffix = PathBuf::new();
+            for component in &path_components[root_components.len()..] {
+                suffix.push(component.as_os_str());
+            }
+            return Some(suffix);
+        }
+    }
+    None
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
