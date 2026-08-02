@@ -361,7 +361,12 @@ impl DocumentArchive {
         let mut changed = false;
         for entry in &mut self.index.documents {
             let source = Path::new(&entry.source_path);
-            let Some(suffix) = equivalent_path_suffix(source, previous_root) else {
+            let suffix = equivalent_path_suffix(source, previous_root);
+            #[cfg(all(test, windows))]
+            eprintln!(
+                "rename_sources source={source:?} previous={previous_root:?} suffix={suffix:?}"
+            );
+            let Some(suffix) = suffix else {
                 continue;
             };
             let next = next_root.join(&suffix);
@@ -521,9 +526,19 @@ fn safe_relative_suffix(path: &Path) -> bool {
 
 #[cfg(windows)]
 fn windows_identity_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
-    let (path_ancestor, path_tail) = existing_ancestor_and_tail(path)?;
-    let (root_ancestor, root_tail) = existing_ancestor_and_tail(root)?;
-    if windows_file_identity(&path_ancestor)? != windows_file_identity(&root_ancestor)?
+    let path_parts = existing_ancestor_and_tail(path);
+    let root_parts = existing_ancestor_and_tail(root);
+    #[cfg(test)]
+    eprintln!("windows_identity_suffix path_parts={path_parts:?} root_parts={root_parts:?}");
+    let (path_ancestor, path_tail) = path_parts?;
+    let (root_ancestor, root_tail) = root_parts?;
+    let path_identity = windows_file_identity(&path_ancestor);
+    let root_identity = windows_file_identity(&root_ancestor);
+    #[cfg(test)]
+    eprintln!(
+        "windows_identity_suffix path_identity={path_identity:?} root_identity={root_identity:?}"
+    );
+    if path_identity? != root_identity?
         || root_tail.len() > path_tail.len()
         || !root_tail.iter().zip(&path_tail).all(|(left, right)| {
             left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
@@ -575,14 +590,26 @@ fn windows_file_identity(path: &Path) -> Option<(u32, u64)> {
         )
     };
     if handle == (-1_isize as *mut std::ffi::c_void) {
+        #[cfg(test)]
+        eprintln!(
+            "windows_file_identity CreateFileW failed for {path:?}: {}",
+            std::io::Error::last_os_error()
+        );
         return None;
     }
     let mut information = MaybeUninit::<WindowsFileInformation>::uninit();
     let succeeded = unsafe { get_file_information_by_handle(handle, information.as_mut_ptr()) };
+    #[cfg(test)]
+    let information_error = (succeeded == 0).then(std::io::Error::last_os_error);
     unsafe {
         close_handle(handle);
     }
     if succeeded == 0 {
+        #[cfg(test)]
+        eprintln!(
+            "windows_file_identity GetFileInformationByHandle failed for {path:?}: {}",
+            information_error.unwrap()
+        );
         return None;
     }
     let information = unsafe { information.assume_init() };
