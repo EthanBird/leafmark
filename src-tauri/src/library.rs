@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -454,7 +454,8 @@ fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
     let mut cursor = path;
     let mut missing = Vec::new();
     loop {
-        if let Ok(mut resolved) = cursor.canonicalize() {
+        if let Ok(resolved) = cursor.canonicalize() {
+            let mut resolved = expand_canonical_path(resolved);
             for component in missing.iter().rev() {
                 resolved.push(component);
             }
@@ -473,13 +474,17 @@ fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
 
 fn equivalent_path_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
     if let Ok(suffix) = path.strip_prefix(root) {
-        return Some(suffix.to_path_buf());
+        if safe_relative_suffix(suffix) {
+            return Some(suffix.to_path_buf());
+        }
     }
 
     let resolved_path = canonicalize_with_missing_tail(path);
     let resolved_root = canonicalize_with_missing_tail(root);
     if let Ok(suffix) = resolved_path.strip_prefix(&resolved_root) {
-        return Some(suffix.to_path_buf());
+        if safe_relative_suffix(suffix) {
+            return Some(suffix.to_path_buf());
+        }
     }
 
     if cfg!(windows) {
@@ -497,10 +502,72 @@ fn equivalent_path_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
             for component in &path_components[root_components.len()..] {
                 suffix.push(component.as_os_str());
             }
-            return Some(suffix);
+            if safe_relative_suffix(&suffix) {
+                return Some(suffix);
+            }
         }
     }
     None
+}
+
+fn safe_relative_suffix(path: &Path) -> bool {
+    path.components()
+        .all(|component| matches!(component, Component::Normal(_)))
+}
+
+#[cfg(windows)]
+fn expand_canonical_path(path: PathBuf) -> PathBuf {
+    windows_long_path(&path).unwrap_or(path)
+}
+
+#[cfg(not(windows))]
+fn expand_canonical_path(path: PathBuf) -> PathBuf {
+    path
+}
+
+#[cfg(windows)]
+fn windows_long_path(path: &Path) -> Option<PathBuf> {
+    use std::{
+        ffi::OsString,
+        iter,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+    };
+
+    let input: Vec<u16> = path.as_os_str().encode_wide().chain(iter::once(0)).collect();
+    const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
+    if input.len() > MAX_WINDOWS_PATH_UNITS {
+        return None;
+    }
+    let mut capacity = input.len().max(260);
+    loop {
+        let mut output = vec![0_u16; capacity];
+        let written = unsafe {
+            get_long_path_name_w(input.as_ptr(), output.as_mut_ptr(), output.len() as u32)
+        };
+        if written == 0 {
+            return None;
+        }
+        if (written as usize) < output.len() {
+            return Some(PathBuf::from(OsString::from_wide(
+                &output[..written as usize],
+            )));
+        }
+        capacity = (written as usize).max(output.len() + 1);
+        if capacity > MAX_WINDOWS_PATH_UNITS {
+            return None;
+        }
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    #[link_name = "GetLongPathNameW"]
+    fn get_long_path_name_w(
+        short_path: *const u16,
+        long_path: *mut u16,
+        buffer_length: u32,
+    ) -> u32;
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -682,5 +749,24 @@ mod tests {
             format!("{}.md", opened.entry.id)
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn equivalent_suffix_is_component_bounded_and_cannot_escape() {
+        let root = Path::new("workspace/folder");
+        assert!(safe_relative_suffix(Path::new("nested/note.md")));
+        assert!(!safe_relative_suffix(Path::new("../outside.md")));
+        assert_eq!(
+            equivalent_path_suffix(Path::new("workspace/folder/note.md"), root),
+            Some(PathBuf::from("note.md"))
+        );
+        assert_eq!(
+            equivalent_path_suffix(Path::new("workspace/folder-old/note.md"), root),
+            None
+        );
+        assert_eq!(
+            equivalent_path_suffix(Path::new("workspace/folder/../outside.md"), root),
+            None
+        );
     }
 }
