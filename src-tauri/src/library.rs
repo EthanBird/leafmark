@@ -454,8 +454,7 @@ fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
     let mut cursor = path;
     let mut missing = Vec::new();
     loop {
-        if let Ok(resolved) = cursor.canonicalize() {
-            let mut resolved = expand_canonical_path(resolved);
+        if let Ok(mut resolved) = cursor.canonicalize() {
             for component in missing.iter().rev() {
                 resolved.push(component);
             }
@@ -477,6 +476,11 @@ fn equivalent_path_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
         if safe_relative_suffix(suffix) {
             return Some(suffix.to_path_buf());
         }
+    }
+
+    #[cfg(windows)]
+    if let Some(suffix) = windows_identity_suffix(path, root) {
+        return Some(suffix);
     }
 
     let resolved_path = canonicalize_with_missing_tail(path);
@@ -516,58 +520,123 @@ fn safe_relative_suffix(path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn expand_canonical_path(path: PathBuf) -> PathBuf {
-    windows_long_path(&path).unwrap_or(path)
-}
-
-#[cfg(not(windows))]
-fn expand_canonical_path(path: PathBuf) -> PathBuf {
-    path
+fn windows_identity_suffix(path: &Path, root: &Path) -> Option<PathBuf> {
+    let (path_ancestor, path_tail) = existing_ancestor_and_tail(path)?;
+    let (root_ancestor, root_tail) = existing_ancestor_and_tail(root)?;
+    if windows_file_identity(&path_ancestor)? != windows_file_identity(&root_ancestor)?
+        || root_tail.len() > path_tail.len()
+        || !root_tail.iter().zip(&path_tail).all(|(left, right)| {
+            left.to_string_lossy().to_lowercase() == right.to_string_lossy().to_lowercase()
+        })
+    {
+        return None;
+    }
+    let mut suffix = PathBuf::new();
+    for component in &path_tail[root_tail.len()..] {
+        suffix.push(component);
+    }
+    safe_relative_suffix(&suffix).then_some(suffix)
 }
 
 #[cfg(windows)]
-fn windows_long_path(path: &Path) -> Option<PathBuf> {
-    use std::{
-        ffi::OsString,
-        iter,
-        os::windows::ffi::{OsStrExt, OsStringExt},
-    };
+fn existing_ancestor_and_tail(
+    path: &Path,
+) -> Option<(PathBuf, Vec<std::ffi::OsString>)> {
+    let mut cursor = path;
+    let mut tail = Vec::new();
+    loop {
+        if fs::metadata(cursor).is_ok() {
+            tail.reverse();
+            return Some((cursor.to_path_buf(), tail));
+        }
+        let name = cursor.file_name()?;
+        tail.push(name.to_os_string());
+        cursor = cursor.parent()?;
+    }
+}
 
+#[cfg(windows)]
+fn windows_file_identity(path: &Path) -> Option<(u32, u64)> {
+    use std::{iter, mem::MaybeUninit, os::windows::ffi::OsStrExt, ptr};
+
+    const FILE_SHARE_ALL: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_0004;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     let input: Vec<u16> = path.as_os_str().encode_wide().chain(iter::once(0)).collect();
-    const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
-    if input.len() > MAX_WINDOWS_PATH_UNITS {
+    let handle = unsafe {
+        create_file_w(
+            input.as_ptr(),
+            0,
+            FILE_SHARE_ALL,
+            ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    if handle == (-1_isize as *mut std::ffi::c_void) {
         return None;
     }
-    let mut capacity = input.len().max(260);
-    loop {
-        let mut output = vec![0_u16; capacity];
-        let written = unsafe {
-            get_long_path_name_w(input.as_ptr(), output.as_mut_ptr(), output.len() as u32)
-        };
-        if written == 0 {
-            return None;
-        }
-        if (written as usize) < output.len() {
-            return Some(PathBuf::from(OsString::from_wide(
-                &output[..written as usize],
-            )));
-        }
-        capacity = (written as usize).max(output.len() + 1);
-        if capacity > MAX_WINDOWS_PATH_UNITS {
-            return None;
-        }
+    let mut information = MaybeUninit::<WindowsFileInformation>::uninit();
+    let succeeded = unsafe { get_file_information_by_handle(handle, information.as_mut_ptr()) };
+    unsafe {
+        close_handle(handle);
     }
+    if succeeded == 0 {
+        return None;
+    }
+    let information = unsafe { information.assume_init() };
+    Some((
+        information.volume_serial_number,
+        (u64::from(information.file_index_high) << 32)
+            | u64::from(information.file_index_low),
+    ))
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsFileTime {
+    low_date_time: u32,
+    high_date_time: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsFileInformation {
+    file_attributes: u32,
+    creation_time: WindowsFileTime,
+    last_access_time: WindowsFileTime,
+    last_write_time: WindowsFileTime,
+    volume_serial_number: u32,
+    file_size_high: u32,
+    file_size_low: u32,
+    number_of_links: u32,
+    file_index_high: u32,
+    file_index_low: u32,
 }
 
 #[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
-    #[link_name = "GetLongPathNameW"]
-    fn get_long_path_name_w(
-        short_path: *const u16,
-        long_path: *mut u16,
-        buffer_length: u32,
-    ) -> u32;
+    #[link_name = "CreateFileW"]
+    fn create_file_w(
+        file_name: *const u16,
+        desired_access: u32,
+        share_mode: u32,
+        security_attributes: *mut std::ffi::c_void,
+        creation_disposition: u32,
+        flags_and_attributes: u32,
+        template_file: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+
+    #[link_name = "GetFileInformationByHandle"]
+    fn get_file_information_by_handle(
+        file: *mut std::ffi::c_void,
+        information: *mut WindowsFileInformation,
+    ) -> i32;
+
+    #[link_name = "CloseHandle"]
+    fn close_handle(object: *mut std::ffi::c_void) -> i32;
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
