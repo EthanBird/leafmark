@@ -952,9 +952,13 @@ mod tests {
     #[test]
     fn moved_document_path_is_undone_and_redone_without_replaying_the_move() {
         let base = root("move-document");
-        let workspace = base.join("workspace");
-        fs::create_dir_all(workspace.join("待整理")).unwrap();
-        fs::create_dir_all(workspace.join("归档/2026")).unwrap();
+        let workspace_root = base.join("workspace");
+        fs::create_dir_all(workspace_root.join("待整理")).unwrap();
+        fs::create_dir_all(workspace_root.join("归档/2026")).unwrap();
+        // AppState always stores the canonical workspace path. Keep this
+        // regression test on the same contract: on Windows canonicalization
+        // adds the verbatim `\\?\` prefix used by archived source paths.
+        let workspace = workspace_root.canonicalize().unwrap();
         let source = workspace.join("待整理/note.md");
         let target = workspace.join("归档/2026/note.md");
         fs::write(&source, "# 不丢内容\n").unwrap();
