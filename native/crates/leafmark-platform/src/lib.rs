@@ -7,6 +7,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+pub const APP_IDENTIFIER: &str = "com.leafmark.desktop";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PlatformKind {
@@ -51,6 +53,25 @@ impl AppDirectories {
         Self::resolve_with(PlatformKind::current(), |name| std::env::var_os(name))
     }
 
+    pub fn from_native_bridge(
+        config: impl Into<PathBuf>,
+        data: impl Into<PathBuf>,
+        cache: impl Into<PathBuf>,
+        documents: impl Into<PathBuf>,
+    ) -> Result<Self, PlatformError> {
+        let config = require_absolute(config.into(), "config")?;
+        let data = require_absolute(data.into(), "data")?;
+        let cache = require_absolute(cache.into(), "cache")?;
+        let documents = require_absolute(documents.into(), "documents")?;
+        Ok(Self {
+            workspace: documents.join("LeafMark"),
+            config,
+            data,
+            cache,
+            documents,
+        })
+    }
+
     pub fn resolve_with(
         platform: PlatformKind,
         environment: impl Fn(&str) -> Option<std::ffi::OsString>,
@@ -65,6 +86,7 @@ impl AppDirectories {
         let documents = environment("LEAFMARK_DOCUMENTS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join("Documents"));
+        let identifier = APP_IDENTIFIER;
         let (config, data, cache) = match platform {
             PlatformKind::Windows => {
                 let roaming = environment("APPDATA")
@@ -74,32 +96,32 @@ impl AppDirectories {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| home.join("AppData/Local"));
                 (
-                    roaming.join("LeafMark"),
-                    local.join("LeafMark"),
-                    local.join("LeafMark/Cache"),
+                    roaming.join(identifier),
+                    roaming.join(identifier),
+                    local.join(identifier),
                 )
             }
             PlatformKind::Macos => {
-                let support = home.join("Library/Application Support/LeafMark");
+                let support = home.join("Library/Application Support").join(identifier);
                 (
-                    support.join("Config"),
+                    support.clone(),
                     support,
-                    home.join("Library/Caches/LeafMark"),
+                    home.join("Library/Caches").join(identifier),
                 )
             }
             PlatformKind::Linux | PlatformKind::Unknown => {
                 let config = environment("XDG_CONFIG_HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| home.join(".config"))
-                    .join("leafmark");
+                    .join(identifier);
                 let data = environment("XDG_DATA_HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| home.join(".local/share"))
-                    .join("leafmark");
+                    .join(identifier);
                 let cache = environment("XDG_CACHE_HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| home.join(".cache"))
-                    .join("leafmark");
+                    .join(identifier);
                 (config, data, cache)
             }
             PlatformKind::Android | PlatformKind::Ios => unreachable!(),
@@ -120,6 +142,21 @@ impl AppDirectories {
     pub fn agent_state(&self) -> PathBuf {
         self.data.join("agent-state-v2")
     }
+
+    pub fn agent_vcs(&self) -> PathBuf {
+        self.data.join("agent-vcs")
+    }
+}
+
+fn require_absolute(path: PathBuf, label: &str) -> Result<PathBuf, PlatformError> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err(PlatformError::InvalidDirectory(format!(
+            "{label} 目录必须是绝对路径：{}",
+            path.display()
+        )))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +171,7 @@ pub enum PlatformEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformError {
     MissingDirectory(String),
+    InvalidDirectory(String),
     NativeBridgeRequired(PlatformKind),
     Clipboard(String),
     Unsupported(String),
@@ -144,6 +182,7 @@ impl fmt::Display for PlatformError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingDirectory(name) => write!(formatter, "缺少系统目录环境：{name}"),
+            Self::InvalidDirectory(message) => formatter.write_str(message),
             Self::NativeBridgeRequired(platform) => {
                 write!(formatter, "{platform:?} 需要原生平台桥提供应用目录")
             }
@@ -281,7 +320,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_linux_xdg_directories_without_process_environment() {
+    fn resolves_linux_tauri_identifier_directories() {
         let directories = AppDirectories::resolve_with(
             PlatformKind::Linux,
             environment_map(&[
@@ -292,10 +331,13 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(directories.config, PathBuf::from("/cfg/leafmark"));
+        assert_eq!(
+            directories.config,
+            PathBuf::from("/cfg/com.leafmark.desktop")
+        );
         assert_eq!(
             directories.document_library(),
-            PathBuf::from("/data/leafmark/document-library")
+            PathBuf::from("/data/com.leafmark.desktop/document-library")
         );
         assert_eq!(
             directories.workspace,
@@ -304,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_windows_roaming_and_local_state_separately() {
+    fn resolves_windows_roaming_data_and_local_cache() {
         let directories = AppDirectories::resolve_with(
             PlatformKind::Windows,
             environment_map(&[
@@ -315,12 +357,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            directories.config,
-            PathBuf::from("C:/Users/Leaf/AppData/Roaming/LeafMark")
+            directories.data,
+            PathBuf::from("C:/Users/Leaf/AppData/Roaming/com.leafmark.desktop")
         );
         assert_eq!(
-            directories.data,
-            PathBuf::from("C:/Users/Leaf/AppData/Local/LeafMark")
+            directories.cache,
+            PathBuf::from("C:/Users/Leaf/AppData/Local/com.leafmark.desktop")
         );
     }
 
@@ -331,6 +373,17 @@ mod tests {
             result,
             Err(PlatformError::NativeBridgeRequired(PlatformKind::Android))
         );
+    }
+
+    #[test]
+    fn native_bridge_rejects_relative_directories() {
+        let result = AppDirectories::from_native_bridge(
+            "config",
+            "/data/user/0/com.leafmark.desktop/files",
+            "/data/user/0/com.leafmark.desktop/cache",
+            "/storage/emulated/0/Documents",
+        );
+        assert!(matches!(result, Err(PlatformError::InvalidDirectory(_))));
     }
 
     #[test]
