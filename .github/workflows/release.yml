@@ -294,15 +294,26 @@ jobs:
               $items[$path] = Test-Path $path
             }
             foreach ($entry in @(
-              @{ Path = "HKCU:\Software\RegisteredApplications"; Name = "LeafMark" },
-              @{ Path = "HKCU:\Software\Classes\.md\OpenWithProgids"; Name = "LeafMark.Markdown" },
-              @{ Path = "HKCU:\Software\Classes\.markdown\OpenWithProgids"; Name = "LeafMark.Markdown" }
+              @{ SubKey = "Software\RegisteredApplications"; Name = "LeafMark" },
+              @{ SubKey = "Software\Classes\.md\OpenWithProgids"; Name = "LeafMark.Markdown" },
+              @{ SubKey = "Software\Classes\.markdown\OpenWithProgids"; Name = "LeafMark.Markdown" }
             )) {
-              $value = Get-ItemPropertyValue `
-                -Path $entry.Path `
-                -Name $entry.Name `
-                -ErrorAction SilentlyContinue
-              $items["$($entry.Path)::$($entry.Name)"] = $value
+              $registryKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                $entry.SubKey,
+                $false
+              )
+              try {
+                $value = if ($null -eq $registryKey) {
+                  $null
+                } else {
+                  $registryKey.GetValue($entry.Name, $null)
+                }
+              } finally {
+                if ($null -ne $registryKey) {
+                  $registryKey.Dispose()
+                }
+              }
+              $items["HKCU:\$($entry.SubKey)::$($entry.Name)"] = $value
             }
             return ($items | ConvertTo-Json -Compress)
           }
