@@ -40,13 +40,13 @@ jobs:
           workspaces: native
       - name: Test native libraries
         working-directory: native
-        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene -p leafmark-storage -p leafmark-native-compat --all-targets
+        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene -p leafmark-storage -p leafmark-native-compat -p leafmark-archive --all-targets
       - name: Check Dioxus Native shell
         working-directory: native
         run: cargo check -p leafmark-native --all-targets
       - name: Lint native libraries
         working-directory: native
-        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene -p leafmark-storage -p leafmark-native-compat --all-targets -- -D warnings
+        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene -p leafmark-storage -p leafmark-native-compat -p leafmark-archive --all-targets -- -D warnings
       - name: Publish readable commit status
         if: ${{ always() }}
         env:

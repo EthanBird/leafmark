@@ -9,6 +9,7 @@ members = [
   "crates/leafmark-scene",
   "crates/leafmark-storage",
   "crates/leafmark-native-compat",
+  "crates/leafmark-archive",
 ]
 
 [workspace.package]
@@ -25,6 +26,7 @@ ignore = "0.4"
 pulldown-cmark = "0.13"
 ropey = "1.6"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 codegen-units = 1
