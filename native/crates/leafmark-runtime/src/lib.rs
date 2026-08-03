@@ -1,4 +1,4 @@
-use leafmark_archive::{ArchiveEntry, DocumentArchive};
+use leafmark_archive::{ArchiveEntry, ArchivedContent, DocumentArchive};
 use leafmark_core::TabManager;
 use leafmark_domain::{DocumentId, DocumentOrigin, DocumentSnapshot, TabId};
 use leafmark_editor::{EditResult, EditSemantic, EditorDocument};
@@ -23,6 +23,16 @@ pub struct RuntimeDocumentView {
     pub scene: DocumentScene,
 }
 
+struct RuntimeDocumentSeed {
+    id: DocumentId,
+    path: String,
+    origin: DocumentOrigin,
+    archive_id: String,
+    source_path: String,
+    source_exists: bool,
+    source: String,
+}
+
 struct RuntimeDocument {
     id: DocumentId,
     path: String,
@@ -36,27 +46,17 @@ struct RuntimeDocument {
 }
 
 impl RuntimeDocument {
-    fn new(
-        id: DocumentId,
-        path: String,
-        origin: DocumentOrigin,
-        archive_id: String,
-        source_path: String,
-        source_exists: bool,
-        source: String,
-        layout: LayoutConfig,
-        theme: SceneTheme,
-    ) -> Self {
-        let parsed = parse_markdown(&source);
-        let scene = build_scene(&parsed, &source, layout, theme);
+    fn new(seed: RuntimeDocumentSeed, layout: LayoutConfig, theme: SceneTheme) -> Self {
+        let parsed = parse_markdown(&seed.source);
+        let scene = build_scene(&parsed, &seed.source, layout, theme);
         Self {
-            id,
-            path,
-            origin,
-            archive_id,
-            source_path,
-            source_exists,
-            editor: EditorDocument::new(&source),
+            id: seed.id,
+            path: seed.path,
+            origin: seed.origin,
+            archive_id: seed.archive_id,
+            source_path: seed.source_path,
+            source_exists: seed.source_exists,
+            editor: EditorDocument::new(&seed.source),
             parsed,
             scene,
         }
@@ -103,6 +103,7 @@ impl fmt::Display for RuntimeError {
         }
     }
 }
+
 impl Error for RuntimeError {}
 
 type Result<T> = std::result::Result<T, RuntimeError>;
@@ -174,17 +175,20 @@ impl LeafmarkRuntime {
             .map_err(|error| RuntimeError::Archive(error.to_string()))?;
         let id = DocumentId::workspace(loaded.path.clone());
         let document = RuntimeDocument::new(
-            id.clone(),
-            loaded.path.clone(),
-            DocumentOrigin::Workspace,
-            archived.id,
-            archived.source_path,
-            true,
-            loaded.content.clone(),
+            RuntimeDocumentSeed {
+                id: id.clone(),
+                path: loaded.path.clone(),
+                origin: DocumentOrigin::Workspace,
+                archive_id: archived.id,
+                source_path: archived.source_path,
+                source_exists: true,
+                source: loaded.content.clone(),
+            },
             self.layout,
             self.theme,
         );
-        self.tabs.open(DocumentSnapshot::workspace(loaded.path, loaded.content));
+        self.tabs
+            .open(DocumentSnapshot::workspace(loaded.path, loaded.content));
         self.documents.insert(id.clone(), document);
         self.active = Some(id.clone());
         Ok(id)
@@ -206,10 +210,7 @@ impl LeafmarkRuntime {
         self.insert_archive_document(archived)
     }
 
-    fn insert_archive_document(
-        &mut self,
-        archived: leafmark_archive::ArchivedContent,
-    ) -> Result<DocumentId> {
+    fn insert_archive_document(&mut self, archived: ArchivedContent) -> Result<DocumentId> {
         let id = DocumentId(format!("archive:{}", archived.entry.id));
         let path = archived.entry.source_path.clone();
         let snapshot = DocumentSnapshot {
@@ -220,13 +221,15 @@ impl LeafmarkRuntime {
             revision: 0,
         };
         let document = RuntimeDocument::new(
-            id.clone(),
-            path,
-            DocumentOrigin::Archive,
-            archived.entry.id,
-            archived.entry.source_path,
-            archived.entry.source_exists,
-            archived.content,
+            RuntimeDocumentSeed {
+                id: id.clone(),
+                path,
+                origin: DocumentOrigin::Archive,
+                archive_id: archived.entry.id,
+                source_path: archived.entry.source_path,
+                source_exists: archived.entry.source_exists,
+                source: archived.content,
+            },
             self.layout,
             self.theme,
         );
@@ -248,8 +251,7 @@ impl LeafmarkRuntime {
         if self.documents.remove(id).is_none() {
             return Err(RuntimeError::MissingDocument);
         }
-        let tab_id = TabId(id.0.clone());
-        self.tabs.close(&tab_id);
+        self.tabs.close(&TabId(id.0.clone()));
         if self.active.as_ref() == Some(id) {
             self.active = self.tabs.active().map(|tab| tab.document_id.clone());
         }
@@ -270,10 +272,8 @@ impl LeafmarkRuntime {
             .map_err(|error| RuntimeError::Edit(error.to_string()))?;
         if result.is_some() {
             document.refresh(self.layout, self.theme);
-            self.tabs.replace_content(
-                &TabId(id.0.clone()),
-                document.editor.source(),
-            );
+            self.tabs
+                .replace_content(&TabId(id.0.clone()), document.editor.source());
         }
         Ok(result)
     }
@@ -286,10 +286,8 @@ impl LeafmarkRuntime {
         let result = document.editor.undo();
         if result.is_some() {
             document.refresh(self.layout, self.theme);
-            self.tabs.replace_content(
-                &TabId(id.0.clone()),
-                document.editor.source(),
-            );
+            self.tabs
+                .replace_content(&TabId(id.0.clone()), document.editor.source());
         }
         Ok(result)
     }
@@ -302,10 +300,8 @@ impl LeafmarkRuntime {
         let result = document.editor.redo();
         if result.is_some() {
             document.refresh(self.layout, self.theme);
-            self.tabs.replace_content(
-                &TabId(id.0.clone()),
-                document.editor.source(),
-            );
+            self.tabs
+                .replace_content(&TabId(id.0.clone()), document.editor.source());
         }
         Ok(result)
     }
@@ -386,7 +382,11 @@ impl LeafmarkRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn temp_root(label: &str) -> PathBuf {
         let now = SystemTime::now()
@@ -415,7 +415,10 @@ mod tests {
             .unwrap();
         let view = runtime.save(&id).unwrap();
         assert!(!view.dirty);
-        assert_eq!(fs::read_to_string(workspace.join("note.md")).unwrap(), "# Two\n\n正文");
+        assert_eq!(
+            fs::read_to_string(workspace.join("note.md")).unwrap(),
+            "# Two\n\n正文"
+        );
         fs::remove_file(workspace.join("note.md")).unwrap();
         let archived = runtime.open_archive(&view.archive_id).unwrap();
         let archived = runtime.document(&archived).unwrap();
