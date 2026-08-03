@@ -40,13 +40,22 @@ jobs:
           workspaces: native
       - name: Test native workspace
         working-directory: native
-        run: cargo test --workspace --all-targets
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --all-targets 2>&1 | tee "$RUNNER_TEMP/native-test.log"
       - name: Check Dioxus Native shell
         working-directory: native
-        run: cargo check -p leafmark-native --all-targets
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check -p leafmark-native --all-targets 2>&1 | tee "$RUNNER_TEMP/native-check.log"
       - name: Lint native workspace
         working-directory: native
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee "$RUNNER_TEMP/native-clippy.log"
       - name: Publish readable commit status
         if: ${{ always() }}
         env:
@@ -58,7 +67,22 @@ jobs:
             description="Dioxus Native workspace compiles and tests successfully"
           else
             state=failure
-            description="Dioxus Native check failed; open the workflow log"
+            detail=""
+            for log in \
+              "$RUNNER_TEMP/native-clippy.log" \
+              "$RUNNER_TEMP/native-check.log" \
+              "$RUNNER_TEMP/native-test.log"; do
+              if [ -f "$log" ]; then
+                detail=$(grep -m1 -E '^error(\[[^]]+\])?:|^error:' "$log" || true)
+                [ -n "$detail" ] && break
+              fi
+            done
+            detail=$(printf '%s' "$detail" | tr '\r\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-105)
+            if [ -n "$detail" ]; then
+              description="Native check: $detail"
+            else
+              description="Dioxus Native check failed; open the workflow log"
+            fi
           fi
           jq -n --arg state "$state" --arg description "$description" \
             --arg context "leafmark/native-check" \
