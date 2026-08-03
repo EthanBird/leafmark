@@ -54,14 +54,14 @@ jobs:
         with:
           workspaces: native
 
-      - name: Test domain and core
+      - name: Test native libraries
         working-directory: native
-        run: cargo test -p leafmark-domain -p leafmark-core --all-targets
+        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown --all-targets
 
       - name: Check Dioxus Native shell
         working-directory: native
         run: cargo check -p leafmark-native --all-targets
 
-      - name: Lint domain and core
+      - name: Lint native libraries
         working-directory: native
-        run: cargo clippy -p leafmark-domain -p leafmark-core --all-targets -- -D warnings
+        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown --all-targets -- -D warnings

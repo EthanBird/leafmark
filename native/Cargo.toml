@@ -4,6 +4,7 @@ members = [
   "apps/leafmark-native",
   "crates/leafmark-domain",
   "crates/leafmark-core",
+  "crates/leafmark-markdown",
 ]
 
 [workspace.package]
@@ -15,6 +16,7 @@ repository = "https://github.com/EthanBird/leafmark"
 
 [workspace.dependencies]
 dioxus = { version = "=0.7.9", features = ["native"] }
+pulldown-cmark = "0.13"
 serde = { version = "1", features = ["derive"] }
 
 [profile.release]
