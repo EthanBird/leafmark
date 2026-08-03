@@ -11,6 +11,6 @@
 
 设置、历史保留副本、Agent 登录与版本记录仍存放在当前 Windows 用户的应用数据目录中，文档库默认位于“文档\LeafMark”。这些位置不需要管理员权限，并可避免把隐私数据写进程序目录。便携版和安装版会沿用同一份用户数据。
 
-LeafMark 使用 Windows 自带的 Microsoft Edge WebView2。Windows 11 可直接运行；如果精简版系统移除了 WebView2，需要先从 Microsoft 安装 WebView2 Runtime。
+LeafMark 使用 Microsoft Edge WebView2。便携版不会修改系统或替用户安装依赖；如果精简版系统移除了 WebView2，请改用同一 Release 中名称含 `WebView2_Setup` 的安装版，它内置轻量 Bootstrapper，会在缺失时联网安装 Microsoft WebView2 Runtime。已安装 Runtime 的电脑不会重复安装。
 
 未签名构建可能被 SmartScreen 标记为“未知发布者”。这和管理员权限、安装行为无关；请只从 LeafMark 官方 GitHub Releases 下载，并核对 Release 页面显示的 SHA-256。

@@ -138,20 +138,20 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - Windows 新增 x64 免安装便携 ZIP：解压后直接运行 LeafMark.exe，不运行安装程序，也不请求管理员权限
+            - Windows x64 WebView2 兼容安装版内置轻量 Bootstrapper；系统缺少 WebView2 Runtime 时会自动联网安装，不内置约 127–180 MB 的完整 Runtime
+            - NSIS 安装版固定为当前用户安装，不请求管理员权限；已安装 WebView2 的系统不会重复安装
+            - Windows x64 免安装便携 ZIP：解压后直接运行 LeafMark.exe，不运行安装程序，也不请求管理员权限；便携版仍要求系统已有 WebView2 Runtime
             - 便携版使用独立 portable 编译模式，LeafMark 的文件关联注册表查询、写入和默认应用入口均不会编译进程序
             - 设置页会明确显示“Windows 便携模式”，且不提供任何注册文件关联的按钮；仍可在应用内打开文件或把 Markdown 拖到 EXE 上
-            - 便携包内附使用边界、用户数据位置、WebView2 依赖和 SmartScreen 说明；安装版与便携版可按系统集成需求自由选择
 
-            Windows 免安装使用请下载 Portable ZIP，需要默认应用/右键菜单请下载 NSIS 安装程序；Android 请下载 ARM64 APK；Linux 可选择 AppImage 或 .deb。
-            Android APK 继续使用 v0.7.0 起固定的社区更新证书，可直接覆盖更新；该公开证书不提供私钥保密或发布者真实性，请只从本项目官方 GitHub Releases 下载。Windows 未签名构建可能触发 SmartScreen 提示。
+            缺少 WebView2 的电脑请下载 WebView2 Setup；免安装使用请下载 Portable ZIP。Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
           uploadUpdaterJson: false
           retryAttempts: 2
           args: --bundles nsis --config src-tauri/tauri.signing.conf.json
-          releaseAssetNamePattern: LeafMark_[version]_[arch][setup].[ext]
+          releaseAssetNamePattern: LeafMark_[version]_Windows_[arch]_WebView2_Setup[ext]
 
       - name: Verify installer
         shell: pwsh
@@ -384,6 +384,7 @@ jobs:
 
   release-android:
     needs: release-windows
+    if: ${{ !contains(github.event.head_commit.message, '[windows-only]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -567,6 +568,7 @@ jobs:
 
   release-linux:
     needs: release-windows
+    if: ${{ !contains(github.event.head_commit.message, '[windows-only]') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 50
 
@@ -656,6 +658,13 @@ jobs:
       - release-windows
       - release-android
       - release-linux
+    if: >-
+      ${{
+        always() &&
+        needs.release-windows.result == 'success' &&
+        (needs.release-android.result == 'success' || needs.release-android.result == 'skipped') &&
+        (needs.release-linux.result == 'success' || needs.release-linux.result == 'skipped')
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
