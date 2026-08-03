@@ -2,6 +2,7 @@ node_modules/
 dist/
 src/generated/
 src-tauri/target/
+native-compat/target/
 src-tauri/gen/*
 !src-tauri/gen/android/
 !src-tauri/gen/android/**
