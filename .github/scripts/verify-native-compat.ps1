@@ -255,8 +255,8 @@ $programFiles = [Environment]::GetFolderPath(
   [Environment+SpecialFolder]::ProgramFiles
 )
 $dumpbin = Find-WindowsTool -Name 'dumpbin.exe' -SearchPatterns @(
-  "$programFiles\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe",
-  "$programFilesX86\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe"
+  "$programFiles\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe",
+  "$programFilesX86\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe"
 )
 $imports = (& $dumpbin /nologo /imports $resolvedExecutable 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0) {
@@ -326,8 +326,8 @@ foreach ($marker in $forbiddenBinaryMarkers) {
 }
 
 $mt = Find-WindowsTool -Name 'mt.exe' -SearchPatterns @(
-  "$programFilesX86\Windows Kits\10\bin\*\x64\mt.exe",
-  "$programFiles\Windows Kits\10\bin\*\x64\mt.exe"
+  "$programFilesX86\Windows Kits\*\bin\*\x64\mt.exe",
+  "$programFiles\Windows Kits\*\bin\*\x64\mt.exe"
 )
 $manifestPath = Join-Path $env:RUNNER_TEMP 'LeafMark-native-compat.manifest.xml'
 $inputResource = "-inputresource:$resolvedExecutable;#1"
