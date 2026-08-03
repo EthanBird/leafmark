@@ -174,6 +174,7 @@ const EMPTY_ASSOCIATION_STATUS: AssociationStatus = {
   supported: false,
   registered: false,
   isDefault: false,
+  portable: false,
   message: "正在检查系统文件关联…",
 };
 

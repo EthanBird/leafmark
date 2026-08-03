@@ -328,18 +328,22 @@ export function SettingsPanel({
 
             {section === "integration" && (
               <>
-                <SettingsIntro title="系统集成" description={isAndroid ? "从文件管理器、聊天、网盘或其他应用把 Markdown 直接交给 LeafMark。" : "从资源管理器右键菜单、打开方式或双击直接进入 LeafMark。"} />
+                <SettingsIntro title="系统集成" description={isAndroid
+                  ? "从文件管理器、聊天、网盘或其他应用把 Markdown 直接交给 LeafMark。"
+                  : associationStatus.portable
+                    ? "当前是免安装便携版：不注册文件关联、不写入 LeafMark 注册表，也不请求管理员权限。"
+                    : "从资源管理器右键菜单、打开方式或双击直接进入 LeafMark。"} />
                 <div className="association-card">
                   <div className={`association-icon${associationStatus.isDefault || associationStatus.registered ? " ready" : ""}`}>
                     {associationStatus.isDefault || associationStatus.registered ? <Check size={20} /> : <AppWindow size={20} />}
                   </div>
                   <div>
                     <small>.MD / .MARKDOWN</small>
-                    <strong>{isAndroid ? "已响应 Android Markdown Intent" : associationStatus.isDefault ? "LeafMark 是默认应用" : "Markdown 文件关联"}</strong>
+                    <strong>{isAndroid ? "已响应 Android Markdown Intent" : associationStatus.portable ? "Windows 便携模式" : associationStatus.isDefault ? "LeafMark 是默认应用" : "Markdown 文件关联"}</strong>
                     <p>{associationStatus.message}</p>
                   </div>
                 </div>
-                {!isAndroid && <div className="association-buttons">
+                {!isAndroid && !associationStatus.portable && <div className="association-buttons">
                   <button
                     className="primary-button"
                     type="button"
@@ -361,6 +365,8 @@ export function SettingsPanel({
                 <div className="settings-note">
                   {isAndroid
                     ? "首次从其他应用打开 .md / .markdown 时选择 LeafMark；若系统提供“始终”选项，可将它设为默认打开方式。ACTION_VIEW、ACTION_SEND 与多文件分享均已注册。"
+                    : associationStatus.portable
+                      ? "可以拖入文件、使用“打开”按钮，或把 Markdown 文件直接拖到 LeafMark.exe 上。便携版不会提供默认应用或资源管理器右键注册；如需要这些系统集成功能，请安装 NSIS 版。"
                     : "Windows 会阻止应用静默篡改默认程序。LeafMark 会先注册为 Markdown 打开方式，再带你进入系统确认页；确认后，右键“打开方式”和双击都会交给 LeafMark。"}
                 </div>
               </>

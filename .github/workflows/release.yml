@@ -6,14 +6,19 @@ on:
       - main
     paths:
       - .github/workflows/release.yml
+      - docs/windows-portable.md
       - index.html
       - package.json
+      - README.md
       - src/**
       - src-tauri/Cargo.lock
       - src-tauri/Cargo.toml
+      - src-tauri/build.rs
       - src-tauri/gen/android/**
       - src-tauri/src/**
       - src-tauri/tauri.conf.json
+      - src-tauri/windows-app-manifest.xml
+      - THIRD_PARTY_NOTICES.md
 
 permissions:
   contents: write
@@ -26,7 +31,7 @@ jobs:
   release-windows:
     if: startsWith(github.event.head_commit.message, 'Release LeafMark v')
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Check out source
@@ -98,6 +103,10 @@ jobs:
             Set-Content src-tauri/tauri.signing.conf.json -Encoding utf8
           "WINDOWS_CERTIFICATE_CONFIGURED=true" |
             Out-File -FilePath $env:GITHUB_ENV -Append
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+          "WINDOWS_TIMESTAMP_URL_RESOLVED=$timestampUrl" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Install frontend dependencies
         run: npm ci
@@ -112,6 +121,8 @@ jobs:
         shell: pwsh
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml `
+            --features portable portable_build_disables_registry_integration
           $regExeCalls = Select-String `
             -Path src-tauri/src/*.rs `
             -SimpleMatch 'Command::new("reg.exe")'
@@ -127,14 +138,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - 修复全平台 PDF 导出未渲染 Mermaid：长页与标准分页模式现在都会把 Mermaid 图表嵌入为清晰的矢量 SVG
-            - Mermaid 图表会内联主题样式，并把 pdfmake 不兼容的 HTML 标签转换为 SVG 文字；中文节点也能随文档字体清晰输出
-            - 图表会按实际嵌入 PDF 的系统字体计算布局，避免中文或自定义字体造成标签溢出；导出进度会显示 Mermaid 矢量化状态
-            - 单个 Mermaid 语法错误会回退为可读源码，不再中止整份 PDF；正文仍为可搜索、可复制的真实文字
-            - 文档库右键菜单新增“移动文档到…”，可选择库内任意文件夹；同目录和同名冲突会安全阻止，不覆盖文件
-            - Agent 新增受文档编辑权限控制的 move_document 工具；Agent 版本历史可撤销、重做移动并同步历史与收藏来源路径
+            - Windows 新增 x64 免安装便携 ZIP：解压后直接运行 LeafMark.exe，不运行安装程序，也不请求管理员权限
+            - 便携版使用独立 portable 编译模式，LeafMark 的文件关联注册表查询、写入和默认应用入口均不会编译进程序
+            - 设置页会明确显示“Windows 便携模式”，且不提供任何注册文件关联的按钮；仍可在应用内打开文件或把 Markdown 拖到 EXE 上
+            - 便携包内附使用边界、用户数据位置、WebView2 依赖和 SmartScreen 说明；安装版与便携版可按系统集成需求自由选择
 
-            Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
+            Windows 免安装使用请下载 Portable ZIP，需要默认应用/右键菜单请下载 NSIS 安装程序；Android 请下载 ARM64 APK；Linux 可选择 AppImage 或 .deb。
             Android APK 继续使用 v0.7.0 起固定的社区更新证书，可直接覆盖更新；该公开证书不提供私钥保密或发布者真实性，请只从本项目官方 GitHub Releases 下载。Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
           prerelease: false
@@ -177,9 +186,190 @@ jobs:
           $version = node -p "require('./package.json').version"
           "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Build portable executable
+        shell: pwsh
+        run: |
+          npm run tauri -- build `
+            --no-bundle `
+            --features portable `
+            --config src-tauri/tauri.signing.conf.json `
+            --ci
+
+          $portable = Get-Item src-tauri/target/release/leafmark.exe
+          if ($env:WINDOWS_CERTIFICATE_CONFIGURED -eq "true") {
+            $signTool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+            if (-not $signTool) {
+              $signTool = Get-ChildItem `
+                -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+                -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1
+            }
+            if (-not $signTool) {
+              throw "signtool.exe is required to sign the portable executable."
+            }
+            $signToolPath = if ($signTool.Source) { $signTool.Source } else { $signTool.FullName }
+            & $signToolPath sign `
+              /sha1 $env:WINDOWS_CERTIFICATE_THUMBPRINT `
+              /fd SHA256 `
+              /td SHA256 `
+              /tr $env:WINDOWS_TIMESTAMP_URL_RESOLVED `
+              $portable.FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to Authenticode-sign the portable executable."
+            }
+          }
+
+      - name: Verify and package portable build
+        shell: pwsh
+        run: |
+          $portable = Get-Item src-tauri/target/release/leafmark.exe
+          $bytes = [IO.File]::ReadAllBytes($portable.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
+          if ($machine -ne 0x8664) {
+            throw "Portable executable is not x64: 0x$($machine.ToString('x4'))"
+          }
+          if ($subsystem -ne 2) {
+            throw "Portable executable is not a Windows GUI subsystem binary: $subsystem"
+          }
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          $unicode = [Text.Encoding]::Unicode.GetString($bytes)
+          foreach ($forbidden in @(
+            "Software\RegisteredApplications",
+            "LeafMark.Markdown",
+            "ms-settings:defaultapps"
+          )) {
+            if ($ascii.Contains($forbidden) -or $unicode.Contains($forbidden)) {
+              throw "Portable executable contains forbidden registry integration marker: $forbidden"
+            }
+          }
+
+          $manifestTool = Get-Command mt.exe -ErrorAction SilentlyContinue
+          if (-not $manifestTool) {
+            $manifestTool = Get-ChildItem `
+              -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\mt.exe" `
+              -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+          }
+          if (-not $manifestTool) {
+            throw "Windows SDK mt.exe is required to verify the portable application manifest."
+          }
+          $manifestToolPath = if ($manifestTool.Source) { $manifestTool.Source } else { $manifestTool.FullName }
+          $manifestPath = Join-Path $env:RUNNER_TEMP "LeafMark-portable.manifest.xml"
+          $inputResource = "-inputresource:$($portable.FullName);#1"
+          & $manifestToolPath -nologo $inputResource "-out:$manifestPath"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $manifestPath)) {
+            throw "Failed to extract the portable executable RT_MANIFEST."
+          }
+          [xml]$manifest = Get-Content $manifestPath -Raw
+          $executionLevels = @($manifest.SelectNodes("//*[local-name()='requestedExecutionLevel']"))
+          if ($executionLevels.Count -ne 1) {
+            throw "Portable executable must declare exactly one requestedExecutionLevel."
+          }
+          if (
+            $executionLevels[0].GetAttribute("level") -ne "asInvoker" -or
+            $executionLevels[0].GetAttribute("uiAccess") -ne "false"
+          ) {
+            throw "Portable executable must request asInvoker with uiAccess=false."
+          }
+
+          $signature = Get-AuthenticodeSignature $portable.FullName
+          if (
+            $env:WINDOWS_CERTIFICATE_CONFIGURED -eq "true" -and
+            $signature.Status -ne "Valid"
+          ) {
+            throw "Invalid portable Authenticode signature: $($signature.Status) $($signature.StatusMessage)"
+          }
+
+          function Get-LeafMarkRegistrySnapshot {
+            $items = [ordered]@{}
+            foreach ($path in @(
+              "HKCU:\Software\Classes\LeafMark.Markdown",
+              "HKCU:\Software\LeafMark"
+            )) {
+              $items[$path] = Test-Path $path
+            }
+            foreach ($entry in @(
+              @{ Path = "HKCU:\Software\RegisteredApplications"; Name = "LeafMark" },
+              @{ Path = "HKCU:\Software\Classes\.md\OpenWithProgids"; Name = "LeafMark.Markdown" },
+              @{ Path = "HKCU:\Software\Classes\.markdown\OpenWithProgids"; Name = "LeafMark.Markdown" }
+            )) {
+              $value = Get-ItemPropertyValue `
+                -Path $entry.Path `
+                -Name $entry.Name `
+                -ErrorAction SilentlyContinue
+              $items["$($entry.Path)::$($entry.Name)"] = $value
+            }
+            return ($items | ConvertTo-Json -Compress)
+          }
+
+          $registryBefore = Get-LeafMarkRegistrySnapshot
+          $process = Start-Process -FilePath $portable.FullName -PassThru
+          Start-Sleep -Seconds 8
+          if ($process.HasExited) {
+            throw "Portable executable exited during the startup smoke test: $($process.ExitCode)"
+          }
+          Stop-Process -Id $process.Id -Force
+          $process.WaitForExit()
+          $registryAfter = Get-LeafMarkRegistrySnapshot
+          if ($registryAfter -ne $registryBefore) {
+            throw "Portable startup changed LeafMark registry state.`nBefore: $registryBefore`nAfter: $registryAfter"
+          }
+
+          $version = node -p "require('./package.json').version"
+          $stage = Join-Path $env:RUNNER_TEMP "LeafMark-$version-Windows-x64-Portable"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item $portable.FullName (Join-Path $stage "LeafMark.exe")
+          Copy-Item docs/windows-portable.md (Join-Path $stage "README.md")
+          Copy-Item THIRD_PARTY_NOTICES.md (Join-Path $stage "THIRD_PARTY_NOTICES.md")
+
+          $archive = Join-Path $env:RUNNER_TEMP "LeafMark_${version}_Windows_x64_Portable.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $entries = @($zip.Entries | ForEach-Object FullName | Sort-Object)
+          } finally {
+            $zip.Dispose()
+          }
+          $expected = @("LeafMark.exe", "README.md", "THIRD_PARTY_NOTICES.md") | Sort-Object
+          if (Compare-Object $entries $expected) {
+            throw "Portable ZIP has unexpected entries: $($entries -join ', ')"
+          }
+          Get-FileHash -Algorithm SHA256 $archive | Format-List
+          Get-Item $archive | Format-List Name,Length,FullName
+          "PORTABLE_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload portable archive
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $uploaded = $false
+          for ($attempt = 1; $attempt -le 3; $attempt += 1) {
+            gh release upload $env:RELEASE_TAG `
+              $env:PORTABLE_ARCHIVE `
+              --clobber `
+              --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -eq 0) {
+              $uploaded = $true
+              break
+            }
+            if ($attempt -lt 3) {
+              Write-Warning "Portable upload attempt $attempt failed; retrying."
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+          if (-not $uploaded) {
+            throw "Failed to upload the portable archive after three attempts."
+          }
+
       - name: Remember release tag
         shell: pwsh
-        run: Write-Host "Windows artifact uploaded to draft release $env:RELEASE_TAG"
+        run: Write-Host "Windows installer and portable archive uploaded to draft release $env:RELEASE_TAG"
 
   release-android:
     needs: release-windows

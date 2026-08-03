@@ -65,7 +65,7 @@ describe("SettingsPanel Android OAuth", () => {
     await act(async () => {
       root.render(<SettingsPanel
         settings={settings}
-        associationStatus={{ supported: true, registered: true, isDefault: true, message: "ok" }}
+        associationStatus={{ supported: true, registered: true, isDefault: true, portable: false, message: "ok" }}
         onChange={() => {}}
         onWorkspaceChange={async () => {}}
         onAssociationChange={async () => {}}
@@ -118,7 +118,7 @@ describe("SettingsPanel appearance palettes", () => {
     await act(async () => {
       root.render(<SettingsPanel
         settings={settings}
-        associationStatus={{ supported: true, registered: true, isDefault: true, message: "ok" }}
+        associationStatus={{ supported: true, registered: true, isDefault: true, portable: false, message: "ok" }}
         onChange={onChange}
         onWorkspaceChange={async () => {}}
         onAssociationChange={async () => {}}
@@ -136,5 +136,41 @@ describe("SettingsPanel appearance palettes", () => {
     await act(async () => monochrome?.click());
 
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ themePalette: "monochrome" }));
+  });
+
+  it("explains portable mode without exposing registry actions", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    cleanup = () => {
+      act(() => root.unmount());
+      container.remove();
+      cleanup = () => {};
+    };
+
+    await act(async () => {
+      root.render(<SettingsPanel
+        settings={defaultAppSettings("/documents")}
+        associationStatus={{
+          supported: false,
+          registered: false,
+          isDefault: false,
+          portable: true,
+          message: "便携版不会读取或写入 LeafMark 文件关联注册表，也不需要管理员权限",
+        }}
+        onChange={() => {}}
+        onWorkspaceChange={async () => {}}
+        onAssociationChange={async () => {}}
+        onClose={() => {}}
+      />);
+    });
+
+    const integrationSection = [...container.querySelectorAll<HTMLButtonElement>(".settings-nav button")]
+      .find((button) => button.textContent?.includes("系统集成"));
+    await act(async () => integrationSection?.click());
+
+    expect(container.querySelector(".association-card")?.textContent).toContain("Windows 便携模式");
+    expect(container.querySelector(".settings-content")?.textContent).toContain("不请求管理员权限");
+    expect(container.querySelector(".association-buttons")).toBeNull();
   });
 });

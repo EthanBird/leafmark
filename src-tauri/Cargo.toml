@@ -1,10 +1,15 @@
 [package]
 name = "leafmark"
-version = "0.7.2"
+version = "0.7.3"
 description = "A fast, local-first Markdown workspace"
 authors = ["LeafMark contributors"]
 edition = "2021"
 rust-version = "1.77"
+
+[features]
+# The portable Windows build deliberately compiles out LeafMark's registry
+# integration. It is distributed as a plain ZIP and never registers itself.
+portable = []
 
 [lib]
 name = "leafmark_lib"

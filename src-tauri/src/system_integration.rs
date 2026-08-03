@@ -1,5 +1,5 @@
 use serde::Serialize;
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 use std::{
     os::windows::process::CommandExt,
     process::{Command, Stdio},
@@ -8,11 +8,11 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
 };
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,6 +21,7 @@ pub(crate) struct AssociationStatus {
     pub supported: bool,
     pub registered: bool,
     pub is_default: bool,
+    pub portable: bool,
     pub message: String,
 }
 
@@ -51,7 +52,18 @@ where
     paths
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "portable"))]
+pub(crate) fn association_status() -> AssociationStatus {
+    AssociationStatus {
+        supported: false,
+        registered: false,
+        is_default: false,
+        portable: true,
+        message: "便携版不会读取或写入 LeafMark 文件关联注册表，也不需要管理员权限".into(),
+    }
+}
+
+#[cfg(all(windows, not(feature = "portable")))]
 pub(crate) fn association_status() -> AssociationStatus {
     let registered = reg_query(r"HKCU\Software\RegisteredApplications", Some("LeafMark")).is_some();
     let is_default = reg_query(
@@ -63,6 +75,7 @@ pub(crate) fn association_status() -> AssociationStatus {
         supported: true,
         registered,
         is_default,
+        portable: false,
         message: if is_default {
             "LeafMark 已是 .md 的默认应用".into()
         } else if registered {
@@ -79,6 +92,7 @@ pub(crate) fn association_status() -> AssociationStatus {
         supported: false,
         registered: true,
         is_default: false,
+        portable: false,
         message: "LeafMark 已注册为 Markdown 打开方式；可在文件管理器或其他应用中选择 LeafMark"
             .into(),
     }
@@ -90,11 +104,17 @@ pub(crate) fn association_status() -> AssociationStatus {
         supported: false,
         registered: false,
         is_default: false,
+        portable: false,
         message: "当前平台暂不支持在应用内更改默认 Markdown 打开方式".into(),
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "portable"))]
+pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, String> {
+    Err("便携版已禁用 Windows 注册表和默认应用注册；需要文件关联时请使用安装版".into())
+}
+
+#[cfg(all(windows, not(feature = "portable")))]
 pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, String> {
     let executable = std::env::current_exe().map_err(error_string)?;
     let executable = executable.to_string_lossy();
@@ -182,7 +202,7 @@ fn is_markdown(path: &Path) -> bool {
         })
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 fn reg_add(key: &str, value_name: Option<&str>, data: &str) -> Result<(), String> {
     let root = RegKey::predef(HKEY_CURRENT_USER);
     let path = hkcu_subkey_path(key)?;
@@ -192,7 +212,7 @@ fn reg_add(key: &str, value_name: Option<&str>, data: &str) -> Result<(), String
         .map_err(error_string)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 fn reg_query(key: &str, value_name: Option<&str>) -> Option<String> {
     let root = RegKey::predef(HKEY_CURRENT_USER);
     let path = hkcu_subkey_path(key).ok()?;
@@ -202,13 +222,13 @@ fn reg_query(key: &str, value_name: Option<&str>) -> Option<String> {
         .ok()
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 fn hkcu_subkey_path(key: &str) -> Result<&str, String> {
     key.strip_prefix("HKCU\\")
         .ok_or_else(|| format!("仅支持 HKCU 注册表路径：{key}"))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 fn hidden_command(program: &str) -> Command {
     let mut command = Command::new(program);
     command
@@ -219,7 +239,7 @@ fn hidden_command(program: &str) -> Command {
     command
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "portable")))]
 fn error_string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -244,7 +264,20 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "portable"))]
+    #[test]
+    fn portable_build_disables_registry_integration() {
+        let status = association_status();
+        assert!(status.portable);
+        assert!(!status.supported);
+        assert!(!status.registered);
+        assert!(!status.is_default);
+        assert!(configure_markdown_association()
+            .unwrap_err()
+            .contains("已禁用 Windows 注册表"));
+    }
+
+    #[cfg(all(windows, not(feature = "portable")))]
     #[test]
     fn validates_hkcu_registry_paths_without_spawning_reg_exe() {
         assert_eq!(
