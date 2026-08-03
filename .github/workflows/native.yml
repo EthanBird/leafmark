@@ -56,6 +56,17 @@ jobs:
         run: |
           set -o pipefail
           cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee "$RUNNER_TEMP/native-clippy.log"
+      - name: Upload failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-ci-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/native-test.log
+            ${{ runner.temp }}/native-check.log
+            ${{ runner.temp }}/native-clippy.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: Publish readable commit status
         if: ${{ always() }}
         env:
