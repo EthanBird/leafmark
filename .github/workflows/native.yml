@@ -1,0 +1,67 @@
+name: Check Dioxus Native migration
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/native.yml
+      - native/**
+  pull_request:
+    paths:
+      - .github/workflows/native.yml
+      - native/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: leafmark-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Linux native renderer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - name: Test domain and core
+        working-directory: native
+        run: cargo test -p leafmark-domain -p leafmark-core --all-targets
+
+      - name: Check Dioxus Native shell
+        working-directory: native
+        run: cargo check -p leafmark-native --all-targets
+
+      - name: Lint domain and core
+        working-directory: native
+        run: cargo clippy -p leafmark-domain -p leafmark-core --all-targets -- -D warnings

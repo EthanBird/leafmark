@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/leafmark-native",
+  "crates/leafmark-domain",
+  "crates/leafmark-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["LeafMark contributors"]
+repository = "https://github.com/EthanBird/leafmark"
+
+[workspace.dependencies]
+dioxus = { version = "=0.7.9", features = ["native"] }
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
