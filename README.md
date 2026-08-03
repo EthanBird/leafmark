@@ -45,8 +45,6 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 
 Windows 同时提供免安装便携 ZIP。便携版直接运行 `LeafMark.exe`，不请求管理员权限，且在编译时禁用了 LeafMark 的文件关联注册表查询和写入；因此不提供默认应用或右键菜单注册。便携版仍把设置、历史保留副本与 Agent 数据保存在当前用户的应用数据目录，和安装版共用数据。详见 [Windows 便携版说明](docs/windows-portable.md)。
 
-没有 WebView2 的电脑还可以使用独立的 Windows 原生兼容 ZIP。它使用 Rust 原生控件和 CPU 软件绘制，不包含或安装 WebView2，也不使用 Chromium、CEF、Tauri、外部浏览器页面或本地网页服务器作为前端；同样不需要管理员权限、不改注册表。原生版与标准版共用文档库、历史、收藏和保留副本，功能边界与验证方式见 [Windows 原生兼容版说明](docs/windows-native-compat.md)。
-
 文档每次打开或保存时，LeafMark 都会原子更新一份应用数据目录中的独立快照。历史记录不是易失的路径列表：即使源文件已经不存在，保留副本仍然可以继续阅读、编辑和导出。清除历史只清理未收藏文档；收藏及其副本不会被批量清除。
 
 Android 从其他应用收到的是临时 `content://` URI。LeafMark 会先把内容复制到应用私有文档库，再建立历史/收藏快照，因此原应用撤销授权或删除源文档后仍可打开保留副本。
@@ -109,13 +107,11 @@ Rust LTO/strip、R8、资源裁剪和原生库压缩，并在上传后自动验�
 
 ## 下载
 
-可以从 [GitHub Releases](https://github.com/EthanBird/leafmark/releases)
-下载 Android APK、Windows NSIS 安装包、免安装便携 ZIP 或无 WebView2 的原生兼容 ZIP、Linux AppImage 或 Debian 安装包。
+可以从 [GitHub Releases](https://github.com/EthanBird/leafmark/releases/latest)
+下载 Android APK、Windows NSIS 安装包或免安装便携 ZIP、Linux AppImage 或 Debian 安装包。
 Android APK 是使用固定 release 证书签名的优化构建；Windows 安装后可在 LeafMark 的
 “设置 → 系统集成”中完成 Markdown 默认应用确认。便携 ZIP 不安装、不注册文件关联，也不需要
 管理员权限。
-
-原生兼容 ZIP 的文件名含 `Native-Compat`。它不捆绑 WebView2，也不会调用浏览器作为应用前端；适合无法安装 WebView2 的 Windows 10/11 x64 电脑。
 
 旧 Android 包使用了无法恢复的临时 debug 证书，因此第一次迁移到固定签名版需要先备份文档、
 卸载旧 APK，再安装一次；固定签名版之后的更新可直接覆盖安装。
