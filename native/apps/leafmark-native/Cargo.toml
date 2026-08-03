@@ -11,3 +11,4 @@ publish = false
 dioxus.workspace = true
 leafmark-core = { path = "../../crates/leafmark-core" }
 leafmark-domain = { path = "../../crates/leafmark-domain" }
+leafmark-markdown = { path = "../../crates/leafmark-markdown" }
