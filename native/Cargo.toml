@@ -6,6 +6,7 @@ members = [
   "crates/leafmark-core",
   "crates/leafmark-markdown",
   "crates/leafmark-editor",
+  "crates/leafmark-scene",
 ]
 
 [workspace.package]

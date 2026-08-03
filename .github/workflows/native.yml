@@ -3,13 +3,9 @@ name: Check Dioxus Native migration
 on:
   push:
     branches: [main]
-    paths:
-      - .github/workflows/native.yml
-      - native/**
+    paths: [.github/workflows/native.yml, native/**]
   pull_request:
-    paths:
-      - .github/workflows/native.yml
-      - native/**
+    paths: [.github/workflows/native.yml, native/**]
   workflow_dispatch:
 
 permissions:
@@ -44,13 +40,13 @@ jobs:
           workspaces: native
       - name: Test native libraries
         working-directory: native
-        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor --all-targets
+        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene --all-targets
       - name: Check Dioxus Native shell
         working-directory: native
         run: cargo check -p leafmark-native --all-targets
       - name: Lint native libraries
         working-directory: native
-        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor --all-targets -- -D warnings
+        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene --all-targets -- -D warnings
       - name: Publish readable commit status
         if: ${{ always() }}
         env:
