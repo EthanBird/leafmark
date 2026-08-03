@@ -31,7 +31,7 @@ jobs:
   release-windows:
     if: startsWith(github.event.head_commit.message, 'Release LeafMark v')
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Check out source
@@ -138,24 +138,36 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
-            - Windows x64 WebView2 兼容安装版内置轻量 Bootstrapper；系统缺少 WebView2 Runtime 时会自动联网安装，不内置约 127–180 MB 的完整 Runtime
-            - NSIS 安装版固定为当前用户安装，不请求管理员权限；已安装 WebView2 的系统不会重复安装
+            - Windows x64 WebView2 完整离线安装版：安装包内置 Evergreen Standalone Installer，断网且系统没有 WebView2 Runtime 时也可完成安装
+            - 采用 NSIS LZMA solid 压缩；微软离线安装器本身已高度压缩，不再套几乎不能缩小体积的二次归档
+            - NSIS 安装版固定为当前用户安装，LeafMark 安装程序不主动请求管理员权限；已安装合适 WebView2 的系统不会重复安装
             - Windows x64 免安装便携 ZIP：解压后直接运行 LeafMark.exe，不运行安装程序，也不请求管理员权限；便携版仍要求系统已有 WebView2 Runtime
             - 便携版使用独立 portable 编译模式，LeafMark 的文件关联注册表查询、写入和默认应用入口均不会编译进程序
             - 设置页会明确显示“Windows 便携模式”，且不提供任何注册文件关联的按钮；仍可在应用内打开文件或把 Markdown 拖到 EXE 上
 
-            缺少 WebView2 的电脑请下载 WebView2 Setup；免安装使用请下载 Portable ZIP。Windows 未签名构建可能触发 SmartScreen 提示。
+            缺少 WebView2 或需要完全离线安装时请下载 WebView2 Offline Setup；免安装使用请下载 Portable ZIP。Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
           uploadUpdaterJson: false
           retryAttempts: 2
           args: --bundles nsis --config src-tauri/tauri.signing.conf.json
-          releaseAssetNamePattern: LeafMark_[version]_Windows_[arch]_WebView2_Setup[ext]
+          releaseAssetNamePattern: LeafMark_[version]_Windows_[arch]_WebView2_Offline_Setup[ext]
 
       - name: Verify installer
         shell: pwsh
         run: |
+          $bundleConfig = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $windowsBundle = $bundleConfig.bundle.windows
+          if (
+            $windowsBundle.webviewInstallMode.type -ne "offlineInstaller" -or
+            $windowsBundle.webviewInstallMode.silent -ne $true -or
+            $windowsBundle.nsis.compression -ne "lzma" -or
+            $windowsBundle.nsis.installMode -ne "currentUser"
+          ) {
+            throw "Windows release must use offlineInstaller, LZMA and currentUser mode."
+          }
+
           $app = Get-Item src-tauri/target/release/leafmark.exe
           $bytes = [IO.File]::ReadAllBytes($app.FullName)
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
@@ -164,12 +176,16 @@ jobs:
             throw "LeafMark executable is not a Windows GUI subsystem binary: $subsystem"
           }
 
-          $installer = Get-ChildItem `
+          $installers = @(Get-ChildItem `
             -Path src-tauri/target/release/bundle/nsis `
-            -Filter *.exe |
-            Select-Object -First 1
-          if (-not $installer) {
-            throw "NSIS installer was not generated."
+            -Filter *.exe `
+            -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          }
+          $installer = $installers[0]
+          if ($installer.Length -lt 100MB) {
+            throw "NSIS installer is too small to contain the offline WebView2 payload: $($installer.Length) bytes"
           }
 
           $signature = Get-AuthenticodeSignature $installer.FullName
@@ -185,6 +201,8 @@ jobs:
 
           $version = node -p "require('./package.json').version"
           "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Get-FileHash -Algorithm SHA256 $installer.FullName | Format-List
+          Get-Item $installer.FullName | Format-List Name,Length,FullName
 
       - name: Build portable executable
         shell: pwsh
@@ -380,7 +398,7 @@ jobs:
 
       - name: Remember release tag
         shell: pwsh
-        run: Write-Host "Windows installer and portable archive uploaded to draft release $env:RELEASE_TAG"
+        run: Write-Host "Windows offline installer and portable assets uploaded to draft release $env:RELEASE_TAG"
 
   release-android:
     needs: release-windows
