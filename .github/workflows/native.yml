@@ -2,8 +2,7 @@ name: Check Dioxus Native migration
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - .github/workflows/native.yml
       - native/**
@@ -25,48 +24,33 @@ jobs:
   native-check:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-
       - name: Install Linux native renderer dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libasound2-dev \
-            libfontconfig1-dev \
-            libudev-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            pkg-config
-
+            libasound2-dev libfontconfig1-dev libudev-dev libwayland-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
-
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-
       - name: Test native libraries
         working-directory: native
-        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown --all-targets
-
+        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor --all-targets
       - name: Check Dioxus Native shell
         working-directory: native
         run: cargo check -p leafmark-native --all-targets
-
       - name: Lint native libraries
         working-directory: native
-        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown --all-targets -- -D warnings
-
+        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor --all-targets -- -D warnings
       - name: Publish readable commit status
         if: ${{ always() }}
         env:
@@ -80,15 +64,12 @@ jobs:
             state=failure
             description="Dioxus Native check failed; open the workflow log"
           fi
-          jq -n \
-            --arg state "$state" \
-            --arg description "$description" \
+          jq -n --arg state "$state" --arg description "$description" \
             --arg context "leafmark/native-check" \
             --arg target_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             '{state:$state,description:$description,context:$context,target_url:$target_url}' \
             > "$RUNNER_TEMP/native-status.json"
-          curl --fail-with-body \
-            --request POST \
+          curl --fail-with-body --request POST \
             --header "Authorization: Bearer $GH_TOKEN" \
             --header "Accept: application/vnd.github+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
