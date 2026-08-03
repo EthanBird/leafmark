@@ -72,7 +72,7 @@ impl AgentSession {
         &self.messages[..self.cursor.min(self.messages.len())]
     }
 
-    pub fn normalize(mut self) -> Self {
+    fn normalize(mut self) -> Self {
         if self.id.trim().is_empty() {
             self.id = generate_id("session");
         }
@@ -191,14 +191,12 @@ impl AgentStore {
         fs::create_dir_all(&root)?;
         let sessions_path = root.join("sessions.json");
         let memories_path = root.join("memories.json");
-        let sessions = load_sessions(&root, &sessions_path)?;
-        let memories = load_memories(&root, &memories_path)?;
         let store = Self {
+            sessions: load_sessions(&root, &sessions_path)?,
+            memories: load_memories(&root, &memories_path)?,
             root,
             sessions_path,
             memories_path,
-            sessions,
-            memories,
         };
         store.persist_sessions()?;
         store.persist_memories()?;
@@ -242,23 +240,21 @@ impl AgentStore {
         self.sessions
             .iter()
             .flat_map(|session| {
-                session.active_messages().iter().filter_map(|message| {
-                    message
-                        .content
-                        .to_lowercase()
-                        .contains(&needle)
-                        .then(|| {
-                            let role = match message.role {
-                                AgentRole::User => "user",
-                                AgentRole::Assistant => "assistant",
-                            };
-                            format!(
-                                "[{}] {role}: {}",
-                                session.title,
-                                message.content.chars().take(500).collect::<String>()
-                            )
-                        })
-                })
+                session
+                    .active_messages()
+                    .iter()
+                    .filter(|message| message.content.to_lowercase().contains(&needle))
+                    .map(|message| {
+                        let role = match message.role {
+                            AgentRole::User => "user",
+                            AgentRole::Assistant => "assistant",
+                        };
+                        format!(
+                            "[{}] {role}: {}",
+                            session.title,
+                            message.content.chars().take(500).collect::<String>()
+                        )
+                    })
             })
             .take(limit)
             .collect()
@@ -275,16 +271,22 @@ impl AgentStore {
             .find(|session| session.id == session_id)
             .is_some_and(|session| {
                 session.messages.iter().any(|message| {
-                    message.turn_id.as_deref() == Some(turn_id)
-                        && message.role == AgentRole::Assistant
-                        && expected_version_id.is_none_or(|expected| {
+                    if message.turn_id.as_deref() != Some(turn_id)
+                        || message.role != AgentRole::Assistant
+                    {
+                        return false;
+                    }
+                    match expected_version_id {
+                        None => true,
+                        Some(expected) => {
                             message
                                 .version
                                 .as_ref()
                                 .and_then(|version| version.get("id"))
                                 .and_then(Value::as_str)
                                 == Some(expected)
-                        })
+                        }
+                    }
                 })
             })
     }
@@ -310,7 +312,7 @@ impl AgentStore {
             .collect::<Vec<_>>();
         if let (Some(first), Some(last)) = (indexes.first(), indexes.last()) {
             session.cursor = if applied {
-                session.cursor.max(last + 1)
+                session.cursor.max(*last + 1)
             } else {
                 session.cursor.min(*first)
             };
@@ -368,7 +370,7 @@ impl AgentStore {
             .map(|(index, memory)| {
                 let text = format!("{} {}", memory.content, memory.tags.join(" "));
                 let score = cosine_similarity(&query_vector, &feature_vector(&text))
-                    + f32::from(memory.access_count.min(20) as u16) * 0.002;
+                    + memory.access_count.min(20) as f32 * 0.002;
                 (index, score)
             })
             .filter(|(_, score)| *score > 0.0)
@@ -383,9 +385,8 @@ impl AgentStore {
         ranked.truncate(limit);
         let selected = ranked.iter().map(|(index, _)| *index).collect::<Vec<_>>();
         for index in &selected {
-            self.memories[*index].access_count = self.memories[*index]
-                .access_count
-                .saturating_add(1);
+            self.memories[*index].access_count =
+                self.memories[*index].access_count.saturating_add(1);
         }
         let result = selected
             .into_iter()
@@ -426,21 +427,23 @@ impl AgentStore {
     }
 
     fn persist_sessions(&self) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(&SessionFile {
-            version: STORE_VERSION,
-            sessions: self.sessions.clone(),
-        })
-        .map_err(|error| AgentStoreError::Json(error.to_string()))?;
-        atomic_write(&self.sessions_path, &bytes)
+        write_json(
+            &self.sessions_path,
+            &SessionFile {
+                version: STORE_VERSION,
+                sessions: self.sessions.clone(),
+            },
+        )
     }
 
     fn persist_memories(&self) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(&MemoryFile {
-            version: STORE_VERSION,
-            memories: self.memories.clone(),
-        })
-        .map_err(|error| AgentStoreError::Json(error.to_string()))?;
-        atomic_write(&self.memories_path, &bytes)
+        write_json(
+            &self.memories_path,
+            &MemoryFile {
+                version: STORE_VERSION,
+                memories: self.memories.clone(),
+            },
+        )
     }
 }
 
@@ -465,7 +468,7 @@ fn load_sessions(root: &Path, path: &Path) -> Result<Vec<AgentSession>> {
                 sessions.truncate(MAX_SESSIONS);
                 Ok(sessions)
             }
-            Ok(_) | Err(_) => {
+            _ => {
                 backup_corrupt(root, path, "sessions")?;
                 Ok(Vec::new())
             }
@@ -484,7 +487,7 @@ fn load_memories(root: &Path, path: &Path) -> Result<Vec<AgentMemory>> {
                 .filter_map(AgentMemory::normalize)
                 .take(MAX_MEMORIES)
                 .collect()),
-            Ok(_) | Err(_) => {
+            _ => {
                 backup_corrupt(root, path, "memories")?;
                 Ok(Vec::new())
             }
@@ -585,9 +588,11 @@ fn cosine_similarity(left: &[f32; VECTOR_SIZE], right: &[f32; VECTOR_SIZE]) -> f
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| AgentStoreError::Json(error.to_string()))?;
     AtomicFile::new(path, AllowOverwrite)
-        .write(|file| file.write_all(bytes))
+        .write(|file| file.write_all(&bytes))
         .map_err(|error| AgentStoreError::Io(error.to_string()))
 }
 
