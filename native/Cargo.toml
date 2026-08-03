@@ -11,6 +11,7 @@ members = [
   "crates/leafmark-native-compat",
   "crates/leafmark-archive",
   "crates/leafmark-runtime",
+  "crates/leafmark-export",
 ]
 
 [workspace.package]
