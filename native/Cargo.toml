@@ -7,6 +7,8 @@ members = [
   "crates/leafmark-markdown",
   "crates/leafmark-editor",
   "crates/leafmark-scene",
+  "crates/leafmark-storage",
+  "crates/leafmark-native-compat",
 ]
 
 [workspace.package]
@@ -17,7 +19,9 @@ authors = ["LeafMark contributors"]
 repository = "https://github.com/EthanBird/leafmark"
 
 [workspace.dependencies]
+atomicwrites = "0.4"
 dioxus = { version = "=0.7.9", features = ["native"] }
+ignore = "0.4"
 pulldown-cmark = "0.13"
 ropey = "1.6"
 serde = { version = "1", features = ["derive"] }

@@ -1,8 +1,9 @@
 use dioxus::prelude::*;
 use leafmark_core::normalize_layout;
 use leafmark_domain::{DesktopDockLayout, DockPanelId, ViewMode};
-use leafmark_editor::{EditSemantic, EditTransaction, EditorDocument, Selection, TextOperation, TextRange};
+use leafmark_editor::{EditSemantic, EditorDocument};
 use leafmark_markdown::parse_markdown;
+use leafmark_native_compat::apply_full_value;
 use leafmark_scene::{build_scene, LayoutConfig, SceneTheme};
 
 const SAMPLE: &str = r#"# 欢迎使用 LeafMark Native
@@ -24,6 +25,7 @@ flowchart LR
 | Domain | 已建立 |
 | Markdown AST | 已接入 |
 | Native Scene | 已接入 |
+| Storage | 已抽离 |
 "#;
 
 const CSS: &str = r#"
@@ -103,20 +105,12 @@ fn app() -> Element {
                                 oninput: move |event| {
                                     let value = event.value();
                                     let mut document = editor.write();
-                                    let length = document.len_chars();
-                                    let caret = value.chars().count();
-                                    let transaction = EditTransaction {
-                                        base_revision: document.revision(),
-                                        operations: vec![TextOperation::Replace { range: TextRange::new(0, length), text: value }],
-                                        selection_after: Selection::caret(caret),
-                                        semantic: EditSemantic::Typing,
-                                    };
-                                    let _ = document.apply(transaction);
+                                    let _ = apply_full_value(&mut document, &value, EditSemantic::Typing);
                                 }
                             }
                         } else {
                             article { class: "doc",
-                                div { class: "callout", strong { "编辑内核、AST 与 DocumentScene 已形成闭环" } br {} "源码变化会重新生成语义模型和统一场景。" }
+                                div { class: "callout", strong { "编辑内核、AST、DocumentScene 与文件核心已形成闭环" } br {} "源码输入现在生成最小 Unicode 事务，而不是每次替换整篇文档。" }
                                 div { class: "semantic",
                                     div { class: "metric", strong { "{block_count}" } "语义块" }
                                     div { class: "metric", strong { "{token_count}" } "源码 Token" }
@@ -124,10 +118,10 @@ fn app() -> Element {
                                     div { class: "metric", strong { "{scene_height}" } "场景高度" }
                                 }
                                 h1 { "欢迎使用 LeafMark Native" }
-                                p { "源码、事务编辑器、Markdown AST 和统一文档场景已经串联。" }
+                                p { "源码、最小事务编辑器、Markdown AST 和统一文档场景已经串联。" }
                                 h2 { "当前输入路径" }
-                                pre { "Blitz textarea input → EditTransaction → Rope → AST → DocumentScene" }
-                                p { "下一步将把 DocumentScene 送入 CustomPaint/Vello，并用原生 IME composition 取代整文替换。" }
+                                pre { "Blitz input → Unicode diff → EditTransaction → Rope → AST → DocumentScene" }
+                                p { "Blitz 已处理底层 IME；Dioxus adapter 尚未暴露 composition，当前使用最终 input 差分兼容，补丁完成后切到显式 Preedit/Commit。" }
                             }
                         }
                     }

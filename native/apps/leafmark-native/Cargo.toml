@@ -13,4 +13,6 @@ leafmark-core = { path = "../../crates/leafmark-core" }
 leafmark-domain = { path = "../../crates/leafmark-domain" }
 leafmark-editor = { path = "../../crates/leafmark-editor" }
 leafmark-markdown = { path = "../../crates/leafmark-markdown" }
+leafmark-native-compat = { path = "../../crates/leafmark-native-compat" }
 leafmark-scene = { path = "../../crates/leafmark-scene" }
+leafmark-storage = { path = "../../crates/leafmark-storage" }
