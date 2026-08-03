@@ -38,15 +38,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-      - name: Test native libraries
+      - name: Test native workspace
         working-directory: native
-        run: cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene -p leafmark-storage -p leafmark-native-compat -p leafmark-archive --all-targets
+        run: cargo test --workspace --all-targets
       - name: Check Dioxus Native shell
         working-directory: native
         run: cargo check -p leafmark-native --all-targets
-      - name: Lint native libraries
+      - name: Lint native workspace
         working-directory: native
-        run: cargo clippy -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-editor -p leafmark-scene -p leafmark-storage -p leafmark-native-compat -p leafmark-archive --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Publish readable commit status
         if: ${{ always() }}
         env:
@@ -55,7 +55,7 @@ jobs:
         run: |
           if [ "$JOB_STATUS" = "success" ]; then
             state=success
-            description="Dioxus Native libraries and shell compile successfully"
+            description="Dioxus Native workspace compiles and tests successfully"
           else
             state=failure
             description="Dioxus Native check failed; open the workflow log"

@@ -1,0 +1,18 @@
+[package]
+name = "leafmark-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+leafmark-archive = { path = "../leafmark-archive" }
+leafmark-core = { path = "../leafmark-core" }
+leafmark-domain = { path = "../leafmark-domain" }
+leafmark-editor = { path = "../leafmark-editor" }
+leafmark-markdown = { path = "../leafmark-markdown" }
+leafmark-native-compat = { path = "../leafmark-native-compat" }
+leafmark-scene = { path = "../leafmark-scene" }
+leafmark-storage = { path = "../leafmark-storage" }
