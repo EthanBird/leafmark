@@ -27,6 +27,10 @@ impl SourceRange {
     pub fn is_empty(self) -> bool {
         self.start == self.end
     }
+
+    pub fn slice<'a>(self, source: &'a str) -> Option<&'a str> {
+        source.get(self.start..self.end)
+    }
 }
 
 impl From<Range<usize>> for SourceRange {
@@ -498,6 +502,7 @@ mod tests {
             .iter()
             .any(|span| span.style == InlineStyle::Strong));
         assert!(doc.blocks.iter().all(|block| block.range.end <= source.len()));
+        assert_eq!(doc.outline[0].range.slice(source), Some("# 标题"));
     }
 
     #[test]
