@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: leafmark-native-ui-pr-gate
@@ -22,6 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      - name: Report runner start
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 验证器已取得 runner，开始还原补丁并执行完整 Rust 检查。Run: $GITHUB_RUN_ID"
+
       - uses: actions/checkout@v4
         with:
           ref: agent/native-three-platform
@@ -105,3 +112,17 @@ jobs:
           git diff --cached --check
           git commit -m 'feat(native): match v0.7.5 themes settings and Agent UI'
           git push origin HEAD:agent/native-three-platform
+
+      - name: Report completion
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.validate.outputs.status }}
+        run: |
+          if [ "$STATUS" = "0" ]; then
+            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过，已把正式源码写回分支。Run: $GITHUB_RUN_ID"
+          elif [ -n "$STATUS" ]; then
+            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI Rust 验证失败，诊断日志已写回分支。Run: $GITHUB_RUN_ID"
+          else
+            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 验证器在进入 Rust 检查前失败。Run: $GITHUB_RUN_ID"
+          fi
