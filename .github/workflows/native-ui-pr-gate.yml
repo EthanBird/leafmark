@@ -23,7 +23,9 @@ jobs:
       - name: Report runner start
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 验证器已取得 runner，开始还原候选源码并执行完整 Rust 检查。Run: $GITHUB_RUN_ID"
+        run: |
+          gh pr comment 2 --repo "$GITHUB_REPOSITORY" \
+            --body "Native UI 验证器已取得 runner，开始还原候选源码并执行完整 Rust 检查。Run $GITHUB_RUN_ID"
 
       - uses: actions/checkout@v4
         with:
@@ -110,14 +112,14 @@ jobs:
         run: |
           if [ "$STATUS" = "0" ]; then
             if [ "$APPLIED" = "true" ]; then
-              gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过，已把正式源码写回分支。Run: $GITHUB_RUN_ID"
+              gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过，已把正式源码写回分支。Run $GITHUB_RUN_ID"
             else
-              gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过。Run: $GITHUB_RUN_ID"
+              gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过。Run $GITHUB_RUN_ID"
             fi
           elif [ -n "$STATUS" ]; then
-            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI Rust 验证失败，请读取该 Run 的 validation artifact / job log。Run: $GITHUB_RUN_ID"
+            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI Rust 验证失败，请读取该 Run 的 validation artifact 或 job log。Run $GITHUB_RUN_ID"
             exit 1
           else
-            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 验证器在进入 Rust 检查前失败。Run: $GITHUB_RUN_ID"
+            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 验证器在进入 Rust 检查前失败。Run $GITHUB_RUN_ID"
             exit 1
           fi
