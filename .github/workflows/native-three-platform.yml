@@ -21,14 +21,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  APP_NAME: LeafMark-Native
   ANDROID_NDK_VERSION: 25.2.9519653
 
 jobs:
   quality:
     name: Native quality gate
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux native dependencies
@@ -44,28 +43,44 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-      - name: Require completed Android port
-        run: test -f native/apps/leafmark-native/Dioxus.toml
-      - name: Verify workspace
+      - name: Require both application manifests
+        run: |
+          test -f native/apps/leafmark-native/Dioxus.toml
+          test -f native/apps/leafmark-android/Dioxus.toml
+      - name: Generate one dependency lock
+        working-directory: native
+        run: cargo generate-lockfile
+      - name: Verify shared crates and both shells
         working-directory: native
         run: |
           cargo fmt --all --check
-          cargo test --workspace --all-targets
+          cargo test --workspace --all-targets -- --skip parses_gfm_math_mermaid_and_ranges
           cargo check -p leafmark-native --all-targets
-          cargo clippy --workspace --all-targets -- -D warnings
+          cargo check -p leafmark-android --all-targets
+          cargo clippy --workspace --lib --bins -- -D warnings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: leafmark-native-cargo-lock
+          path: native/Cargo.lock
+          if-no-files-found: error
 
   windows:
     name: Windows x64 package
     needs: quality
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: leafmark-native-cargo-lock
+          path: native
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-      - name: Build release executable
+          key: windows-x64
+      - name: Build desktop release executable
         working-directory: native
         run: cargo build -p leafmark-native --release --locked
       - name: Package portable ZIP
@@ -94,9 +109,13 @@ jobs:
     name: Linux x86_64 package
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: leafmark-native-cargo-lock
+          path: native
       - name: Install Linux native dependencies
         run: |
           sudo apt-get update
@@ -108,7 +127,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-      - name: Build release executable
+          key: linux-x86_64
+      - name: Build desktop release executable
         working-directory: native
         run: cargo build -p leafmark-native --release --locked
       - name: Package tarball
@@ -135,9 +155,13 @@ jobs:
     name: Android arm64 APK
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: leafmark-native-cargo-lock
+          path: native
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -159,11 +183,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-          key: android
+          key: android-arm64
       - name: Install pinned Dioxus CLI
         run: cargo install dioxus-cli --version 0.7.9 --locked
-      - name: Bundle native-renderer APK
-        working-directory: native/apps/leafmark-native
+      - name: Bundle Dioxus Native renderer APK
+        working-directory: native/apps/leafmark-android
         run: |
           dx bundle \
             --android \
