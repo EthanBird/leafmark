@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "apps/leafmark-native",
+  "apps/leafmark-android",
   "crates/leafmark-domain",
   "crates/leafmark-core",
   "crates/leafmark-markdown",
@@ -19,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.8.0-alpha.2"
 edition = "2021"
 license = "MIT"
 authors = ["LeafMark contributors"]
