@@ -1,0 +1,28 @@
+name: Export Native Source
+
+on:
+  push:
+    branches: [agent/native-three-platform]
+    paths:
+      - .github/workflows/export-native-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-three-platform
+      - name: Pack source tree
+        run: |
+          tar --exclude=.git --exclude=target --exclude=node_modules -czf "$RUNNER_TEMP/leafmark-native-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: leafmark-native-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/leafmark-native-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
