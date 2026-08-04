@@ -1,8 +1,8 @@
 name: Native UI PR Gate
 
 on:
-  pull_request:
-    types: [edited]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   validate:
-    if: github.event.pull_request.head.ref == 'agent/native-three-platform'
+    if: github.event.issue.number == 2 && github.event.issue.pull_request && github.event.comment.body == '/validate-native-ui'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
