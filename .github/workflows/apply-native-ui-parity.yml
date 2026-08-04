@@ -5,6 +5,8 @@ on:
     branches: [agent/native-three-platform]
     paths:
       - .github/workflows/apply-native-ui-parity.yml
+  pull_request:
+    types: [edited, synchronize]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +18,7 @@ concurrency:
 
 jobs:
   apply-and-validate:
-    if: github.ref_name == 'agent/native-three-platform'
+    if: github.event_name == 'pull_request' || github.ref_name == 'agent/native-three-platform'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
