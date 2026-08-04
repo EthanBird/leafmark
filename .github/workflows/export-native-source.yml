@@ -5,6 +5,9 @@ on:
     branches: [agent/native-three-platform]
     paths:
       - .github/workflows/export-native-source.yml
+  pull_request:
+    paths:
+      - .github/workflows/export-native-source.yml
   workflow_dispatch:
 
 permissions:
