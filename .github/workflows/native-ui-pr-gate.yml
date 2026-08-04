@@ -1,0 +1,102 @@
+name: Native UI PR Gate
+
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leafmark-native-ui-pr-gate
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.ref == 'agent/native-three-platform'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-three-platform
+          fetch-depth: 0
+
+      - name: Restore UI parity patch
+        shell: bash
+        run: |
+          cat .github/native-ui-patch/chunk-*.b64 > "$RUNNER_TEMP/native-ui-parity.py.gz.b64"
+          base64 --decode "$RUNNER_TEMP/native-ui-parity.py.gz.b64" | gzip -d > "$RUNNER_TEMP/native-ui-parity.py"
+          python -m py_compile "$RUNNER_TEMP/native-ui-parity.py"
+          python "$RUNNER_TEMP/native-ui-parity.py"
+
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libudev-dev libwayland-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: native-ui-pr-gate
+
+      - name: Validate Native workspace
+        id: validate
+        shell: bash
+        run: |
+          set +e
+          {
+            cd native
+            cargo fmt --all
+            cargo fmt --all --check
+            cargo test --workspace --all-targets
+            cargo check -p leafmark-native --all-targets
+            cargo check -p leafmark-android --all-targets
+            cargo clippy --workspace --all-targets -- -D warnings
+          } > "$RUNNER_TEMP/native-ui-validation.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/native-ui-validation.log"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-ui-validation-log
+          path: ${{ runner.temp }}/native-ui-validation.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Commit diagnostics on failure
+        if: steps.validate.outputs.status != '0'
+        shell: bash
+        run: |
+          git reset --hard HEAD
+          mkdir -p .github/diagnostics
+          cp "$RUNNER_TEMP/native-ui-validation.log" .github/diagnostics/native-ui-parity.log
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/diagnostics/native-ui-parity.log
+          git commit -m 'chore(native-ui): record parity validation failure'
+          git push origin HEAD:agent/native-three-platform
+          exit 1
+
+      - name: Commit validated Native UI
+        if: steps.validate.outputs.status == '0'
+        shell: bash
+        run: |
+          rm -rf .github/native-ui-patch
+          rm -f .github/workflows/apply-native-ui-parity.yml
+          rm -f .github/workflows/export-native-source.yml
+          rm -f .github/diagnostics/native-ui-parity.log
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat(native): match v0.7.5 themes settings and Agent UI'
+          git push origin HEAD:agent/native-three-platform
