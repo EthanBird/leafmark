@@ -11,35 +11,25 @@ use std::{
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
+    #[default]
     System,
     Light,
     Dark,
 }
 
-impl Default for ThemeMode {
-    fn default() -> Self {
-        Self::System
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemePalette {
+    #[default]
     Leaf,
     Sakura,
     Qingchuan,
     Amber,
     Wisteria,
     Monochrome,
-}
-
-impl Default for ThemePalette {
-    fn default() -> Self {
-        Self::Leaf
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,10 +97,6 @@ impl AppSettings {
         }
         if self.settings_schema_version < 3 {
             self.theme_palette = ThemePalette::Leaf;
-        }
-        if self.settings_schema_version < 4 {
-            self.desktop_layout = default_desktop_layout();
-            self.agent = default_agent_settings();
         }
         if self.settings_schema_version < 5
             && self.agent.get("provider").and_then(Value::as_str) == Some("openai-oauth")

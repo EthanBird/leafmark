@@ -402,19 +402,12 @@ impl AgentStore {
         Ok(&self.memories)
     }
 
-    pub fn import_legacy_json(
-        &mut self,
-        sessions_json: &str,
-        memories_json: &str,
-    ) -> Result<()> {
+    pub fn import_legacy_json(&mut self, sessions_json: &str, memories_json: &str) -> Result<()> {
         let sessions = serde_json::from_str::<Vec<AgentSession>>(sessions_json)
             .map_err(|error| AgentStoreError::InvalidLegacyPayload(error.to_string()))?;
         let memories = serde_json::from_str::<Vec<AgentMemory>>(memories_json)
             .map_err(|error| AgentStoreError::InvalidLegacyPayload(error.to_string()))?;
-        self.sessions = sessions
-            .into_iter()
-            .map(AgentSession::normalize)
-            .collect();
+        self.sessions = sessions.into_iter().map(AgentSession::normalize).collect();
         sort_sessions(&mut self.sessions);
         self.sessions.truncate(MAX_SESSIONS);
         self.memories = memories

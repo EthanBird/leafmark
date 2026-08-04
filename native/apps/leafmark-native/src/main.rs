@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use leafmark_app::{AppController, AppError};
 use leafmark_archive::ArchiveEntry;
-use leafmark_domain::{DocumentId, DockPanelId, ViewMode};
+use leafmark_domain::{DockPanelId, DocumentId, ViewMode};
 use leafmark_editor::EditSemantic;
 use leafmark_markdown::{Block, BlockKind, SourceRange};
 use leafmark_runtime::RuntimeDocumentView;
@@ -217,11 +217,7 @@ fn mutate_controller(
     }
 }
 
-fn render_panel(
-    panel: DockPanelId,
-    snapshot: &UiSnapshot,
-    state: Signal<UiState>,
-) -> Element {
+fn render_panel(panel: DockPanelId, snapshot: &UiSnapshot, state: Signal<UiState>) -> Element {
     match panel {
         DockPanelId::Workspace => rsx! {
             for entry in snapshot.workspace.iter() {
@@ -328,7 +324,11 @@ fn render_tab(
         display_name(&tab.path),
         if tab.dirty { " ●" } else { "" }
     );
-    let active_class = if active == Some(&tab.id) { "active" } else { "" };
+    let active_class = if active == Some(&tab.id) {
+        "active"
+    } else {
+        ""
+    };
     rsx! {
         div { class: "tab",
             button {
@@ -355,11 +355,7 @@ fn render_tab(
     }
 }
 
-fn render_document(
-    view: &RuntimeDocumentView,
-    mode: ViewMode,
-    state: Signal<UiState>,
-) -> Element {
+fn render_document(view: &RuntimeDocumentView, mode: ViewMode, state: Signal<UiState>) -> Element {
     let source = view.source.clone();
     match mode {
         ViewMode::Source => source_editor(source, state),
@@ -413,8 +409,12 @@ fn render_block(block: &Block, source: &str) -> Element {
         BlockKind::Heading { .. } => rsx!(h4 { {text.as_str()} }),
         BlockKind::BlockQuote { .. } => rsx!(blockquote { {text.as_str()} }),
         BlockKind::CodeBlock { .. } => rsx!(pre { code { {raw.as_str()} } }),
-        BlockKind::Mermaid => rsx!(div { class: "diagram", strong { "Mermaid" } pre { {raw.as_str()} } }),
-        BlockKind::MathBlock => rsx!(div { class: "math", strong { "Math" } pre { {raw.as_str()} } }),
+        BlockKind::Mermaid => {
+            rsx!(div { class: "diagram", strong { "Mermaid" } pre { {raw.as_str()} } })
+        }
+        BlockKind::MathBlock => {
+            rsx!(div { class: "math", strong { "Math" } pre { {raw.as_str()} } })
+        }
         BlockKind::Table => rsx!(pre { {raw.as_str()} }),
         BlockKind::List { .. } => rsx!(p { {text.as_str()} }),
         BlockKind::Rule => rsx!(hr {}),

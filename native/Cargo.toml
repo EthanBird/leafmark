@@ -15,11 +15,12 @@ members = [
   "crates/leafmark-platform",
   "crates/leafmark-agent-store",
   "crates/leafmark-agent-core",
+  "crates/leafmark-settings",
   "crates/leafmark-app",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.8.0-alpha.2"
 edition = "2021"
 license = "MIT"
 authors = ["LeafMark contributors"]

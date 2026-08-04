@@ -119,10 +119,7 @@ pub struct LeafmarkRuntime {
 }
 
 impl LeafmarkRuntime {
-    pub fn open(
-        workspace_root: impl AsRef<Path>,
-        archive_root: impl AsRef<Path>,
-    ) -> Result<Self> {
+    pub fn open(workspace_root: impl AsRef<Path>, archive_root: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             workspace: WorkspaceService::open(workspace_root)
                 .map_err(|error| RuntimeError::Storage(error.to_string()))?,

@@ -28,7 +28,7 @@ impl SourceRange {
         self.start == self.end
     }
 
-    pub fn slice<'a>(self, source: &'a str) -> Option<&'a str> {
+    pub fn slice(self, source: &str) -> Option<&str> {
         source.get(self.start..self.end)
     }
 }
@@ -492,17 +492,27 @@ mod tests {
         let source = "# 标题\n\n行内 $E=mc^2$ 与 **粗体**。\n\n```mermaid\nflowchart LR\nA-->B\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
         let doc = parse_markdown(source);
         assert_eq!(doc.outline[0].id, "标题");
-        assert!(doc.blocks.iter().any(|block| block.kind == BlockKind::Mermaid));
-        assert!(doc.blocks.iter().any(|block| block.kind == BlockKind::Table));
-        assert!(doc.tokens.iter().any(|token| {
-            token.kind == TokenKind::InlineMath && token.text == "E=mc^2"
-        }));
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|block| block.kind == BlockKind::Mermaid));
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|block| block.kind == BlockKind::Table));
+        assert!(doc
+            .tokens
+            .iter()
+            .any(|token| { token.kind == TokenKind::InlineMath && token.text == "E=mc^2" }));
         assert!(doc
             .inline_spans
             .iter()
             .any(|span| span.style == InlineStyle::Strong));
-        assert!(doc.blocks.iter().all(|block| block.range.end <= source.len()));
-        assert_eq!(doc.outline[0].range.slice(source), Some("# 标题"));
+        assert!(doc
+            .blocks
+            .iter()
+            .all(|block| block.range.end <= source.len()));
+        assert_eq!(doc.outline[0].range.slice(source), Some("# 标题\n"));
     }
 
     #[test]
@@ -530,9 +540,13 @@ mod tests {
     #[test]
     fn classifies_math_fences_and_tasks() {
         let doc = parse_markdown("- [x] done\n\n```latex\nx^2\n```\n");
-        assert!(doc.blocks.iter().any(|block| block.kind == BlockKind::MathBlock));
-        assert!(doc.tokens.iter().any(|token| {
-            token.kind == TokenKind::TaskMarker { checked: true }
-        }));
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|block| block.kind == BlockKind::MathBlock));
+        assert!(doc
+            .tokens
+            .iter()
+            .any(|token| { token.kind == TokenKind::TaskMarker { checked: true } }));
     }
 }

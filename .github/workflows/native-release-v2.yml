@@ -227,7 +227,7 @@ jobs:
           gh release create "$TAG" dist/* \
             --target "$GITHUB_SHA" \
             --title "LeafMark Native v$VERSION" \
-            --notes-file native/RELEASE_NOTES_v0.8.0-alpha.1.md \
+            --notes-file "native/RELEASE_NOTES_v$VERSION.md" \
             --prerelease
 
       - name: Mark published release

@@ -2,9 +2,9 @@
 
 LeafMark Native 是 LeafMark 从 Tauri/WebView 迁移到 Dioxus Native 的并行开发主线。现有 0.7.x Tauri 正式版仍保留在仓库根目录；原生版达到功能对等之前不会删除旧实现，也不会修改旧版用户数据。
 
-## v0.8.0-alpha.1
+## v0.8.0-alpha.2
 
-第一版 Native Alpha 已形成可运行闭环：
+Native Alpha 已形成可运行闭环，并在 alpha.2 中补齐设置兼容存储与完整工作区验证：
 
 - Dioxus Native 0.7.9 + WGPU/Blitz，不依赖 WebView2；
 - 输入工作区目录，递归扫描 `.md` / `.markdown`；
