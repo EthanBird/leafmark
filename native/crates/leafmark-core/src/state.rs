@@ -12,7 +12,10 @@ pub fn normalize_layout(mut layout: DesktopDockLayout) -> DesktopDockLayout {
         state
             .panels
             .retain(|panel| DockPanelId::ALL.contains(panel) && seen.insert(*panel));
-        if !state.active.is_some_and(|active| state.panels.contains(&active)) {
+        if !state
+            .active
+            .is_some_and(|active| state.panels.contains(&active))
+        {
             state.active = state.panels.first().copied();
         }
     }

@@ -8,8 +8,13 @@ use serde::{Deserialize, Serialize};
 pub enum NativeImeEvent {
     Enabled,
     Disabled,
-    Preedit { text: String, cursor: Option<TextRange> },
-    Commit { text: String },
+    Preedit {
+        text: String,
+        cursor: Option<TextRange>,
+    },
+    Commit {
+        text: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -18,7 +23,9 @@ pub struct ImeBridge {
 }
 
 impl ImeBridge {
-    pub fn enabled(&self) -> bool { self.enabled }
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
 
     pub fn handle(
         &mut self,
@@ -60,26 +67,37 @@ pub fn apply_full_value(
     semantic: EditSemantic,
 ) -> Result<Option<EditResult>, EditError> {
     let current = document.source();
-    if current == next { return Ok(None); }
+    if current == next {
+        return Ok(None);
+    }
     let current_chars = current.chars().collect::<Vec<_>>();
     let next_chars = next.chars().collect::<Vec<_>>();
     let mut prefix = 0;
-    while prefix < current_chars.len() && prefix < next_chars.len() && current_chars[prefix] == next_chars[prefix] {
+    while prefix < current_chars.len()
+        && prefix < next_chars.len()
+        && current_chars[prefix] == next_chars[prefix]
+    {
         prefix += 1;
     }
     let mut suffix = 0;
     while suffix < current_chars.len().saturating_sub(prefix)
         && suffix < next_chars.len().saturating_sub(prefix)
-        && current_chars[current_chars.len() - 1 - suffix] == next_chars[next_chars.len() - 1 - suffix]
+        && current_chars[current_chars.len() - 1 - suffix]
+            == next_chars[next_chars.len() - 1 - suffix]
     {
         suffix += 1;
     }
-    let replacement = next_chars[prefix..next_chars.len() - suffix].iter().collect::<String>();
+    let replacement = next_chars[prefix..next_chars.len() - suffix]
+        .iter()
+        .collect::<String>();
     let range = TextRange::new(prefix, current_chars.len() - suffix);
     let caret = prefix + replacement.chars().count();
     let transaction = EditTransaction {
         base_revision: document.revision(),
-        operations: vec![TextOperation::Replace { range, text: replacement }],
+        operations: vec![TextOperation::Replace {
+            range,
+            text: replacement,
+        }],
         selection_after: leafmark_editor::Selection::caret(caret),
         semantic,
     };
@@ -104,16 +122,32 @@ mod tests {
     #[test]
     fn explicit_ime_events_preserve_preedit_until_commit() {
         let mut document = EditorDocument::new("输入：");
-        document.set_selection(Selection::caret(document.len_chars())).unwrap();
+        document
+            .set_selection(Selection::caret(document.len_chars()))
+            .unwrap();
         let mut bridge = ImeBridge::default();
-        bridge.handle(&mut document, NativeImeEvent::Enabled).unwrap();
-        bridge.handle(&mut document, NativeImeEvent::Preedit {
-            text: "zhong".to_owned(),
-            cursor: Some(TextRange::new(0, 5)),
-        }).unwrap();
+        bridge
+            .handle(&mut document, NativeImeEvent::Enabled)
+            .unwrap();
+        bridge
+            .handle(
+                &mut document,
+                NativeImeEvent::Preedit {
+                    text: "zhong".to_owned(),
+                    cursor: Some(TextRange::new(0, 5)),
+                },
+            )
+            .unwrap();
         assert_eq!(document.source(), "输入：");
         assert_eq!(document.composition().unwrap().preedit, "zhong");
-        bridge.handle(&mut document, NativeImeEvent::Commit { text: "中".to_owned() }).unwrap();
+        bridge
+            .handle(
+                &mut document,
+                NativeImeEvent::Commit {
+                    text: "中".to_owned(),
+                },
+            )
+            .unwrap();
         assert_eq!(document.source(), "输入：中");
     }
 

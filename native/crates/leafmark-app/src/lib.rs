@@ -76,8 +76,7 @@ impl AppController {
             &directories.documents,
             &directories.workspace,
         ] {
-            fs::create_dir_all(directory)
-                .map_err(|error| AppError::Storage(error.to_string()))?;
+            fs::create_dir_all(directory).map_err(|error| AppError::Storage(error.to_string()))?;
         }
         let workspace = WorkspaceService::open(&directories.workspace)
             .map_err(|error| AppError::Storage(error.to_string()))?;
@@ -95,11 +94,9 @@ impl AppController {
                 .scan()
                 .map_err(|error| AppError::Storage(error.to_string()))?;
         }
-        let mut runtime = LeafmarkRuntime::open(
-            &directories.workspace,
-            directories.document_library(),
-        )
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
+        let mut runtime =
+            LeafmarkRuntime::open(&directories.workspace, directories.document_library())
+                .map_err(|error| AppError::Runtime(error.to_string()))?;
         let first_path = workspace_entries
             .iter()
             .find(|entry| entry.kind == EntryKind::File)
@@ -238,7 +235,11 @@ impl AppController {
             let next = self
                 .tabs
                 .get(position)
-                .or_else(|| position.checked_sub(1).and_then(|index| self.tabs.get(index)))
+                .or_else(|| {
+                    position
+                        .checked_sub(1)
+                        .and_then(|index| self.tabs.get(index))
+                })
                 .cloned();
             if let Some(next) = next {
                 self.runtime
@@ -344,17 +345,15 @@ fn display_name(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_directories(label: &str) -> AppDirectories {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "leafmark-app-{label}-{}-{now}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("leafmark-app-{label}-{}-{now}", std::process::id()));
         AppDirectories {
             config: root.join("config"),
             data: root.join("data"),

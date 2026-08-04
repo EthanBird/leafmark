@@ -1,3 +1,4 @@
+#[cfg(target_os = "android")]
 use std::path::PathBuf;
 
 use dioxus::prelude::*;
@@ -38,9 +39,9 @@ struct MobileState {
 
 impl MobileState {
     fn bootstrap() -> Self {
-        match resolve_directories()
-            .and_then(|directories| AppController::bootstrap(directories).map_err(|error| error.to_string()))
-        {
+        match resolve_directories().and_then(|directories| {
+            AppController::bootstrap(directories).map_err(|error| error.to_string())
+        }) {
             Ok(controller) => Self {
                 controller: Some(controller),
                 error: None,
@@ -341,7 +342,11 @@ fn render_tab(
     let mut close_state = state;
     let activate_id = tab.id.clone();
     let close_id = tab.id.clone();
-    let active_class = if active == Some(&tab.id) { "active" } else { "" };
+    let active_class = if active == Some(&tab.id) {
+        "active"
+    } else {
+        ""
+    };
     let label = format!(
         "{}{}",
         display_name(&tab.path),
@@ -428,7 +433,9 @@ fn render_block(block: &Block, source: &str) -> Element {
         BlockKind::Heading { .. } => rsx!(h4 { {text.as_str()} }),
         BlockKind::BlockQuote { .. } => rsx!(blockquote { {text.as_str()} }),
         BlockKind::CodeBlock { .. } => rsx!(pre { code { {raw.as_str()} } }),
-        BlockKind::Mermaid => rsx!(div { class: "diagram", b { "Mermaid" } pre { {raw.as_str()} } }),
+        BlockKind::Mermaid => {
+            rsx!(div { class: "diagram", b { "Mermaid" } pre { {raw.as_str()} } })
+        }
         BlockKind::MathBlock => rsx!(div { class: "math", b { "Math" } pre { {raw.as_str()} } }),
         BlockKind::Table => rsx!(pre { {raw.as_str()} }),
         BlockKind::Rule => rsx!(hr {}),
@@ -462,7 +469,9 @@ fn resolve_android_directories() -> Result<AppDirectories, String> {
 
     let context = ndk_context::android_context();
     let vm = unsafe { JavaVM::from_raw(context.vm().cast()) }.map_err(|error| error.to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|error| error.to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
     let context_object = unsafe { JObject::from_raw(context.context().cast()) };
     let files_object = env
         .call_method(&context_object, "getFilesDir", "()Ljava/io/File;", &[])

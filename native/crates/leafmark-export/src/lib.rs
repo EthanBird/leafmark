@@ -295,7 +295,11 @@ fn opacity_attribute(color: Color) -> String {
 }
 
 fn finite(value: f32) -> f32 {
-    if value.is_finite() { value } else { 0.0 }
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
 }
 
 fn finite_nonnegative(value: f32) -> f32 {
