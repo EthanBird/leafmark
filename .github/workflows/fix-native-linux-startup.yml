@@ -29,11 +29,21 @@ jobs:
           ref: agent/native-three-platform
           fetch-depth: 0
 
-      - name: Apply desktop startup and Android activity entry fixes
+      - name: Apply desktop startup Android entry and Cargo profile fixes
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+
+          workspace_manifest = Path('native/Cargo.toml')
+          workspace = workspace_manifest.read_text()
+          android_profile = '''
+
+          [profile.android]
+          inherits = "release"
+          '''
+          if '[profile.android]' not in workspace:
+              workspace_manifest.write_text(workspace.rstrip() + android_profile)
 
           desktop_main = Path('native/apps/leafmark-native/src/main.rs')
           source = desktop_main.read_text()
@@ -106,8 +116,7 @@ jobs:
               marker = 'leafmark-markdown = { path = "../../crates/leafmark-markdown" }\n'
               if marker not in manifest:
                   raise SystemExit('desktop dependency insertion point was not found')
-              manifest = manifest.replace(marker, marker + dep, 1)
-              desktop_manifest.write_text(manifest)
+              desktop_manifest.write_text(manifest.replace(marker, marker + dep, 1))
 
           android_main = Path('native/apps/leafmark-android/src/main.rs')
           source = android_main.read_text()
@@ -141,8 +150,7 @@ jobs:
               'blitz-shell = "0.2.3"\n'
           )
           if 'android-activity = ' not in manifest:
-              manifest = manifest.replace(marker, marker + additions, 1)
-              android_manifest.write_text(manifest)
+              android_manifest.write_text(manifest.replace(marker, marker + additions, 1))
           PY
 
       - name: Install Linux native dependencies
@@ -238,6 +246,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
+            native/Cargo.toml \
             native/Cargo.lock \
             native/apps/leafmark-native/Cargo.toml \
             native/apps/leafmark-native/src/main.rs \
