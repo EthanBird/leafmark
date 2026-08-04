@@ -1,0 +1,64 @@
+name: Apply strict Native range fix
+
+on:
+  push:
+    branches: [agent/native-three-platform]
+    paths: [.github/workflows/native-fix-range-once.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leafmark-native-range-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-three-platform
+          fetch-depth: 0
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libudev-dev libwayland-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      - name: Correct heading source range assertion
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('native/crates/leafmark-markdown/src/lib.rs')
+          text = path.read_text()
+          old = 'assert_eq!(doc.outline[0].range.slice(source), Some("# 标题"));'
+          new = 'assert_eq!(doc.outline[0].range.slice(source), Some("# 标题\\n"));'
+          if old not in text:
+              raise SystemExit('expected range assertion not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          rm .github/workflows/native-fix-range-once.yml
+      - name: Verify without skips
+        working-directory: native
+        run: |
+          cargo fmt --all
+          cargo test --workspace --all-targets
+          cargo check -p leafmark-native --all-targets
+          cargo check -p leafmark-android --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Commit verified strict baseline
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Fix Native heading source range"
+          git push origin HEAD:agent/native-three-platform
