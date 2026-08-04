@@ -464,7 +464,7 @@ fn resolve_directories() -> Result<AppDirectories, String> {
 
 #[cfg(target_os = "android")]
 fn resolve_android_directories() -> Result<AppDirectories, String> {
-    use jni::objects::{JObject, JString, JValue};
+    use jni::objects::{JObject, JValue};
     use jni::JavaVM;
 
     let context = ndk_context::android_context();
@@ -512,6 +512,8 @@ fn android_file_path<'local>(
     env: &mut jni::JNIEnv<'local>,
     file: jni::objects::JObject<'local>,
 ) -> Result<PathBuf, String> {
+    use jni::objects::JString;
+
     if file.is_null() {
         return Err("Android 没有返回可用的应用目录".to_owned());
     }
