@@ -22,12 +22,14 @@ concurrency:
 
 env:
   ANDROID_NDK_VERSION: 25.2.9519653
+  DIOXUS_VERSION: 0.7.9
+  DX_ARCHIVE: dx-x86_64-unknown-linux-gnu.tar.gz
 
 jobs:
   quality:
     name: Native quality gate
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux native dependencies
@@ -47,34 +49,27 @@ jobs:
         run: |
           test -f native/apps/leafmark-native/Dioxus.toml
           test -f native/apps/leafmark-android/Dioxus.toml
-      - name: Generate one dependency lock
+      - name: Verify one committed dependency lock
         working-directory: native
-        run: cargo generate-lockfile
-      - name: Verify shared crates and both shells
+        run: |
+          test -f Cargo.lock
+          cargo metadata --locked --no-deps >/dev/null
+      - name: Verify all shared crates and both shells
         working-directory: native
         run: |
           cargo fmt --all --check
-          cargo test --workspace --all-targets -- --skip parses_gfm_math_mermaid_and_ranges
-          cargo check -p leafmark-native --all-targets
-          cargo check -p leafmark-android --all-targets
-          cargo clippy --workspace --lib --bins -- -D warnings
-      - uses: actions/upload-artifact@v4
-        with:
-          name: leafmark-native-cargo-lock
-          path: native/Cargo.lock
-          if-no-files-found: error
+          cargo test --workspace --all-targets --locked
+          cargo check -p leafmark-native --all-targets --locked
+          cargo check -p leafmark-android --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
 
   windows:
     name: Windows x64 package
     needs: quality
     runs-on: windows-latest
-    timeout-minutes: 100
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: leafmark-native-cargo-lock
-          path: native
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -83,18 +78,28 @@ jobs:
       - name: Build desktop release executable
         working-directory: native
         run: cargo build -p leafmark-native --release --locked
-      - name: Package portable ZIP
+      - name: Verify GUI subsystem and package portable ZIP
         shell: pwsh
         run: |
           $version = (Select-String -Path native/Cargo.toml -Pattern '^version = "(.+)"$').Matches[0].Groups[1].Value
+          $executable = Get-Item native/target/release/leafmark-native.exe
+          $bytes = [IO.File]::ReadAllBytes($executable.FullName)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
+          if ($machine -ne 0x8664) { throw "Native executable is not x64: 0x$($machine.ToString('x4'))" }
+          if ($subsystem -ne 2) { throw "Native executable is not Windows GUI subsystem: $subsystem" }
+
           $stage = Join-Path $env:RUNNER_TEMP "LeafMark-Native-$version-Windows-x64"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          Copy-Item native/target/release/leafmark-native.exe (Join-Path $stage 'LeafMark-Native.exe')
+          Copy-Item $executable.FullName (Join-Path $stage 'LeafMark-Native.exe')
           Copy-Item native/README.md (Join-Path $stage 'README.md')
           Copy-Item native/ANDROID.md (Join-Path $stage 'ANDROID.md')
           $archive = Join-Path $env:RUNNER_TEMP "LeafMark-Native-$version-Windows-x64.zip"
           Compress-Archive -Path "$stage/*" -DestinationPath $archive -CompressionLevel Optimal
-          Get-FileHash -Algorithm SHA256 $archive | ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($archive))" } | Set-Content "$archive.sha256"
+          Get-FileHash -Algorithm SHA256 $archive | ForEach-Object {
+            "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($archive))"
+          } | Set-Content "$archive.sha256"
           "PACKAGE_PATH=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
           "CHECKSUM_PATH=$archive.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
       - uses: actions/upload-artifact@v4
@@ -109,13 +114,9 @@ jobs:
     name: Linux x86_64 package
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: leafmark-native-cargo-lock
-          path: native
       - name: Install Linux native dependencies
         run: |
           sudo apt-get update
@@ -131,7 +132,7 @@ jobs:
       - name: Build desktop release executable
         working-directory: native
         run: cargo build -p leafmark-native --release --locked
-      - name: Package tarball
+      - name: Package portable tarball
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' native/Cargo.toml | head -n1)
           stage="$RUNNER_TEMP/LeafMark-Native-$version-Linux-x86_64"
@@ -140,7 +141,7 @@ jobs:
           cp native/README.md native/ANDROID.md "$stage/"
           archive="$RUNNER_TEMP/LeafMark-Native-$version-Linux-x86_64.tar.gz"
           tar -C "$RUNNER_TEMP" -czf "$archive" "$(basename "$stage")"
-          sha256sum "$archive" > "$archive.sha256"
+          (cd "$RUNNER_TEMP" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
           echo "PACKAGE_PATH=$archive" >> "$GITHUB_ENV"
           echo "CHECKSUM_PATH=$archive.sha256" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
@@ -155,21 +156,17 @@ jobs:
     name: Android arm64 APK
     needs: quality
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: leafmark-native-cargo-lock
-          path: native
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - name: Install Android SDK and NDK
+      - name: Install Android SDK NDK and arm64 Rust target
         run: |
-          yes | sdkmanager --licenses >/dev/null
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager \
             'platform-tools' \
             'platforms;android-35' \
@@ -179,19 +176,30 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
           key: android-arm64
-      - name: Install pinned Dioxus CLI
-        run: cargo install dioxus-cli --version 0.7.9 --locked
-      - name: Bundle Dioxus Native renderer APK
+      - name: Install verified prebuilt Dioxus CLI
+        run: |
+          base="https://github.com/DioxusLabs/dioxus/releases/download/v$DIOXUS_VERSION"
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 "$base/$DX_ARCHIVE" --output "$DX_ARCHIVE"
+          curl --fail --location --retry 3 \
+            "$base/dx-x86_64-unknown-linux-gnu.sha256" --output dx.sha256
+          grep "  $DX_ARCHIVE$" dx.sha256 | sha256sum --check -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$DX_ARCHIVE" -C "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/dx"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Bundle Dioxus Native arm64 APK
         working-directory: native/apps/leafmark-android
         run: |
           dx bundle \
             --android \
             --renderer native \
+            --target aarch64-linux-android \
             --package-types apk \
             --release \
             --out-dir "$GITHUB_WORKSPACE/dist/android"
@@ -207,7 +215,12 @@ jobs:
           package="$RUNNER_TEMP/LeafMark-Native-$version-Android-arm64.apk"
           cp "${apks[0]}" "$package"
           unzip -t "$package"
-          sha256sum "$package" > "$package.sha256"
+          unzip -l "$package" | grep -q 'lib/arm64-v8a/'
+          if unzip -l "$package" | grep -Eq 'lib/(armeabi-v7a|x86|x86_64)/'; then
+            echo 'Unexpected non-arm64 ABI in APK' >&2
+            exit 1
+          fi
+          (cd "$RUNNER_TEMP" && sha256sum "$(basename "$package")" > "$(basename "$package").sha256")
           echo "PACKAGE_PATH=$package" >> "$GITHUB_ENV"
           echo "CHECKSUM_PATH=$package.sha256" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
