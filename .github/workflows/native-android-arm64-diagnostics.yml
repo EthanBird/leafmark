@@ -1,0 +1,105 @@
+name: Build diagnostic Android arm64 APK
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/native-android-arm64-diagnostics.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: leafmark-native-android-arm64-diagnostics
+  cancel-in-progress: true
+
+env:
+  ANDROID_NDK_VERSION: 25.2.9519653
+  DIOXUS_VERSION: 0.7.9
+  DX_ARCHIVE: dx-x86_64-unknown-linux-gnu.tar.gz
+
+jobs:
+  build:
+    if: github.head_ref == 'agent/native-three-platform'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-three-platform
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK NDK and arm64 target
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' "ndk;$ANDROID_NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: android-arm64-diagnostic
+      - name: Install verified Dioxus CLI binary
+        run: |
+          base="https://github.com/DioxusLabs/dioxus/releases/download/v$DIOXUS_VERSION"
+          cd "$RUNNER_TEMP"
+          curl -fL --retry 3 "$base/$DX_ARCHIVE" -o "$DX_ARCHIVE"
+          curl -fL --retry 3 "$base/dx-x86_64-unknown-linux-gnu.sha256" -o dx.sha256
+          grep "  $DX_ARCHIVE$" dx.sha256 | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$DX_ARCHIVE" -C "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/dx"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Bundle one arm64 Native APK
+        id: bundle
+        continue-on-error: true
+        working-directory: native/apps/leafmark-android
+        shell: bash
+        run: |
+          set +e
+          RUST_BACKTRACE=1 dx bundle \
+            --android \
+            --renderer native \
+            --target aarch64-linux-android \
+            --package-types apk \
+            --release \
+            --out-dir "$GITHUB_WORKSPACE/dist/android-arm64" \
+            > "$RUNNER_TEMP/android-arm64-bundle.log" 2>&1
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Collect APK or diagnostic tree
+        if: ${{ always() }}
+        run: |
+          find native/apps/leafmark-android native/target dist -maxdepth 10 \
+            -printf '%y %p %s bytes\n' 2>/dev/null | sort > "$RUNNER_TEMP/android-arm64-tree.log"
+          mapfile -t apks < <(find dist native/target -type f -name '*.apk' -print 2>/dev/null | sort -u)
+          if [ "${#apks[@]}" -eq 1 ]; then
+            cp "${apks[0]}" "$RUNNER_TEMP/LeafMark-Native-0.8.0-alpha.2-Android-arm64.apk"
+            (cd "$RUNNER_TEMP" && sha256sum LeafMark-Native-0.8.0-alpha.2-Android-arm64.apk > LeafMark-Native-0.8.0-alpha.2-Android-arm64.apk.sha256)
+          fi
+      - name: Upload APK and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: leafmark-native-android-arm64-diagnostic-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/LeafMark-Native-0.8.0-alpha.2-Android-arm64.apk
+            ${{ runner.temp }}/LeafMark-Native-0.8.0-alpha.2-Android-arm64.apk.sha256
+            ${{ runner.temp }}/android-arm64-bundle.log
+            ${{ runner.temp }}/android-arm64-tree.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Require successful APK
+        if: ${{ always() }}
+        env:
+          EXIT_CODE: ${{ steps.bundle.outputs.exit_code }}
+        run: |
+          test "$EXIT_CODE" = 0
+          test -f "$RUNNER_TEMP/LeafMark-Native-0.8.0-alpha.2-Android-arm64.apk"
