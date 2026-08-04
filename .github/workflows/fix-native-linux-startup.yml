@@ -1,12 +1,8 @@
-name: Fix LeafMark Native startup target
+name: Fix LeafMark Native startup and Android entry
 
 on:
   push:
     branches: [agent/native-three-platform]
-    paths:
-      - .github/workflows/fix-native-linux-startup.yml
-  pull_request:
-    branches: [main]
     paths:
       - .github/workflows/fix-native-linux-startup.yml
   workflow_dispatch:
@@ -15,27 +11,32 @@ permissions:
   contents: write
 
 concurrency:
-  group: leafmark-fix-native-linux-startup
+  group: leafmark-fix-native-platform-entry
   cancel-in-progress: true
+
+env:
+  ANDROID_NDK_VERSION: 25.2.9519653
+  DIOXUS_VERSION: 0.7.9
 
 jobs:
   fix:
-    if: github.head_ref == 'agent/native-three-platform' || github.ref_name == 'agent/native-three-platform'
+    if: github.ref_name == 'agent/native-three-platform'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/native-three-platform
           fetch-depth: 0
-      - name: Apply desktop startup target routing
+
+      - name: Apply desktop startup and Android activity entry fixes
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('native/apps/leafmark-native/src/main.rs')
-          source = path.read_text()
+          desktop_main = Path('native/apps/leafmark-native/src/main.rs')
+          source = desktop_main.read_text()
           before = '''impl UiState {
               fn bootstrap() -> Self {
                   match AppController::bootstrap_current() {
@@ -72,10 +73,11 @@ jobs:
               let Some(target) = std::env::args_os().nth(1) else {
                   return AppController::bootstrap(directories);
               };
+              let display_target = std::path::PathBuf::from(&target);
               let target = std::fs::canonicalize(&target).map_err(|error| {
                   AppError::Storage(format!(
                       "无法解析启动路径 {}：{error}",
-                      std::path::PathBuf::from(target).display()
+                      display_target.display()
                   ))
               })?;
               if target.is_dir() {
@@ -94,38 +96,153 @@ jobs:
           }
           '''
           if before not in source:
-              raise SystemExit('UiState bootstrap block was not found')
-          path.write_text(source.replace(before, after, 1))
+              raise SystemExit('desktop UiState bootstrap block was not found')
+          desktop_main.write_text(source.replace(before, after, 1))
+
+          desktop_manifest = Path('native/apps/leafmark-native/Cargo.toml')
+          manifest = desktop_manifest.read_text()
+          dep = 'leafmark-platform = { path = "../../crates/leafmark-platform" }\n'
+          if dep not in manifest:
+              marker = 'leafmark-markdown = { path = "../../crates/leafmark-markdown" }\n'
+              if marker not in manifest:
+                  raise SystemExit('desktop dependency insertion point was not found')
+              manifest = manifest.replace(marker, marker + dep, 1)
+              desktop_manifest.write_text(manifest)
+
+          android_main = Path('native/apps/leafmark-android/src/main.rs')
+          source = android_main.read_text()
+          before = '''fn main() {
+              dioxus::launch(app);
+          }
+          '''
+          after = '''#[cfg(not(target_os = "android"))]
+          fn main() {
+              dioxus::launch(app);
+          }
+
+          #[cfg(target_os = "android")]
+          #[unsafe(no_mangle)]
+          fn android_main(android_app: android_activity::AndroidApp) {
+              blitz_shell::set_android_app(android_app);
+              dioxus::launch(app);
+          }
+          '''
+          if before not in source:
+              raise SystemExit('Android main entry block was not found')
+          android_main.write_text(source.replace(before, after, 1))
+
+          android_manifest = Path('native/apps/leafmark-android/Cargo.toml')
+          manifest = android_manifest.read_text()
+          marker = '[target.\'cfg(target_os = "android")\'.dependencies]\n'
+          if marker not in manifest:
+              raise SystemExit('Android target dependency section was not found')
+          additions = (
+              'android-activity = { version = "0.6.1", features = ["native-activity"] }\n'
+              'blitz-shell = "0.2.3"\n'
+          )
+          if 'android-activity = ' not in manifest:
+              manifest = manifest.replace(marker, marker + additions, 1)
+              android_manifest.write_text(manifest)
           PY
+
       - name: Install Linux native dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libasound2-dev libfontconfig1-dev libudev-dev libwayland-dev \
             libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
+            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config unzip
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-          key: native-startup-target
-      - name: Validate full Native workspace
+          key: native-platform-entry-fixes
+
+      - name: Refresh lock metadata and validate full Native workspace
         working-directory: native
         run: |
+          cargo check -p leafmark-android
           cargo fmt --all
           cargo fmt --all --check
           cargo test --workspace --all-targets --locked
           cargo check -p leafmark-native --all-targets --locked
           cargo check -p leafmark-android --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Commit validated startup fix
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK NDK and arm64 Rust target
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            'platform-tools' \
+            'platforms;android-35' \
+            'build-tools;35.0.0' \
+            "ndk;$ANDROID_NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          rustup target add aarch64-linux-android
+
+      - name: Install verified prebuilt Dioxus CLI
+        shell: bash
+        run: |
+          asset='dx-x86_64-unknown-linux-gnu.tar.gz'
+          base="https://github.com/DioxusLabs/dioxus/releases/download/v$DIOXUS_VERSION"
+          curl --fail --location --retry 3 "$base/$asset" --output "$RUNNER_TEMP/$asset"
+          curl --fail --location --retry 3 "$base/dx-x86_64-unknown-linux-gnu.sha256" --output "$RUNNER_TEMP/dx.sha256"
+          cd "$RUNNER_TEMP"
+          grep "  $asset$" dx.sha256 | sha256sum --check
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$asset" -C "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/dx"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build and verify the real Dioxus Native Android APK
+        working-directory: native/apps/leafmark-android
+        shell: bash
+        run: |
+          dx bundle \
+            --android \
+            --renderer native \
+            --target aarch64-linux-android \
+            --package-types apk \
+            --release \
+            --out-dir "$GITHUB_WORKSPACE/dist/android"
+          mapfile -t apks < <(find "$GITHUB_WORKSPACE/dist/android" "$GITHUB_WORKSPACE/native/target" -type f -name '*.apk' -print 2>/dev/null | sort -u)
+          test "${#apks[@]}" -eq 1
+          unzip -t "${apks[0]}"
+          unzip -l "${apks[0]}" | grep -q 'lib/arm64-v8a/'
+          if unzip -l "${apks[0]}" | grep -Eq 'lib/(armeabi-v7a|x86|x86_64)/'; then
+            echo 'Unexpected non-arm64 ABI found in APK' >&2
+            exit 1
+          fi
+          cp "${apks[0]}" "$RUNNER_TEMP/LeafMark-Native-Android-arm64-validated.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: leafmark-native-android-entry-validated-${{ github.run_id }}
+          path: ${{ runner.temp }}/LeafMark-Native-Android-arm64-validated.apk
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Commit all validated platform fixes
         shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add native/apps/leafmark-native/src/main.rs
+          git add \
+            native/Cargo.lock \
+            native/apps/leafmark-native/Cargo.toml \
+            native/apps/leafmark-native/src/main.rs \
+            native/apps/leafmark-android/Cargo.toml \
+            native/apps/leafmark-android/src/main.rs
           git diff --cached --check
-          git commit -m 'fix(native): honor startup file and workspace paths'
+          git commit -m 'fix(native): honor launch targets and export Android entry'
           git push origin HEAD:agent/native-three-platform
