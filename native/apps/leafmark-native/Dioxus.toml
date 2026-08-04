@@ -1,0 +1,11 @@
+[application]
+name = "LeafMark Native"
+default_platform = "native"
+out_dir = "dist"
+
+[bundle]
+identifier = "com.leafmark.native.desktop"
+publisher = "EthanBird"
+category = "Productivity"
+short_description = "LeafMark Native Markdown workspace"
+long_description = "A Rust-native Markdown workspace powered by Dioxus Native, Blitz and WGPU."

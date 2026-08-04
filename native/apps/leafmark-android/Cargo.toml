@@ -1,0 +1,27 @@
+[package]
+name = "leafmark-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+dioxus.workspace = true
+leafmark-app = { path = "../../crates/leafmark-app" }
+leafmark-archive = { path = "../../crates/leafmark-archive" }
+leafmark-domain = { path = "../../crates/leafmark-domain" }
+leafmark-editor = { path = "../../crates/leafmark-editor" }
+leafmark-markdown = { path = "../../crates/leafmark-markdown" }
+leafmark-platform = { path = "../../crates/leafmark-platform" }
+leafmark-runtime = { path = "../../crates/leafmark-runtime" }
+leafmark-storage = { path = "../../crates/leafmark-storage" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[features]
+default = ["native"]
+native = ["dioxus/native"]
