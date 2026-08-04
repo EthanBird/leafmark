@@ -1,0 +1,127 @@
+name: Fix LeafMark Native startup target
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/fix-native-linux-startup.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leafmark-fix-native-linux-startup
+  cancel-in-progress: true
+
+jobs:
+  fix:
+    if: github.head_ref == 'agent/native-three-platform' || github.ref_name == 'agent/native-three-platform'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-three-platform
+          fetch-depth: 0
+      - name: Apply desktop startup target routing
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('native/apps/leafmark-native/src/main.rs')
+          source = path.read_text()
+          before = '''impl UiState {
+              fn bootstrap() -> Self {
+                  match AppController::bootstrap_current() {
+                      Ok(controller) => Self {
+                          controller: Some(controller),
+                          error: None,
+                      },
+                      Err(error) => Self {
+                          controller: None,
+                          error: Some(error.to_string()),
+                      },
+                  }
+              }
+          }
+          '''
+          after = '''impl UiState {
+              fn bootstrap() -> Self {
+                  match bootstrap_desktop_controller() {
+                      Ok(controller) => Self {
+                          controller: Some(controller),
+                          error: None,
+                      },
+                      Err(error) => Self {
+                          controller: None,
+                          error: Some(error.to_string()),
+                      },
+                  }
+              }
+          }
+
+          fn bootstrap_desktop_controller() -> Result<AppController, AppError> {
+              let mut directories = leafmark_platform::AppDirectories::resolve_desktop()
+                  .map_err(|error| AppError::Platform(error.to_string()))?;
+              let Some(target) = std::env::args_os().nth(1) else {
+                  return AppController::bootstrap(directories);
+              };
+              let target = std::fs::canonicalize(&target).map_err(|error| {
+                  AppError::Storage(format!(
+                      "无法解析启动路径 {}：{error}",
+                      std::path::PathBuf::from(target).display()
+                  ))
+              })?;
+              if target.is_dir() {
+                  directories.workspace = target;
+                  return AppController::bootstrap(directories);
+              }
+              if target.is_file() {
+                  let mut controller = AppController::bootstrap(directories)?;
+                  controller.open_external(&target)?;
+                  return Ok(controller);
+              }
+              Err(AppError::Storage(format!(
+                  "启动路径不是文件或目录：{}",
+                  target.display()
+              )))
+          }
+          '''
+          if before not in source:
+              raise SystemExit('UiState bootstrap block was not found')
+          path.write_text(source.replace(before, after, 1))
+          PY
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libudev-dev libwayland-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: native-startup-target
+      - name: Validate full Native workspace
+        working-directory: native
+        run: |
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --workspace --all-targets --locked
+          cargo check -p leafmark-native --all-targets --locked
+          cargo check -p leafmark-android --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Commit validated startup fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add native/apps/leafmark-native/src/main.rs
+          git diff --cached --check
+          git commit -m 'fix(native): honor startup file and workspace paths'
+          git push origin HEAD:agent/native-three-platform
