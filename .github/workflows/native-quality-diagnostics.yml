@@ -6,6 +6,10 @@ on:
     paths:
       - .github/workflows/native-quality-diagnostics.yml
       - native/**
+  pull_request:
+    paths:
+      - .github/workflows/native-quality-diagnostics.yml
+      - native/**
   workflow_dispatch:
 
 permissions:
@@ -13,7 +17,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: leafmark-native-quality-diagnostics
+  group: leafmark-native-quality-diagnostics-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
