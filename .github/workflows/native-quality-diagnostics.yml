@@ -1,0 +1,86 @@
+name: Diagnose LeafMark Native quality
+
+on:
+  push:
+    branches: [agent/native-three-platform]
+    paths:
+      - .github/workflows/native-quality-diagnostics.yml
+      - native/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: leafmark-native-quality-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libudev-dev libwayland-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+      - name: Generate lockfile
+        working-directory: native
+        run: cargo generate-lockfile
+      - name: Check formatting
+        working-directory: native
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo fmt --all --check 2>&1 | tee "$RUNNER_TEMP/fmt.log"
+      - name: Test shared workspace
+        if: ${{ success() || failure() }}
+        working-directory: native
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --all-targets -- --skip parses_gfm_math_mermaid_and_ranges 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Check desktop shell
+        if: ${{ success() || failure() }}
+        working-directory: native
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check -p leafmark-native --all-targets 2>&1 | tee "$RUNNER_TEMP/desktop.log"
+      - name: Check Android shell on host
+        if: ${{ success() || failure() }}
+        working-directory: native
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check -p leafmark-android --all-targets 2>&1 | tee "$RUNNER_TEMP/android-host.log"
+      - name: Lint workspace
+        if: ${{ success() || failure() }}
+        working-directory: native
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --lib --bins -- -D warnings 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+      - name: Upload diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-quality-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/fmt.log
+            ${{ runner.temp }}/test.log
+            ${{ runner.temp }}/desktop.log
+            ${{ runner.temp }}/android-host.log
+            ${{ runner.temp }}/clippy.log
+          if-no-files-found: warn
+          retention-days: 7
