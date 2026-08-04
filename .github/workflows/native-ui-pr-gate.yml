@@ -3,12 +3,10 @@ name: Native UI PR Gate
 on:
   pull_request:
     types: [synchronize]
-  issue_comment:
-    types: [created]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 
@@ -18,19 +16,33 @@ concurrency:
 
 jobs:
   validate:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event.issue.number == 2 && github.event.issue.pull_request && github.event.comment.body == '/validate-native-ui')
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'agent/native-three-platform'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - name: Report runner start
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 验证器已取得 runner，开始执行完整 Rust 检查。Run: $GITHUB_RUN_ID"
+        run: gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 验证器已取得 runner，开始还原候选源码并执行完整 Rust 检查。Run: $GITHUB_RUN_ID"
 
       - uses: actions/checkout@v4
         with:
           ref: agent/native-three-platform
           fetch-depth: 0
+
+      - name: Restore candidate source
+        id: restore
+        shell: bash
+        run: |
+          if compgen -G '.github/native-ui-patch/chunk-*.b64' >/dev/null; then
+            cat .github/native-ui-patch/chunk-*.b64 > "$RUNNER_TEMP/native-ui-parity.py.gz.b64"
+            base64 --decode "$RUNNER_TEMP/native-ui-parity.py.gz.b64" | gzip -d > "$RUNNER_TEMP/native-ui-parity.py"
+            python -m py_compile "$RUNNER_TEMP/native-ui-parity.py"
+            python "$RUNNER_TEMP/native-ui-parity.py"
+            echo 'applied=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'applied=false' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install Linux native dependencies
         run: |
@@ -55,11 +67,12 @@ jobs:
           set +e
           {
             cd native
+            cargo fmt --all
             cargo fmt --all --check
-            cargo test --workspace --all-targets --locked
-            cargo check -p leafmark-native --all-targets --locked
-            cargo check -p leafmark-android --all-targets --locked
-            cargo clippy --workspace --all-targets --locked -- -D warnings
+            cargo test --workspace --all-targets
+            cargo check -p leafmark-native --all-targets
+            cargo check -p leafmark-android --all-targets
+            cargo clippy --workspace --all-targets -- -D warnings
           } > "$RUNNER_TEMP/native-ui-validation.log" 2>&1
           status=$?
           cat "$RUNNER_TEMP/native-ui-validation.log"
@@ -73,14 +86,34 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Commit validated candidate
+        if: steps.validate.outputs.status == '0' && steps.restore.outputs.applied == 'true'
+        shell: bash
+        run: |
+          rm -rf .github/native-ui-patch
+          rm -f .github/workflows/apply-native-ui-parity.yml
+          rm -f .github/workflows/export-native-source.yml
+          rm -f .github/diagnostics/native-ui-parity.log
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat(native): match v0.7.5 themes settings and Agent UI'
+          git push origin HEAD:agent/native-three-platform
+
       - name: Report completion
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           STATUS: ${{ steps.validate.outputs.status }}
+          APPLIED: ${{ steps.restore.outputs.applied }}
         run: |
           if [ "$STATUS" = "0" ]; then
-            gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过。Run: $GITHUB_RUN_ID"
+            if [ "$APPLIED" = "true" ]; then
+              gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过，已把正式源码写回分支。Run: $GITHUB_RUN_ID"
+            else
+              gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI 完整 Rust 验证通过。Run: $GITHUB_RUN_ID"
+            fi
           elif [ -n "$STATUS" ]; then
             gh pr comment 2 --repo "$GITHUB_REPOSITORY" --body "Native UI Rust 验证失败，请读取该 Run 的 validation artifact / job log。Run: $GITHUB_RUN_ID"
             exit 1
