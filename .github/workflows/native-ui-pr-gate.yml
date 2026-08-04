@@ -1,8 +1,13 @@
 name: Native UI PR Gate
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/native-ui-pr-gate.yml
   issue_comment:
     types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,7 +18,7 @@ concurrency:
 
 jobs:
   validate:
-    if: github.event.issue.number == 2 && github.event.issue.pull_request && github.event.comment.body == '/validate-native-ui'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event.issue.number == 2 && github.event.issue.pull_request && github.event.comment.body == '/validate-native-ui')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
