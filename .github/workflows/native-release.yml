@@ -1,0 +1,261 @@
+name: Publish LeafMark Native prerelease
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/native-release.yml
+      - native/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  statuses: write
+
+concurrency:
+  group: leafmark-native-release
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: startsWith(github.event.head_commit.message, 'Release LeafMark Native v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Mark release pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -n \
+            --arg state pending \
+            --arg description "Building LeafMark Native prerelease assets" \
+            --arg context "leafmark/native-release" \
+            --arg target_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{state:$state,description:$description,context:$context,target_url:$target_url}' \
+            > "$RUNNER_TEMP/status.json"
+          curl --fail-with-body \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            --data-binary @"$RUNNER_TEMP/status.json"
+
+      - name: Resolve and validate version
+        id: version
+        shell: bash
+        run: |
+          version=$(python - <<'PY'
+          import tomllib
+          with open('native/Cargo.toml', 'rb') as handle:
+              print(tomllib.load(handle)['workspace']['package']['version'])
+          PY
+          )
+          expected="Release LeafMark Native v$version"
+          actual=$(printf '%s' "${{ github.event.head_commit.message }}" | head -n 1)
+          if [ "$actual" != "$expected" ]; then
+            echo "Release commit must be exactly: $expected" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve shared Cargo lockfile
+        working-directory: native
+        run: cargo generate-lockfile
+
+      - name: Upload shared lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-cargo-lock
+          path: native/Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: native-linux-x86_64
+            platform: linux
+          - os: windows-latest
+            artifact: native-windows-x64
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download shared lockfile
+        uses: actions/download-artifact@v4
+        with:
+          name: native-cargo-lock
+          path: native
+
+      - name: Install Linux native renderer dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          key: native-release-${{ matrix.platform }}
+
+      - name: Build Native release binary
+        working-directory: native
+        run: cargo build --locked --release -p leafmark-native
+
+      - name: Package Linux archive
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          NATIVE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          root="$RUNNER_TEMP/native-release"
+          stage="$root/LeafMark-Native-v$NATIVE_VERSION-Linux-x86_64"
+          mkdir -p "$stage"
+          cp native/target/release/leafmark-native "$stage/LeafMark-Native"
+          chmod +x "$stage/LeafMark-Native"
+          cp native/README.md "$stage/README.md"
+          cp native/Cargo.lock "$stage/Cargo.lock"
+          archive="$root/LeafMark-Native-v$NATIVE_VERSION-Linux-x86_64.tar.gz"
+          tar -C "$root" -czf "$archive" "$(basename "$stage")"
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Package Windows archive
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          NATIVE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "native-release"
+          $stage = Join-Path $root "LeafMark-Native-v$env:NATIVE_VERSION-Windows-x64"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item "native\target\release\leafmark-native.exe" (Join-Path $stage "LeafMark-Native.exe")
+          Copy-Item "native\README.md" (Join-Path $stage "README.md")
+          Copy-Item "native\Cargo.lock" (Join-Path $stage "Cargo.lock")
+          $archive = Join-Path $root "LeafMark-Native-v$env:NATIVE_VERSION-Windows-x64.zip"
+          Compress-Archive -Path "$stage\*" -DestinationPath $archive -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content "$archive.sha256" -Encoding ascii
+
+      - name: Upload platform assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ runner.temp }}/native-release/*.zip
+            ${{ runner.temp }}/native-release/*.tar.gz
+            ${{ runner.temp }}/native-release/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs:
+      - resolve
+      - build
+    if: always() && needs.resolve.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Fail closed when a build did not pass
+        if: needs.resolve.result != 'success' || needs.build.result != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -n \
+            --arg state failure \
+            --arg description "LeafMark Native prerelease build failed" \
+            --arg context "leafmark/native-release" \
+            --arg target_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{state:$state,description:$description,context:$context,target_url:$target_url}' \
+            > "$RUNNER_TEMP/status.json"
+          curl --fail-with-body \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            --data-binary @"$RUNNER_TEMP/status.json"
+          exit 1
+
+      - name: Download release assets
+        if: needs.resolve.result == 'success' && needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*-x64
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub prerelease
+        if: needs.resolve.result == 'success' && needs.build.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          find dist -maxdepth 1 -type f -print
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --yes --cleanup-tag
+          fi
+          gh release create "$RELEASE_TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "LeafMark Native v$RELEASE_VERSION" \
+            --notes-file "native/RELEASE_NOTES_v0.8.0-alpha.1.md" \
+            --prerelease
+
+      - name: Mark release successful
+        if: needs.resolve.result == 'success' && needs.build.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -n \
+            --arg state success \
+            --arg description "LeafMark Native prerelease published" \
+            --arg context "leafmark/native-release" \
+            --arg target_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/${{ needs.resolve.outputs.tag }}" \
+            '{state:$state,description:$description,context:$context,target_url:$target_url}' \
+            > "$RUNNER_TEMP/status.json"
+          curl --fail-with-body \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            --data-binary @"$RUNNER_TEMP/status.json"
