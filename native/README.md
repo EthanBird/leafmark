@@ -50,7 +50,7 @@ Linux 版使用系统 WGPU、X11/Wayland 与字体库，需要现代桌面发行
 
 ```bash
 cd native
-cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-workspace
+cargo test -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-storage
 cargo run -p leafmark-native -- /path/to/workspace
 ```
 

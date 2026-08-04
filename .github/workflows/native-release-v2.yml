@@ -126,7 +126,7 @@ jobs:
 
       - name: Test core libraries
         working-directory: native
-        run: cargo test --locked -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-workspace
+        run: cargo test --locked -p leafmark-domain -p leafmark-core -p leafmark-markdown -p leafmark-storage
 
       - name: Build optimized Native binary
         working-directory: native
