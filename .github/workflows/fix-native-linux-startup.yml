@@ -1,6 +1,10 @@
 name: Fix LeafMark Native startup target
 
 on:
+  push:
+    branches: [agent/native-three-platform]
+    paths:
+      - .github/workflows/fix-native-linux-startup.yml
   pull_request:
     branches: [main]
     paths:
