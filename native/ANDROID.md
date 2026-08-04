@@ -2,6 +2,10 @@
 
 LeafMark Android uses the experimental Dioxus Native renderer (`native` renderer / Blitz / WGPU), not the system WebView renderer.
 
+## Application structure
+
+Android has a dedicated touch-first application crate at `native/apps/leafmark-android`. It shares the same Rust document runtime, Rope editor, Markdown AST, retained archive and application controller as the Windows/Linux application, while keeping a mobile-specific layout and platform bridge.
+
 ## Storage
 
 The Android build resolves application directories through JNI:
