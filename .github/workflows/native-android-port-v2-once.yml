@@ -1,0 +1,191 @@
+name: Apply verified Dioxus Native Android port v2
+
+on:
+  push:
+    branches: [agent/native-three-platform]
+    paths: [.github/workflows/native-android-port-v2-once.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: leafmark-native-android-port
+  cancel-in-progress: true
+
+jobs:
+  port:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-three-platform
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+          targets: aarch64-linux-android
+      - name: Install desktop native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libudev-dev libwayland-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev pkg-config
+      - name: Apply baseline and Android port
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('native/Cargo.toml')
+          text = root.read_text().replace('version = "0.1.0"', 'version = "0.8.0-alpha.2"', 1)
+          root.write_text(text)
+
+          markdown = Path('native/crates/leafmark-markdown/src/lib.rs')
+          text = markdown.read_text().replace(
+              'assert_eq!(doc.outline[0].range.slice(source), Some("# 标题"));',
+              'assert_eq!(doc.outline[0].range.slice(source), Some("# 标题\\n"));',
+              1,
+          )
+          markdown.write_text(text)
+
+          app = Path('native/crates/leafmark-app/src/lib.rs')
+          text = app.read_text().replace(
+              'use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};',
+              'use std::time::{SystemTime, UNIX_EPOCH};',
+              1,
+          )
+          text = text.replace('AppDirectories::resolve_desktop()', 'AppDirectories::resolve_current()', 1)
+          app.write_text(text)
+
+          cargo = Path('native/crates/leafmark-platform/Cargo.toml')
+          text = cargo.read_text()
+          if 'ndk-context' not in text:
+              text = text.rstrip() + '\n\n[target.\'cfg(target_os = "android")\'.dependencies]\njni = "0.21"\nndk-context = "0.1"\n'
+          cargo.write_text(text)
+
+          platform = Path('native/crates/leafmark-platform/src/lib.rs')
+          text = platform.read_text()
+          marker = '''impl AppDirectories {\n    pub fn resolve_desktop() -> Result<Self, PlatformError> {\n        Self::resolve_with(PlatformKind::current(), |name| std::env::var_os(name))\n    }\n'''
+          replacement = '''impl AppDirectories {\n    pub fn resolve_current() -> Result<Self, PlatformError> {\n        #[cfg(target_os = "android")]\n        {\n            return resolve_android_directories();\n        }\n        #[cfg(target_os = "ios")]\n        {\n            return Err(PlatformError::NativeBridgeRequired(PlatformKind::Ios));\n        }\n        #[cfg(not(any(target_os = "android", target_os = "ios")))]\n        {\n            Self::resolve_desktop()\n        }\n    }\n\n    pub fn resolve_desktop() -> Result<Self, PlatformError> {\n        Self::resolve_with(PlatformKind::current(), |name| std::env::var_os(name))\n    }\n'''
+          if 'pub fn resolve_current()' not in text:
+              if marker not in text:
+                  raise SystemExit('AppDirectories marker not found')
+              text = text.replace(marker, replacement, 1)
+
+          android_impl = r'''#[cfg(target_os = "android")]
+fn resolve_android_directories() -> Result<AppDirectories, PlatformError> {
+    use jni::objects::{JObject, JString, JValue};
+    use jni::JavaVM;
+
+    let context = ndk_context::android_context();
+    let vm = unsafe { JavaVM::from_raw(context.vm().cast()) }
+        .map_err(|error| PlatformError::InvalidDirectory(error.to_string()))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| PlatformError::InvalidDirectory(error.to_string()))?;
+    let context_object = unsafe { JObject::from_raw(context.context().cast()) };
+    let files_object = env
+        .call_method(&context_object, "getFilesDir", "()Ljava/io/File;", &[])
+        .and_then(|value| value.l())
+        .map_err(|error| PlatformError::InvalidDirectory(error.to_string()))?;
+    let cache_object = env
+        .call_method(&context_object, "getCacheDir", "()Ljava/io/File;", &[])
+        .and_then(|value| value.l())
+        .map_err(|error| PlatformError::InvalidDirectory(error.to_string()))?;
+    let null = JObject::null();
+    let external_object = env
+        .call_method(
+            &context_object,
+            "getExternalFilesDir",
+            "(Ljava/lang/String;)Ljava/io/File;",
+            &[JValue::Object(&null)],
+        )
+        .and_then(|value| value.l())
+        .ok();
+    let files = android_file_path(&mut env, files_object)?;
+    let cache = android_file_path(&mut env, cache_object)?;
+    let documents = external_object
+        .filter(|value| !value.is_null())
+        .map(|value| android_file_path(&mut env, value))
+        .transpose()?
+        .unwrap_or_else(|| files.join("documents"));
+    Ok(AppDirectories {
+        config: files.join("config"),
+        data: files.join("data"),
+        cache,
+        workspace: documents.join("LeafMark"),
+        documents,
+    })
+}
+
+#[cfg(target_os = "android")]
+fn android_file_path<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    file: jni::objects::JObject<'local>,
+) -> Result<PathBuf, PlatformError> {
+    if file.is_null() {
+        return Err(PlatformError::MissingDirectory("Android application directory".to_owned()));
+    }
+    let path = env
+        .call_method(file, "getAbsolutePath", "()Ljava/lang/String;", &[])
+        .and_then(|value| value.l())
+        .map_err(|error| PlatformError::InvalidDirectory(error.to_string()))?;
+    let path = JString::from(path);
+    let path: String = env
+        .get_string(&path)
+        .map_err(|error| PlatformError::InvalidDirectory(error.to_string()))?
+        .into();
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err(PlatformError::InvalidDirectory("Android returned a relative application directory".to_owned()))
+    }
+}
+
+'''
+          insert = 'fn require_absolute(path: PathBuf, label: &str) -> Result<PathBuf, PlatformError> {'
+          if 'fn resolve_android_directories()' not in text:
+              if insert not in text:
+                  raise SystemExit('platform insertion marker not found')
+              text = text.replace(insert, android_impl + insert, 1)
+          platform.write_text(text)
+
+          app_cargo = Path('native/apps/leafmark-native/Cargo.toml')
+          text = app_cargo.read_text()
+          if '[features]' not in text:
+              text += '\n[features]\ndefault = ["native"]\nnative = ["dioxus/native"]\n'
+          app_cargo.write_text(text)
+
+          main = Path('native/apps/leafmark-native/src/main.rs')
+          text = main.read_text()
+          if not text.startswith('#![cfg_attr'):
+              text = '#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]\n\n' + text
+          old = '@media(max-width:850px){.panel{width:230px}.doc-host{padding:12px}.doc{padding:28px}.split{grid-template-columns:1fr}}'
+          new = '@media(max-width:850px){.app{min-width:0}.title{height:46px}.toolbar{overflow-x:auto;white-space:nowrap}.shell{flex-direction:column}.rail{display:flex;width:100%;height:54px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--b)}.rail button{min-width:72px;margin:0 4px 0 0}.panel{width:100%;max-height:190px;border-right:0;border-bottom:1px solid var(--b)}.panel h3{position:static}.editor{min-height:0}.doc-host{padding:10px}.doc{padding:24px 18px;border-radius:8px}.source-editor{min-height:55vh;padding:16px}.split{grid-template-columns:1fr}.status{overflow-x:auto;white-space:nowrap}}'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('mobile CSS marker not found')
+          main.write_text(text)
+
+          Path('native/apps/leafmark-native/Dioxus.toml').write_text('''[application]\nname = "LeafMark Native"\ndefault_platform = "native"\nout_dir = "dist"\n\n[bundle]\nidentifier = "com.leafmark.native"\npublisher = "EthanBird"\ncategory = "Productivity"\nshort_description = "LeafMark Native Markdown workspace"\nlong_description = "A Rust-native Markdown workspace powered by Dioxus Native and Blitz."\n''')
+          PY
+          rm -f .github/workflows/native-android-port-once.yml
+          rm .github/workflows/native-android-port-v2-once.yml
+      - name: Verify desktop and Android code
+        working-directory: native
+        run: |
+          cargo fmt --all
+          cargo test --workspace --all-targets
+          cargo check -p leafmark-native --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo check -p leafmark-platform --target aarch64-linux-android
+      - name: Commit verified Android port
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Add Dioxus Native Android platform bridge"
+          git push origin HEAD:agent/native-three-platform
