@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use leafmark_domain::{
-    DesktopDockLayout, DockPanelId, DockZone, DocumentOrigin, DocumentSnapshot,
+    DesktopDockLayout, DockPanelId, DockZone, DocumentId, DocumentOrigin, DocumentSnapshot,
     OpenDocumentTab, TabId,
 };
 
@@ -66,9 +66,24 @@ impl TabManager {
         &self.tabs
     }
 
+    pub fn active_id(&self) -> Option<&TabId> {
+        self.active.as_ref()
+    }
+
     pub fn active(&self) -> Option<&OpenDocumentTab> {
         let active = self.active.as_ref()?;
         self.tabs.iter().find(|tab| &tab.id == active)
+    }
+
+    pub fn get(&self, id: &TabId) -> Option<&OpenDocumentTab> {
+        self.tabs.iter().find(|tab| &tab.id == id)
+    }
+
+    pub fn contains_document(&self, document_id: &DocumentId) -> Option<TabId> {
+        self.tabs
+            .iter()
+            .find(|tab| &tab.document_id == document_id)
+            .map(|tab| tab.id.clone())
     }
 
     pub fn open(&mut self, snapshot: DocumentSnapshot) -> TabId {
@@ -81,6 +96,15 @@ impl TabManager {
         }
         self.active = Some(id.clone());
         id
+    }
+
+    pub fn activate(&mut self, id: &TabId) -> bool {
+        if self.tabs.iter().any(|tab| &tab.id == id) {
+            self.active = Some(id.clone());
+            true
+        } else {
+            false
+        }
     }
 
     pub fn close(&mut self, id: &TabId) -> Option<OpenDocumentTab> {
@@ -131,7 +155,7 @@ impl TabManager {
             let Some(suffix) = suffix else { continue };
             let old_id = tab.id.clone();
             tab.path = format!("{target}{suffix}");
-            tab.document_id = leafmark_domain::DocumentId::workspace(tab.path.clone());
+            tab.document_id = DocumentId::workspace(tab.path.clone());
             tab.id = TabId::from(tab.document_id.clone());
             if self.active.as_ref() == Some(&old_id) {
                 self.active = Some(tab.id.clone());
@@ -159,14 +183,25 @@ mod tests {
     }
 
     #[test]
-    fn tab_edit_save_and_directory_remap_are_stable() {
+    fn tab_edit_save_activate_and_directory_remap_are_stable() {
         let mut tabs = TabManager::default();
-        let id = tabs.open(DocumentSnapshot::workspace("old/a.md", "one"));
-        tabs.replace_content(&id, "two".to_owned());
+        let first = tabs.open(DocumentSnapshot::workspace("old/a.md", "one"));
+        let second = tabs.open(DocumentSnapshot::workspace("old/b.md", "two"));
+        assert!(tabs.activate(&first));
+        tabs.replace_content(&first, "updated".to_owned());
         assert!(tabs.active().is_some_and(OpenDocumentTab::is_dirty));
-        tabs.mark_saved(&id);
+        tabs.mark_saved(&first);
         tabs.remap_workspace_path("old", "new");
         assert_eq!(tabs.active().map(|tab| tab.path.as_str()), Some("new/a.md"));
         assert!(!tabs.active().is_some_and(OpenDocumentTab::is_dirty));
+        assert!(tabs.close(&second).is_some());
+    }
+
+    #[test]
+    fn finds_an_existing_document_without_reopening_it() {
+        let mut tabs = TabManager::default();
+        let id = tabs.open(DocumentSnapshot::workspace("note.md", "body"));
+        let document_id = DocumentId::workspace("note.md");
+        assert_eq!(tabs.contains_document(&document_id), Some(id));
     }
 }
