@@ -1,4 +1,4 @@
-import type { DocumentOrigin, LoadedDocument } from "./types";
+import type { DocumentKind, DocumentOrigin, LoadedDocument } from "./types";
 
 export interface OpenDocumentTab {
   key: string;
@@ -12,6 +12,9 @@ export interface OpenDocumentTab {
   renderedHtml: string;
   size: number;
   modifiedMs: number;
+  documentKind: DocumentKind;
+  assetPath: string;
+  format: string;
 }
 
 export function documentTabKey(document: Pick<LoadedDocument, "origin" | "archiveId" | "path">) {
@@ -31,6 +34,9 @@ export function tabFromLoadedDocument(document: LoadedDocument): OpenDocumentTab
     renderedHtml: document.html,
     size: document.size,
     modifiedMs: document.modifiedMs,
+    documentKind: document.documentKind,
+    assetPath: document.assetPath,
+    format: document.format,
   };
 }
 

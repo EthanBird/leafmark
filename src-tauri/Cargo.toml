@@ -1,7 +1,7 @@
 [package]
 name = "leafmark"
-version = "0.7.5"
-description = "A fast, local-first Markdown workspace"
+version = "0.7.6"
+description = "A fast, local-first document workspace"
 authors = ["LeafMark contributors"]
 edition = "2021"
 rust-version = "1.77"

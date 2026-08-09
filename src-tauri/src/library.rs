@@ -7,7 +7,15 @@ use std::{
 
 use super::atomic_write;
 
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 2;
+
+fn markdown_kind() -> String {
+    "markdown".into()
+}
+
+fn markdown_extension() -> String {
+    "md".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,12 +28,22 @@ pub(crate) struct ArchiveEntry {
     pub source_exists: bool,
     pub size: u64,
     pub modified_ms: u64,
+    #[serde(default = "markdown_kind")]
+    pub document_kind: String,
+    #[serde(default = "markdown_extension")]
+    pub snapshot_extension: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArchivedContent {
     pub entry: ArchiveEntry,
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ArchivedBinary {
+    pub entry: ArchiveEntry,
+    pub snapshot_path: PathBuf,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -47,7 +65,7 @@ impl DocumentArchive {
         let documents_dir = root.join("documents");
         fs::create_dir_all(&documents_dir).map_err(error_string)?;
         let index_path = root.join("index.json");
-        let index = match fs::read(&index_path) {
+        let mut index = match fs::read(&index_path) {
             Ok(bytes) => match serde_json::from_slice::<ArchiveIndex>(&bytes) {
                 Ok(index) => index,
                 Err(_) => {
@@ -65,6 +83,13 @@ impl DocumentArchive {
             },
             Err(error) => return Err(error_string(error)),
         };
+        index.version = INDEX_VERSION;
+        for entry in &mut index.documents {
+            if entry.document_kind.trim().is_empty() {
+                entry.document_kind = markdown_kind();
+            }
+            entry.snapshot_extension = safe_snapshot_extension(&entry.snapshot_extension);
+        }
         let archive = Self {
             documents_dir,
             index_path,
@@ -129,6 +154,8 @@ impl DocumentArchive {
                 source_exists: true,
                 size,
                 modified_ms,
+                document_kind: markdown_kind(),
+                snapshot_extension: markdown_extension(),
             });
             self.index.documents.len() - 1
         };
@@ -143,11 +170,13 @@ impl DocumentArchive {
         entry.source_exists = true;
         entry.size = size;
         entry.modified_ms = modified_ms;
+        entry.document_kind = markdown_kind();
+        entry.snapshot_extension = markdown_extension();
         if touch {
             entry.last_opened_ms = now_ms();
         }
         let result = entry.clone();
-        atomic_write(&self.snapshot_path(&result.id), content.as_bytes())?;
+        atomic_write(&self.snapshot_path_for_entry(&result), content.as_bytes())?;
         self.persist()?;
         Ok(result)
     }
@@ -172,8 +201,8 @@ impl DocumentArchive {
         let metadata = fs::metadata(&canonical).map_err(error_string)?;
         let bytes = fs::read(&canonical).map_err(error_string)?;
         let content = super::decode_text(&bytes);
-        let duplicate_id = self.index.documents.iter().find_map(|entry| {
-            let snapshot = fs::read(self.snapshot_path(&entry.id)).ok()?;
+        let duplicate_id = self.index.documents.iter().filter(|entry| entry.document_kind == "markdown").find_map(|entry| {
+            let snapshot = fs::read(self.snapshot_path_for_entry(entry)).ok()?;
             (super::decode_text(&snapshot) == content).then(|| entry.id.clone())
         });
         if let Some(id) = duplicate_id {
@@ -206,7 +235,10 @@ impl DocumentArchive {
             .position(|entry| entry.id == id)
             .ok_or_else(|| "历史记录不存在".to_string())?;
         let source = PathBuf::from(&self.index.documents[position].source_path);
-        let snapshot_path = self.snapshot_path(id);
+        if self.index.documents[position].document_kind != "markdown" {
+            return Err("此保留副本不是 Markdown 文档".into());
+        }
+        let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
         let bytes = fs::read(&snapshot_path)
             .map_err(|error| format!("LeafMark 保留副本无法读取：{error}"))?;
         let content = super::decode_text(&bytes);
@@ -222,6 +254,97 @@ impl DocumentArchive {
         })
     }
 
+    /// Stores a byte-for-byte retained copy of a read-only document. The copy
+    /// is opened on every subsequent history/favorite access, so temporary
+    /// attachment paths can disappear without losing the document.
+    pub(crate) fn open_binary_source(
+        &mut self,
+        source: &Path,
+        document_kind: &str,
+    ) -> Result<ArchivedBinary, String> {
+        let canonical = source.canonicalize().map_err(error_string)?;
+        if !canonical.is_file() {
+            return Err("目标不是文件".into());
+        }
+        let key = path_key(&canonical);
+        if let Some(id) = self
+            .index
+            .documents
+            .iter()
+            .find(|entry| path_key(Path::new(&entry.source_path)) == key)
+            .map(|entry| entry.id.clone())
+        {
+            return self.open_binary(&id);
+        }
+
+        let metadata = fs::metadata(&canonical).map_err(error_string)?;
+        let extension = canonical
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(safe_snapshot_extension)
+            .unwrap_or_else(|| "bin".into());
+        let id = self.unique_id(&key);
+        let entry = ArchiveEntry {
+            id,
+            name: canonical
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            source_path: canonical.to_string_lossy().into_owned(),
+            last_opened_ms: now_ms(),
+            favorite: false,
+            source_exists: true,
+            size: metadata.len(),
+            modified_ms: modified_ms(&metadata),
+            document_kind: document_kind.into(),
+            snapshot_extension: extension,
+        };
+        let snapshot_path = self.snapshot_path_for_entry(&entry);
+        fs::copy(&canonical, &snapshot_path).map_err(error_string)?;
+        self.index.documents.push(entry.clone());
+        self.persist()?;
+        Ok(ArchivedBinary {
+            entry,
+            snapshot_path,
+        })
+    }
+
+    pub(crate) fn open_binary(&mut self, id: &str) -> Result<ArchivedBinary, String> {
+        let position = self
+            .index
+            .documents
+            .iter()
+            .position(|entry| entry.id == id)
+            .ok_or_else(|| "历史记录不存在".to_string())?;
+        if self.index.documents[position].document_kind == "markdown" {
+            return Err("此保留副本是 Markdown 文档".into());
+        }
+        let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
+        let snapshot_size = fs::metadata(&snapshot_path)
+            .map_err(|error| format!("LeafMark 保留副本无法读取：{error}"))?
+            .len();
+        let entry = &mut self.index.documents[position];
+        entry.source_exists = Path::new(&entry.source_path).is_file();
+        entry.last_opened_ms = now_ms();
+        entry.size = snapshot_size;
+        let result = entry.clone();
+        self.persist()?;
+        Ok(ArchivedBinary {
+            entry: result,
+            snapshot_path,
+        })
+    }
+
+    pub(crate) fn document_kind(&self, id: &str) -> Result<&str, String> {
+        self.index
+            .documents
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.document_kind.as_str())
+            .ok_or_else(|| "历史记录不存在".to_string())
+    }
+
     pub(crate) fn write(&mut self, id: &str, content: &str) -> Result<ArchiveEntry, String> {
         let position = self
             .index
@@ -231,7 +354,11 @@ impl DocumentArchive {
             .ok_or_else(|| "历史记录不存在".to_string())?;
         let source = PathBuf::from(&self.index.documents[position].source_path);
         let source_exists = source.is_file();
-        atomic_write(&self.snapshot_path(id), content.as_bytes())?;
+        if self.index.documents[position].document_kind != "markdown" {
+            return Err("Office 与 PDF 文档当前为只读模式".into());
+        }
+        let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
+        atomic_write(&snapshot_path, content.as_bytes())?;
         let entry = &mut self.index.documents[position];
         entry.source_exists = source_exists;
         entry.size = content.len() as u64;
@@ -252,7 +379,7 @@ impl DocumentArchive {
             .iter()
             .find(|entry| entry.id == id)
             .ok_or_else(|| "历史记录不存在".to_string())?;
-        let bytes = fs::read(self.snapshot_path(id))
+        let bytes = fs::read(self.snapshot_path_for_entry(entry))
             .map_err(|error| format!("LeafMark 保留副本无法读取：{error}"))?;
         Ok((entry.name.clone(), bytes))
     }
@@ -264,7 +391,8 @@ impl DocumentArchive {
             .iter()
             .position(|entry| entry.id == id)
             .ok_or_else(|| "历史记录不存在".to_string())?;
-        atomic_write(&self.snapshot_path(id), bytes)?;
+        let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
+        atomic_write(&snapshot_path, bytes)?;
         let entry = &mut self.index.documents[position];
         entry.size = bytes.len() as u64;
         entry.modified_ms = now_ms();
@@ -300,7 +428,7 @@ impl DocumentArchive {
             return Err("请先取消收藏，再移除这条历史记录".into());
         }
         let entry = self.index.documents.remove(position);
-        match fs::remove_file(self.snapshot_path(&entry.id)) {
+        match fs::remove_file(self.snapshot_path_for_entry(&entry)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error_string(error)),
@@ -310,16 +438,16 @@ impl DocumentArchive {
     }
 
     pub(crate) fn clear_history(&mut self) -> Result<Vec<ArchiveEntry>, String> {
-        let removed: Vec<String> = self
+        let removed: Vec<ArchiveEntry> = self
             .index
             .documents
             .iter()
             .filter(|entry| !entry.favorite)
-            .map(|entry| entry.id.clone())
+            .cloned()
             .collect();
         self.index.documents.retain(|entry| entry.favorite);
-        for id in removed {
-            match fs::remove_file(self.snapshot_path(&id)) {
+        for entry in removed {
+            match fs::remove_file(self.snapshot_path_for_entry(&entry)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error_string(error)),
@@ -340,7 +468,7 @@ impl DocumentArchive {
         if source.is_file() {
             return Ok(source);
         }
-        let snapshot = self.snapshot_path(id);
+        let snapshot = self.snapshot_path_for_entry(entry);
         if snapshot.is_file() {
             return Ok(snapshot);
         }
@@ -398,8 +526,12 @@ impl DocumentArchive {
         Ok(())
     }
 
-    fn snapshot_path(&self, id: &str) -> PathBuf {
-        self.documents_dir.join(format!("{id}.md"))
+    fn snapshot_path_for_entry(&self, entry: &ArchiveEntry) -> PathBuf {
+        self.documents_dir.join(format!(
+            "{}.{}",
+            entry.id,
+            safe_snapshot_extension(&entry.snapshot_extension)
+        ))
     }
 
     fn unique_id(&self, key: &str) -> String {
@@ -459,6 +591,20 @@ fn safe_relative_suffix(path: &Path) -> bool {
         .all(|component| matches!(component, Component::Normal(_)))
 }
 
+fn safe_snapshot_extension(value: &str) -> String {
+    let extension: String = value
+        .trim_start_matches('.')
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(12)
+        .collect();
+    if extension.is_empty() {
+        "bin".into()
+    } else {
+        extension.to_ascii_lowercase()
+    }
+}
+
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in bytes {
@@ -498,6 +644,27 @@ mod tests {
         let retained = archive.open(&opened.entry.id).unwrap();
 
         assert_eq!(retained.content, "# retained");
+        assert!(!retained.entry.source_exists);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retained_binary_snapshot_survives_source_deletion() {
+        let root = test_root("binary-archive");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("report.xlsx");
+        let payload = b"fake-xlsx-payload\0\x01\x02";
+        fs::write(&source, payload).unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+
+        let opened = archive.open_binary_source(&source, "spreadsheet").unwrap();
+        assert_eq!(opened.entry.document_kind, "spreadsheet");
+        assert_eq!(opened.entry.snapshot_extension, "xlsx");
+        fs::remove_file(&source).unwrap();
+        let retained = archive.open_binary(&opened.entry.id).unwrap();
+
+        assert_eq!(fs::read(retained.snapshot_path).unwrap(), payload);
         assert!(!retained.entry.source_exists);
         let _ = fs::remove_dir_all(root);
     }

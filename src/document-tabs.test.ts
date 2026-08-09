@@ -19,6 +19,9 @@ const loaded = (path: string, archiveId = ""): LoadedDocument => ({
   size: path.length,
   modifiedMs: 1,
   cached: false,
+  documentKind: "markdown",
+  assetPath: "",
+  format: "MARKDOWN",
 });
 
 describe("document tabs", () => {
