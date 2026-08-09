@@ -138,12 +138,19 @@ jobs:
           tagName: v__VERSION__
           releaseName: LeafMark v__VERSION__
           releaseBody: |
+            - 基于稳定的 v0.7.5 WebView2/Tauri 架构继续开发；0.8.0 Native 实验线不再作为产品基线
+            - 新增 Word、Excel、PowerPoint 与 PDF 本地只读查看：Office 在独立 Worker 中解析，PDF 使用 WebView2 原生引擎
+            - Word 分段、表格按行、演示按页加载；大文档解析不会阻塞主界面
+            - Office/PDF 首次打开即保存逐字节原件快照；源文件删除后，历史和收藏仍能继续打开
+            - 支持 DOCX/RTF、XLSX/XLS/XLSB/ODS/CSV、PPTX/ODP 与 PDF；旧 DOC/PPT 保留原件并使用系统 Office/LibreOffice 回退
+            - 安装版注册 Markdown、Word、表格、演示与 PDF 的“打开方式”；Markdown 默认应用设置保持不变
+            - 生产依赖审计为 0 个已知漏洞；Windows CI 已通过前端、Rust、portable 与打包策略检查
             - Windows x64 WebView2 完整离线安装版：安装包内置 Evergreen Standalone Installer，断网且系统没有 WebView2 Runtime 时也可完成安装
             - 采用 NSIS LZMA solid 压缩；微软离线安装器本身已高度压缩，不再套几乎不能缩小体积的二次归档
             - NSIS 安装版固定为当前用户安装，LeafMark 安装程序不主动请求管理员权限；已安装合适 WebView2 的系统不会重复安装
             - Windows x64 免安装便携 ZIP：解压后直接运行 LeafMark.exe，不运行安装程序，也不请求管理员权限；便携版仍要求系统已有 WebView2 Runtime
             - 便携版使用独立 portable 编译模式，LeafMark 的文件关联注册表查询、写入和默认应用入口均不会编译进程序
-            - 设置页会明确显示“Windows 便携模式”，且不提供任何注册文件关联的按钮；仍可在应用内打开文件或把 Markdown 拖到 EXE 上
+            - 设置页会明确显示“Windows 便携模式”，且不提供任何注册文件关联的按钮；仍可在应用内打开文档或把支持的文件拖到 EXE 上
 
             缺少 WebView2 或需要完全离线安装时请下载 WebView2 Offline Setup；免安装使用请下载 Portable ZIP。Windows 未签名构建可能触发 SmartScreen 提示。
           releaseDraft: true
