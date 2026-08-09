@@ -217,7 +217,7 @@ export const api = {
     }
     return {
       settings: browserSettings,
-      entries: [{ path: "欢迎.md", name: "欢迎.md", kind: "file", depth: 0, size: sample.length, modifiedMs: Date.now() }],
+      entries: [{ path: "欢迎.md", name: "欢迎.md", kind: "file", depth: 0, size: sample.length, modifiedMs: Date.now(), documentKind: "markdown" }],
       library: [],
       initialDocument: null,
       pendingOpenPaths: [],
@@ -298,7 +298,7 @@ export const api = {
   },
   async listEntries(): Promise<DocumentEntry[]> {
     if (isTauri()) return invoke("list_entries");
-    return [{ path: "欢迎.md", name: "欢迎.md", kind: "file", depth: 0, size: sample.length, modifiedMs: Date.now() }];
+    return [{ path: "欢迎.md", name: "欢迎.md", kind: "file", depth: 0, size: sample.length, modifiedMs: Date.now(), documentKind: "markdown" }];
   },
   async readDocument(path: string): Promise<LoadedDocument> {
     if (isTauri()) return invoke("read_document", { relativePath: path });
@@ -314,6 +314,9 @@ export const api = {
       size: sample.length,
       modifiedMs: Date.now(),
       cached: false,
+      documentKind: "markdown",
+      assetPath: "",
+      format: "MARKDOWN",
     };
   },
   async openExternalDocument(path: string): Promise<LoadedDocument> {

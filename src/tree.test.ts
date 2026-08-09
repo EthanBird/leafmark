@@ -5,8 +5,8 @@ import type { DocumentEntry } from "./types";
 describe("document tree", () => {
   it("builds nested directories independently of source order", () => {
     const entries: DocumentEntry[] = [
-      { path: "guide/start.md", name: "start.md", kind: "file", depth: 1, size: 1, modifiedMs: 0 },
-      { path: "guide", name: "guide", kind: "directory", depth: 0, size: 0, modifiedMs: 0 },
+      { path: "guide/start.md", name: "start.md", kind: "file", depth: 1, size: 1, modifiedMs: 0, documentKind: "markdown" },
+      { path: "guide", name: "guide", kind: "directory", depth: 0, size: 0, modifiedMs: 0, documentKind: "directory" },
     ];
     const tree = buildTree(entries);
     expect(tree).toHaveLength(1);
