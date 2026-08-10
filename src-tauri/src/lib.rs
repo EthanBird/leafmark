@@ -10,7 +10,7 @@ mod agent_terminal;
 use atomicwrites::{AllowOverwrite, AtomicFile};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ignore::WalkBuilder;
-use library::{ArchiveEntry, ArchivedContent, DocumentArchive};
+use library::{ArchiveEntry, ArchivedBinary, ArchivedContent, DocumentArchive};
 use parking_lot::Mutex;
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use system_integration::{
-    association_status, configure_markdown_association, markdown_paths_from_args, AssociationStatus,
+    association_status, configure_markdown_association, document_paths_from_args, AssociationStatus,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -33,7 +33,6 @@ use tauri_plugin_fs::FsExt;
 
 const CACHE_DOCUMENTS: usize = 12;
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_IMPORTED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const EXPORT_STAGE_DIRECTORY: &str = "export-staging";
@@ -41,6 +40,11 @@ const SHARED_EXPORT_DIRECTORY: &str = "shared-exports";
 const MAX_EXPORT_FILE_NAME_BYTES: usize = 220;
 const MAX_EXPORT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
+const WORD_EXTENSIONS: [&str; 3] = ["docx", "doc", "rtf"];
+const SPREADSHEET_EXTENSIONS: [&str; 5] = ["xlsx", "xls", "xlsb", "ods", "csv"];
+const PRESENTATION_EXTENSIONS: [&str; 3] = ["pptx", "ppt", "odp"];
+const PDF_EXTENSIONS: [&str; 1] = ["pdf"];
+const MAX_VIEWER_DOCUMENT_BYTES: u64 = 512 * 1024 * 1024;
 const SETTINGS_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,6 +208,7 @@ struct DocumentEntry {
     depth: usize,
     size: u64,
     modified_ms: u64,
+    document_kind: &'static str,
 }
 
 #[derive(Serialize)]
@@ -227,6 +232,9 @@ struct LoadedDocument {
     size: u64,
     modified_ms: u64,
     cached: bool,
+    document_kind: &'static str,
+    asset_path: String,
+    format: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -423,7 +431,7 @@ fn read_document(
     relative_path: String,
     state: State<'_, AppState>,
 ) -> Result<LoadedDocument, String> {
-    let relative = validate_markdown_path(&relative_path)?;
+    let relative = validate_document_path(&relative_path)?;
     let mut inner = state.0.lock();
     let target = secure_existing_path(&inner.workspace, &relative)?;
     let metadata = fs::metadata(&target).map_err(error_string)?;
@@ -433,6 +441,18 @@ fn read_document(
     let size = metadata.len();
     let modified_ms = modified_ms(&metadata);
     let normalized = path_to_slash(&relative);
+
+    if !is_markdown(&target) {
+        ensure_viewer_size(size)?;
+        let kind = document_kind(&target).ok_or_else(|| "不支持此文档格式".to_string())?;
+        let archived = inner.library.open_binary_source(&target, kind)?;
+        return Ok(loaded_from_binary(
+            archived,
+            normalized,
+            "workspace",
+            false,
+        ));
+    }
 
     if let Some(cached) = inner.cache.get(&normalized, size, modified_ms) {
         let archive = inner
@@ -449,6 +469,9 @@ fn read_document(
             size,
             modified_ms,
             cached: true,
+            document_kind: "markdown",
+            asset_path: String::new(),
+            format: "MARKDOWN".into(),
         });
     }
 
@@ -476,6 +499,9 @@ fn read_document(
         size,
         modified_ms,
         cached: false,
+        document_kind: "markdown",
+        asset_path: String::new(),
+        format: "MARKDOWN".into(),
     })
 }
 
@@ -493,9 +519,21 @@ fn load_external_document(path: &str, inner: &mut InnerState) -> Result<LoadedDo
     if !requested.is_absolute() {
         return Err("外部文档必须使用绝对路径".into());
     }
-    ensure_markdown_extension(&requested)?;
-    let archived = inner.library.open_source(&requested)?;
-    Ok(loaded_from_archive(archived))
+    ensure_supported_extension(&requested)?;
+    if is_markdown(&requested) {
+        let archived = inner.library.open_source(&requested)?;
+        return Ok(loaded_from_archive(archived));
+    }
+    let metadata = fs::metadata(&requested).map_err(error_string)?;
+    ensure_viewer_size(metadata.len())?;
+    let kind = document_kind(&requested).ok_or_else(|| "不支持此文档格式".to_string())?;
+    let archived = inner.library.open_binary_source(&requested, kind)?;
+    Ok(loaded_from_binary(
+        archived,
+        requested.to_string_lossy().into_owned(),
+        "archive",
+        false,
+    ))
 }
 
 #[tauri::command]
@@ -504,8 +542,13 @@ fn open_archived_document(
     state: State<'_, AppState>,
 ) -> Result<LoadedDocument, String> {
     let mut inner = state.0.lock();
-    let archived = inner.library.open(&id)?;
-    Ok(loaded_from_archive(archived))
+    let kind = inner.library.document_kind(&id)?.to_owned();
+    if kind == "markdown" {
+        return Ok(loaded_from_archive(inner.library.open(&id)?));
+    }
+    let archived = inner.library.open_binary(&id)?;
+    let path = archived.entry.source_path.clone();
+    Ok(loaded_from_binary(archived, path, "archive", true))
 }
 
 #[tauri::command]
@@ -529,6 +572,25 @@ fn save_archived_to_workspace(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let mut inner = state.0.lock();
+    let kind = inner.library.document_kind(&id)?.to_owned();
+    if kind != "markdown" {
+        let archived = inner.library.open_binary(&id)?;
+        let source = PathBuf::from(&archived.entry.source_path);
+        if let Ok(relative) = source.strip_prefix(&inner.workspace) {
+            return Ok(path_to_slash(relative));
+        }
+        let destination = unique_destination(
+            &inner.workspace,
+            Path::new(&archived.entry.name)
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("保留文档.bin")),
+        );
+        fs::copy(&archived.snapshot_path, &destination).map_err(error_string)?;
+        let relative = destination
+            .strip_prefix(&inner.workspace)
+            .map_err(|_| "保存路径超出文档库".to_string())?;
+        return Ok(path_to_slash(relative));
+    }
     let archived = inner.library.open(&id)?;
     let source = PathBuf::from(&archived.entry.source_path);
     if let Ok(relative) = source.strip_prefix(&inner.workspace) {
@@ -734,8 +796,11 @@ fn rename_entry(
     let source = secure_existing_path(&inner.workspace, &source_relative)?;
     let metadata = fs::metadata(&source).map_err(error_string)?;
     if metadata.is_file() {
-        ensure_markdown_extension(&source_relative)?;
-        ensure_markdown_extension(&target_relative)?;
+        ensure_supported_extension(&source_relative)?;
+        ensure_supported_extension(&target_relative)?;
+        if document_kind(&source_relative) != document_kind(&target_relative) {
+            return Err("重命名不能改变文档类型".into());
+        }
     }
     let target = secure_target_path(&inner.workspace, &target_relative)?;
     if target.exists() {
@@ -793,7 +858,7 @@ fn import_files(
                     .read(tauri_plugin_fs::FilePath::Url(url.clone()))
                     .map_err(|error| format!("无法读取 Android 文档：{error}"))?;
                 if bytes.len() > MAX_OPENED_DOCUMENT_BYTES {
-                    return Err("Markdown 文档超过 32 MB，已拒绝导入".into());
+                    return Err("Android 文档超过 32 MB，已拒绝导入以保护移动设备内存".into());
                 }
                 let name = opened_url_filename(&url);
                 let destination =
@@ -810,10 +875,11 @@ fn import_files(
         }
 
         let source = PathBuf::from(&source_value);
-        ensure_markdown_extension(&source)?;
+        ensure_supported_extension(&source)?;
         if !source.is_file() {
             continue;
         }
+        ensure_viewer_size(fs::metadata(&source).map_err(error_string)?.len())?;
         let name = source
             .file_name()
             .ok_or_else(|| "导入文件缺少名称".to_string())?;
@@ -957,6 +1023,43 @@ fn loaded_from_archive(archived: ArchivedContent) -> LoadedDocument {
         content: archived.content,
         html,
         cached: false,
+        document_kind: "markdown",
+        asset_path: String::new(),
+        format: "MARKDOWN".into(),
+    }
+}
+
+fn loaded_from_binary(
+    archived: ArchivedBinary,
+    path: String,
+    origin: &'static str,
+    cached: bool,
+) -> LoadedDocument {
+    let document_kind = match archived.entry.document_kind.as_str() {
+        "word" => "word",
+        "spreadsheet" => "spreadsheet",
+        "presentation" => "presentation",
+        "pdf" => "pdf",
+        _ => "unsupported",
+    };
+    let format = archived
+        .entry
+        .snapshot_extension
+        .to_ascii_uppercase();
+    LoadedDocument {
+        path,
+        origin,
+        archive_id: archived.entry.id,
+        source_path: archived.entry.source_path,
+        source_exists: archived.entry.source_exists,
+        content: String::new(),
+        html: String::new(),
+        size: archived.entry.size,
+        modified_ms: archived.entry.modified_ms,
+        cached,
+        document_kind,
+        asset_path: archived.snapshot_path.to_string_lossy().into_owned(),
+        format,
     }
 }
 
@@ -1111,7 +1214,7 @@ fn scan_entries(root: &Path) -> Result<Vec<DocumentEntry>, String> {
         if !kind.is_file() {
             continue;
         }
-        if !is_markdown(path) {
+        if !is_supported_document(path) {
             continue;
         }
         let relative = path
@@ -1137,6 +1240,7 @@ fn scan_entries(root: &Path) -> Result<Vec<DocumentEntry>, String> {
             depth: relative.components().count().saturating_sub(1),
             size: metadata.len(),
             modified_ms: modified_ms(&metadata),
+            document_kind: document_kind(path).unwrap_or("unsupported"),
         });
     }
 
@@ -1155,6 +1259,7 @@ fn scan_entries(root: &Path) -> Result<Vec<DocumentEntry>, String> {
                 depth: relative.components().count().saturating_sub(1),
                 size: 0,
                 modified_ms: metadata.as_ref().map_or(0, modified_ms),
+                document_kind: "directory",
             }
         })
         .collect();
@@ -1242,22 +1347,16 @@ fn copy_markdown_directory(
                 directories += 1;
                 continue;
             }
-            if !kind.is_file() || !is_markdown(entry.path()) {
+            if !kind.is_file() || !is_supported_document(entry.path()) {
                 continue;
             }
             let metadata = entry.metadata().map_err(error_string)?;
-            if metadata.len() > MAX_IMPORTED_DOCUMENT_BYTES as u64 {
-                return Err(format!(
-                    "Markdown 文档超过 32 MB：{}",
-                    entry.path().display()
-                ));
-            }
-            let bytes = fs::read(entry.path()).map_err(error_string)?;
+            ensure_viewer_size(metadata.len())?;
             let target = staging.join(relative);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(error_string)?;
             }
-            atomic_write(&target, &bytes)?;
+            fs::copy(entry.path(), &target).map_err(error_string)?;
             files.push(relative.to_path_buf());
         }
         Ok((files, directories))
@@ -1320,12 +1419,55 @@ fn validate_markdown_path(value: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn validate_document_path(value: &str) -> Result<PathBuf, String> {
+    let path = validate_relative(value)?;
+    ensure_supported_extension(&path)?;
+    Ok(path)
+}
+
 fn ensure_markdown_extension(path: &Path) -> Result<(), String> {
     if is_markdown(path) {
         Ok(())
     } else {
         Err("仅支持 .md 与 .markdown 文档".into())
     }
+}
+
+fn ensure_supported_extension(path: &Path) -> Result<(), String> {
+    if is_supported_document(path) {
+        Ok(())
+    } else {
+        Err("支持 Markdown、Word、Excel、PowerPoint 与 PDF 文档".into())
+    }
+}
+
+fn ensure_viewer_size(size: u64) -> Result<(), String> {
+    if size <= MAX_VIEWER_DOCUMENT_BYTES {
+        Ok(())
+    } else {
+        Err("文档超过 512 MB；为避免耗尽内存，LeafMark 已停止载入".into())
+    }
+}
+
+fn document_kind(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    if MARKDOWN_EXTENSIONS.contains(&extension.as_str()) {
+        Some("markdown")
+    } else if WORD_EXTENSIONS.contains(&extension.as_str()) {
+        Some("word")
+    } else if SPREADSHEET_EXTENSIONS.contains(&extension.as_str()) {
+        Some("spreadsheet")
+    } else if PRESENTATION_EXTENSIONS.contains(&extension.as_str()) {
+        Some("presentation")
+    } else if PDF_EXTENSIONS.contains(&extension.as_str()) {
+        Some("pdf")
+    } else {
+        None
+    }
+}
+
+fn is_supported_document(path: &Path) -> bool {
+    document_kind(path).is_some()
 }
 
 fn is_markdown(path: &Path) -> bool {
@@ -1499,7 +1641,7 @@ fn opened_url_filename(url: &tauri::Url) -> String {
         })
         .take(120)
         .collect();
-    if safe_name.is_empty() || !is_markdown(Path::new(&safe_name)) {
+    if safe_name.is_empty() || !is_supported_document(Path::new(&safe_name)) {
         safe_name = format!("打开的文档-{}.md", now_ms());
     }
     safe_name
@@ -1511,9 +1653,9 @@ fn local_path_from_opened_url(_app: &AppHandle, url: &tauri::Url) -> Result<Path
         let path = url
             .to_file_path()
             .map_err(|_| "无法解析系统传入的文件路径".to_string())?;
-        ensure_markdown_extension(&path)?;
+        ensure_supported_extension(&path)?;
         if !path.is_file() {
-            return Err("系统传入的 Markdown 文档不存在".into());
+            return Err("系统传入的文档不存在".into());
         }
         return path.canonicalize().map_err(error_string);
     }
@@ -1525,7 +1667,7 @@ fn local_path_from_opened_url(_app: &AppHandle, url: &tauri::Url) -> Result<Path
             .read(tauri_plugin_fs::FilePath::Url(url.clone()))
             .map_err(|error| format!("无法读取 Android 文档：{error}"))?;
         if bytes.len() > MAX_OPENED_DOCUMENT_BYTES {
-            return Err("Markdown 文档超过 32 MB，已拒绝导入".into());
+            return Err("Android 文档超过 32 MB，已拒绝导入以保护移动设备内存".into());
         }
         let incoming_dir = _app
             .path()
@@ -1857,10 +1999,10 @@ fn queue_opened_url(app: &AppHandle, url: &tauri::Url) {
                     inner.pending_open_paths.push(path.clone());
                 }
             }
-            let _ = app.emit("open-markdown", path);
+            let _ = app.emit("open-document", path);
         }
         Err(error) => {
-            let _ = app.emit("open-markdown-error", error);
+            let _ = app.emit("open-document-error", error);
         }
     }
 }
@@ -2024,14 +2166,14 @@ pub fn run() {
     let builder = builder.manage(agent_terminal::TerminalManager::default());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-        let paths = markdown_paths_from_args(args, Path::new(&cwd));
+        let paths = document_paths_from_args(args, Path::new(&cwd));
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
         }
         for path in paths {
-            let _ = app.emit("open-markdown", path);
+            let _ = app.emit("open-document", path);
         }
     }));
     let app = builder
@@ -2070,7 +2212,7 @@ pub fn run() {
             agent_vcs.recover_restore(&workspace, &mut library)?;
             agent_vcs.recover_pending(&workspace, &library)?;
             let cwd = std::env::current_dir().unwrap_or_else(|_| workspace.clone());
-            let pending_open_paths = markdown_paths_from_args(std::env::args_os(), &cwd);
+            let pending_open_paths = document_paths_from_args(std::env::args_os(), &cwd);
             app.manage(AgentVcsState(Mutex::new(agent_vcs)));
             app.manage(AppState(Mutex::new(InnerState {
                 settings,

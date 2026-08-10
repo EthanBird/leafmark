@@ -11,7 +11,10 @@ use std::{
 #[cfg(windows)]
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
-const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
+const DOCUMENT_EXTENSIONS: [&str; 14] = [
+    "md", "markdown", "docx", "doc", "rtf", "xlsx", "xls", "xlsb", "ods", "csv", "pptx",
+    "ppt", "odp", "pdf",
+];
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -24,7 +27,7 @@ pub(crate) struct AssociationStatus {
     pub message: String,
 }
 
-pub(crate) fn markdown_paths_from_args<I, S>(args: I, cwd: &Path) -> Vec<String>
+pub(crate) fn document_paths_from_args<I, S>(args: I, cwd: &Path) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -37,7 +40,7 @@ where
         } else {
             cwd.join(candidate)
         };
-        if !is_markdown(&candidate) || !candidate.is_file() {
+        if !is_supported_document(&candidate) || !candidate.is_file() {
             continue;
         }
         let Ok(canonical) = candidate.canonicalize() else {
@@ -174,11 +177,11 @@ pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, Stri
     Err("当前平台不支持在应用内配置默认 Markdown 打开方式".into())
 }
 
-fn is_markdown(path: &Path) -> bool {
+fn is_supported_document(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
         .is_some_and(|extension| {
-            MARKDOWN_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+            DOCUMENT_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
         })
 }
 
@@ -230,16 +233,19 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn extracts_only_existing_markdown_paths() {
+    fn extracts_only_existing_document_paths() {
         let root = std::env::temp_dir().join(format!("leafmark-args-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("open.md"), "# open").unwrap();
+        fs::write(root.join("deck.pptx"), "test").unwrap();
         fs::write(root.join("ignore.txt"), "ignore").unwrap();
 
-        let paths =
-            markdown_paths_from_args(["leafmark", "open.md", "ignore.txt", "missing.md"], &root);
+        let paths = document_paths_from_args(
+            ["leafmark", "open.md", "deck.pptx", "ignore.txt", "missing.md"],
+            &root,
+        );
 
-        assert_eq!(paths.len(), 1);
+        assert_eq!(paths.len(), 2);
         assert!(paths[0].ends_with("open.md"));
         let _ = fs::remove_dir_all(root);
     }

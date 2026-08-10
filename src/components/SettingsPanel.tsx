@@ -310,7 +310,7 @@ export function SettingsPanel({
 
             {section === "workspace" && (
               <>
-                <SettingsIntro title="文档库" description={isAndroid ? "Android 版使用应用私有文档库；从其他应用打开或手动导入的 Markdown 会复制并长期保留。" : "LeafMark 直接读取本地目录，不导入数据库，也不锁定你的内容。"} />
+                <SettingsIntro title="文档库" description={isAndroid ? "Android 版使用应用私有文档库；从其他应用打开或手动导入的文档会复制并长期保留。" : "LeafMark 直接读取本地目录，不导入数据库，也不锁定你的内容。"} />
                 <div className="workspace-card">
                   <div className="workspace-icon"><FolderOpen size={20} /></div>
                   <div><small>当前目录</small><strong title={settings.workspacePath}>{settings.workspacePath}</strong></div>
@@ -328,7 +328,7 @@ export function SettingsPanel({
 
             {section === "integration" && (
               <>
-                <SettingsIntro title="系统集成" description={isAndroid ? "从文件管理器、聊天、网盘或其他应用把 Markdown 直接交给 LeafMark。" : "从资源管理器右键菜单、打开方式或双击直接进入 LeafMark。"} />
+                <SettingsIntro title="系统集成" description={isAndroid ? "从文件管理器、聊天、网盘或其他应用把本地文档直接交给 LeafMark。" : "从资源管理器右键菜单、打开方式或双击直接进入 LeafMark。"} />
                 <div className="association-card">
                   <div className={`association-icon${associationStatus.isDefault || associationStatus.registered ? " ready" : ""}`}>
                     {associationStatus.isDefault || associationStatus.registered ? <Check size={20} /> : <AppWindow size={20} />}
@@ -360,7 +360,7 @@ export function SettingsPanel({
                 </div>}
                 <div className="settings-note">
                   {isAndroid
-                    ? "首次从其他应用打开 .md / .markdown 时选择 LeafMark；若系统提供“始终”选项，可将它设为默认打开方式。ACTION_VIEW、ACTION_SEND 与多文件分享均已注册。"
+                    ? "LeafMark 可接收 Markdown、Office 与 PDF；首次打开时在系统选择器中选 LeafMark。Markdown 仍支持编辑，其余格式以本地只读方式打开。"
                     : "Windows 会阻止应用静默篡改默认程序。LeafMark 会先注册为 Markdown 打开方式，再带你进入系统确认页；确认后，右键“打开方式”和双击都会交给 LeafMark。"}
                 </div>
               </>

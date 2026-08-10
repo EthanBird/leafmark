@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LeafMark",
-  "version": "0.7.2",
+  "version": "0.7.7",
   "identifier": "com.leafmark.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -11,7 +11,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob: https: http:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'",
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob: https: http:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; worker-src 'self' blob:; object-src 'none'; frame-src asset: http://asset.localhost blob:",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
@@ -47,8 +47,8 @@
       "icons/icon.ico"
     ],
     "category": "Productivity",
-    "shortDescription": "LeafMark（一叶），高性能本地 Markdown 工作区",
-    "longDescription": "LeafMark（一叶）使用 Rust 高性能渲染 Markdown，支持 Mermaid 图表、KaTeX 数学公式与实时编辑。",
+    "shortDescription": "LeafMark（一叶），高性能本地文档工作区",
+    "longDescription": "LeafMark（一叶）可快速打开 Markdown、Word、Excel、PowerPoint 与 PDF，并为历史和收藏保留本地原件副本。",
     "fileAssociations": [
       {
         "ext": ["md", "markdown"],
@@ -57,6 +57,31 @@
         "mimeType": "text/markdown",
         "role": "Editor",
         "androidIntentActionFilters": ["view", "send", "sendMultiple"]
+      },
+      {
+        "ext": ["docx", "doc", "rtf"],
+        "name": "Word 文档",
+        "description": "Word 文档",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["xlsx", "xls", "xlsb", "ods", "csv"],
+        "name": "电子表格",
+        "description": "Excel 与电子表格文档",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["pptx", "ppt", "odp"],
+        "name": "演示文稿",
+        "description": "PowerPoint 与演示文稿",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["pdf"],
+        "name": "PDF 文档",
+        "description": "PDF 文档",
+        "mimeType": "application/pdf",
+        "role": "Viewer"
       }
     ]
   }

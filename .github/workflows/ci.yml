@@ -1,0 +1,80 @@
+name: Validate LeafMark
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - "agent/**"
+      - "feature/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: leafmark-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Typecheck, test and build
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+
+  native-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Tauri Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test Rust core
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify v0.7.2 product baseline
+        shell: bash
+        run: |
+          test "$(node -p "require('./package.json').version")" = "0.7.7"
+          ! grep -q 'offlineInstaller' src-tauri/tauri.conf.json
+          ! grep -q 'portable' src-tauri/Cargo.toml
+          grep -q 'release-android:' .github/workflows/release.yml
+          grep -q 'release-linux:' .github/workflows/release.yml

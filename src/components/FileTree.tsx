@@ -1,4 +1,4 @@
-import { ChevronRight, FileText, Folder, FolderOpen, MoreHorizontal } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, FileText, Folder, FolderOpen, MoreHorizontal, MonitorPlay } from "lucide-react";
 import type { MouseEvent } from "react";
 import type { TreeNode } from "../types";
 
@@ -17,6 +17,7 @@ export function FileTree({ nodes, selectedPath, expanded, onOpen, onToggle, onMe
       {nodes.map((node) => {
         const directory = node.entry.kind === "directory";
         const open = expanded.has(node.entry.path);
+        const DocumentIcon = node.entry.documentKind === "spreadsheet" ? FileSpreadsheet : node.entry.documentKind === "presentation" ? MonitorPlay : FileText;
         return (
           <div key={node.entry.path}>
             <div
@@ -35,7 +36,7 @@ export function FileTree({ nodes, selectedPath, expanded, onOpen, onToggle, onMe
                 title={node.entry.path}
               >
                 <ChevronRight className={`tree-chevron${open ? " open" : ""}${directory ? "" : " hidden"}`} size={13} />
-                {directory ? (open ? <FolderOpen size={15} /> : <Folder size={15} />) : <FileText size={14} />}
+                {directory ? (open ? <FolderOpen size={15} /> : <Folder size={15} />) : <DocumentIcon size={14} />}
                 <span>{node.entry.name}</span>
               </button>
               <button className="tree-more" type="button" aria-label={`${node.entry.name} 更多操作`} onClick={(event) => onMenu(event, node)}>

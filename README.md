@@ -1,10 +1,12 @@
 # LeafMark（一叶）
 
-LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来的本地 Markdown 应用，支持 Windows、Linux 与 Android。界面只保留文档目录、主阅读区和必要操作；Markdown 首次编译、文件扫描、缓存与原子写入由 Rust 完成。
+LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来的本地文档应用，支持 Windows、Linux 与 Android。Markdown 保持完整编辑能力；Word、Excel、PowerPoint 与 PDF 使用本地只读查看器，文档不会上传到云端。
 
 ## 已实现
 
 - 本地目录直接作为文档库，不使用数据库或专有格式
+- 本地打开 `.docx` / `.rtf`、`.xlsx` / `.xls` / `.xlsb` / `.ods` / `.csv`、`.pptx` / `.odp` 与 `.pdf`；Office 解析在独立 Worker 中运行，旧版 `.doc` / `.ppt` 可从保留副本交给系统应用
+- Office/PDF 打开后保存逐字节原件快照；源文件被删除后，历史与收藏仍可继续打开同一份文档
 - 默认进入所见即所得的实时渲染编辑；标题、引用、列表及粗体、斜体、删除线、行内代码和链接标记会立即原位成形
 - GFM：表格、任务列表、删除线、脚注与智能标点
 - KaTeX：`$…$`、`$$…$$`、`\(...\)`、`\[...\]`、`math` / `tex` / `latex` 围栏
@@ -41,15 +43,18 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 
 ## 系统打开与文档保留
 
-安装包会把 LeafMark 注册为 Markdown 打开方式。Windows 也可以进入“设置 → 系统集成”，注册 LeafMark 并打开默认应用确认页；Android 首次打开 Markdown 时，在系统“打开方式”选择器中选择 LeafMark，并可按需选择“始终”。
+安装包会把 LeafMark 注册为 Markdown、Word、电子表格、演示文稿与 PDF 的打开方式。Windows 也可以进入“设置 → 系统集成”，注册 LeafMark 并打开 Markdown 默认应用确认页；Android 首次打开 Markdown 时，在系统“打开方式”选择器中选择 LeafMark，并可按需选择“始终”。
 
-文档每次打开或保存时，LeafMark 都会原子更新一份应用数据目录中的独立快照。历史记录不是易失的路径列表：即使源文件已经不存在，保留副本仍然可以继续阅读、编辑和导出。清除历史只清理未收藏文档；收藏及其副本不会被批量清除。
+文档每次打开或保存时，LeafMark 都会在应用数据目录中更新独立快照。Markdown 副本可继续编辑；Office/PDF 保存逐字节原件并以只读模式打开。历史记录不是易失的路径列表：即使源文件已经不存在，保留副本仍然可读。清除历史只清理未收藏文档；收藏及其副本不会被批量清除。
 
 Android 从其他应用收到的是临时 `content://` URI。LeafMark 会先把内容复制到应用私有文档库，再建立历史/收藏快照，因此原应用撤销授权或删除源文档后仍可打开保留副本。
 
 ## 性能设计
 
 - `pulldown-cmark` 在 Rust 侧完成 Markdown → HTML，前端不维护 Markdown AST
+- Office 打开后先立即建立标签，再由专用 Worker 解析；Word 分段、表格按行、演示按页传回，避免把完整文档一次塞进 React
+- PDF 不经过 Office 文档解析器重排，直接交给系统 WebView 的 PDF 引擎；原件快照通过 Tauri asset protocol 在本机读取
+- 文档 Worker 只保留最近 4 个解析结果，OOXML 解压设置 96 MB XML 上限，应用层设置 512 MB 文件上限
 - 文件读取与渲染结果使用按修改时间失效的 LRU 缓存（12 篇 / 32MB）
 - 从资源管理器或微信冷启动时，首篇外部文档会随启动数据一次载入，避免先显示空白新建页再跳转
 - 目录扫描遵守 `.gitignore`、`.ignore` 与 `.markignore`，跳过隐藏目录和常见构建产物
@@ -130,6 +135,8 @@ src/
   agent-storage.ts        本机会话检索与轻量语义记忆
   dock-layout.ts          桌面柔性 Dock 布局状态
   document-tabs.ts        多文档标签状态
+  document-worker.ts      Word、表格与演示文稿隔离解析、分块缓存
+  document-viewer-client.ts Office Worker 调度与本地 asset 读取
   rendering.ts            KaTeX / Mermaid 按需增强
   wysiwyg.ts              实时编辑 HTML → Markdown
   components/             文件树、历史收藏、Agent、Dock 与设置页
@@ -144,3 +151,4 @@ src-tauri/gen/android/    Android Studio 工程、Manifest 与 Gradle 配置
 ```
 
 Agent 本地版本格式、冲突行为和安全边界见 [Agent 本地版本控制](docs/AGENT_LOCAL_VERSION_CONTROL.md)。
+Office/PDF 的兼容范围、性能预算和安全边界见 [0.7.7 文档引擎设计](docs/DOCUMENT_ENGINE_0.7.7.md)。

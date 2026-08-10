@@ -3,6 +3,7 @@ export type ViewMode = "read" | "source" | "split" | "live";
 export type ThemeMode = "system" | "light" | "dark";
 export type ThemePalette = "leaf" | "sakura" | "qingchuan" | "amber" | "wisteria" | "monochrome";
 export type DocumentOrigin = "workspace" | "archive";
+export type DocumentKind = "markdown" | "word" | "spreadsheet" | "presentation" | "pdf" | "unsupported";
 export type DockPanelId = "workspace" | "history" | "favorites" | "agent" | "outline";
 export type DockZone = "left" | "right" | "top" | "bottom";
 export type AgentProvider =
@@ -159,6 +160,7 @@ export interface DocumentEntry {
   depth: number;
   size: number;
   modifiedMs: number;
+  documentKind: DocumentKind | "directory";
 }
 
 export interface ImportDirectoryResult {
@@ -178,6 +180,9 @@ export interface LoadedDocument {
   size: number;
   modifiedMs: number;
   cached: boolean;
+  documentKind: DocumentKind;
+  assetPath: string;
+  format: string;
 }
 
 export interface ArchiveEntry {
@@ -189,6 +194,8 @@ export interface ArchiveEntry {
   sourceExists: boolean;
   size: number;
   modifiedMs: number;
+  documentKind: DocumentKind;
+  snapshotExtension: string;
 }
 
 export interface AssociationStatus {
