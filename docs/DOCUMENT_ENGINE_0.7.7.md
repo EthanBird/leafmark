@@ -1,6 +1,6 @@
-# LeafMark 0.7.6 文档引擎
+# LeafMark 0.7.7 文档引擎
 
-0.7.6 从稳定的 0.7.5 WebView2 / Tauri 架构继续开发，0.8.0 Native 实验线不作为本版本基线。目标是让“一叶”在保留 Markdown 完整编辑体验的同时，成为本地、快速、可恢复的通用文档阅读器。
+0.7.7 以用户确认的 `v0.7.2` 源码树为唯一产品基线。`v0.7.3` 之后为其他分支目标加入的 Windows 便携版、WebView2 离线安装和 Native 实验线均不进入本版本。目标是在原样保留 v0.7.2 UI、多主题、Agent、文档移动、Mermaid 矢量 PDF 和全平台发布能力的同时，加入本地、快速、可恢复的通用文档阅读器。
 
 ## 打开流水线
 
@@ -24,7 +24,7 @@
 | `.pptx` | 是 | 幻灯片目录 + 当前页 | 文本与基础几何布局；主题媒体和动画逐步增强 |
 | `.odp` | 是 | 幻灯片目录 + 当前页 | 语义文本预览，复杂母版不保证像素级还原 |
 | `.ppt` | 回退 | 保留原件后交给系统 Office/LibreOffice | 不在应用内实现不完整的 OLE 演示排版器 |
-| `.pdf` | 是 | WebView2 原生 PDF 引擎 | 依赖系统 WebView2 PDF 能力；安装版已携带离线 Runtime 安装组件 |
+| `.pdf` | 是 | 系统 WebView 原生 PDF 引擎 | 桌面端依赖系统 WebView 的 PDF 能力；原件始终保留，可交给系统应用打开 |
 
 “打开”与“编辑”明确分离：Office/PDF 为只读查看，Markdown 仍保留阅读、源码、分栏、实时编辑、导出与 Agent 写入。这样可以避免第三方格式写回造成不可逆损坏。
 
@@ -40,7 +40,7 @@ Office/PDF 使用 `{id}.{原扩展名}` 保存原始字节。历史或收藏再�
 - OOXML/ODF 只解压需要的 XML，累计上限为 96 MB，降低 ZIP bomb 风险。
 - 单文件读取上限为 512 MB；表格显示列上限为 160，但原件不被修改。
 - 不执行 VBA、宏、外部链接、嵌入脚本、PowerPoint 动画或公式代码。
-- SheetJS 使用 0.20.3 修复版本并隔离在 Worker；npm 依赖审计在 0.7.6 开发时为 0 个已知漏洞。
+- SheetJS 使用 0.20.3 修复版本并隔离在 Worker；每次候选发布都必须重新执行生产依赖审计。
 - Tauri CSP 只为本地 asset protocol 开放 Worker/fetch/PDF frame；`object-src` 继续禁用。
 
 ## Release 验证
@@ -51,8 +51,8 @@ Office/PDF 使用 `{id}.{原扩展名}` 保存原始字节。历史或收藏再�
 - `npm test`（包含 DOCX/XLSX/PPTX 内存夹具）
 - `npm run build`
 - `npm audit --omit=dev`
-- Windows `cargo test` 与 portable feature 测试
-- Windows NSIS 离线 WebView2、LZMA、current-user 配置校验
+- Windows 与 Linux `cargo test`
+- v0.7.2 的 Windows NSIS、Linux AppImage/.deb 与固定签名 Android ARM64 发布链
 - 真实 Office/PDF 语料的冷启动、热切换、源文件删除后重开、收藏后清除历史测试
 
-性能基准必须记录硬件、系统、WebView2 版本、文件大小、页/行/幻灯片数量、冷/热状态和 P50/P95；否则数据不可比较。
+性能基准必须记录硬件、系统、WebView 版本、文件大小、页/行/幻灯片数量、冷/热状态和 P50/P95；否则数据不可比较。

@@ -33,7 +33,6 @@ use tauri_plugin_fs::FsExt;
 
 const CACHE_DOCUMENTS: usize = 12;
 const CACHE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_IMPORTED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MAX_OPENED_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 const EXPORT_STAGE_DIRECTORY: &str = "export-staging";
@@ -577,20 +576,15 @@ fn save_archived_to_workspace(
     if kind != "markdown" {
         let archived = inner.library.open_binary(&id)?;
         let source = PathBuf::from(&archived.entry.source_path);
-        let destination = if let Ok(relative) = source.strip_prefix(&inner.workspace) {
-            let destination = inner.workspace.join(relative);
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent).map_err(error_string)?;
-            }
-            destination
-        } else {
-            unique_destination(
-                &inner.workspace,
-                Path::new(&archived.entry.name)
-                    .file_name()
-                    .unwrap_or_else(|| std::ffi::OsStr::new("保留文档.bin")),
-            )
-        };
+        if let Ok(relative) = source.strip_prefix(&inner.workspace) {
+            return Ok(path_to_slash(relative));
+        }
+        let destination = unique_destination(
+            &inner.workspace,
+            Path::new(&archived.entry.name)
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("保留文档.bin")),
+        );
         fs::copy(&archived.snapshot_path, &destination).map_err(error_string)?;
         let relative = destination
             .strip_prefix(&inner.workspace)
@@ -864,7 +858,7 @@ fn import_files(
                     .read(tauri_plugin_fs::FilePath::Url(url.clone()))
                     .map_err(|error| format!("无法读取 Android 文档：{error}"))?;
                 if bytes.len() > MAX_OPENED_DOCUMENT_BYTES {
-                    return Err("Markdown 文档超过 32 MB，已拒绝导入".into());
+                    return Err("Android 文档超过 32 MB，已拒绝导入以保护移动设备内存".into());
                 }
                 let name = opened_url_filename(&url);
                 let destination =
@@ -1357,18 +1351,12 @@ fn copy_markdown_directory(
                 continue;
             }
             let metadata = entry.metadata().map_err(error_string)?;
-            if metadata.len() > MAX_IMPORTED_DOCUMENT_BYTES as u64 {
-                return Err(format!(
-                    "文档超过 32 MB：{}",
-                    entry.path().display()
-                ));
-            }
-            let bytes = fs::read(entry.path()).map_err(error_string)?;
+            ensure_viewer_size(metadata.len())?;
             let target = staging.join(relative);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(error_string)?;
             }
-            atomic_write(&target, &bytes)?;
+            fs::copy(entry.path(), &target).map_err(error_string)?;
             files.push(relative.to_path_buf());
         }
         Ok((files, directories))
@@ -1653,7 +1641,7 @@ fn opened_url_filename(url: &tauri::Url) -> String {
         })
         .take(120)
         .collect();
-    if safe_name.is_empty() || !is_markdown(Path::new(&safe_name)) {
+    if safe_name.is_empty() || !is_supported_document(Path::new(&safe_name)) {
         safe_name = format!("打开的文档-{}.md", now_ms());
     }
     safe_name
@@ -1679,7 +1667,7 @@ fn local_path_from_opened_url(_app: &AppHandle, url: &tauri::Url) -> Result<Path
             .read(tauri_plugin_fs::FilePath::Url(url.clone()))
             .map_err(|error| format!("无法读取 Android 文档：{error}"))?;
         if bytes.len() > MAX_OPENED_DOCUMENT_BYTES {
-            return Err("Markdown 文档超过 32 MB，已拒绝导入".into());
+            return Err("Android 文档超过 32 MB，已拒绝导入以保护移动设备内存".into());
         }
         let incoming_dir = _app
             .path()

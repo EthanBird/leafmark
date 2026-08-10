@@ -225,7 +225,6 @@ export const api = {
         supported: false,
         registered: false,
         isDefault: false,
-        portable: false,
         message: "浏览器预览不支持系统文件关联",
       },
     };
@@ -366,7 +365,6 @@ export const api = {
       supported: false,
       registered: false,
       isDefault: false,
-      portable: false,
       message: "浏览器预览不支持系统文件关联",
     };
   },

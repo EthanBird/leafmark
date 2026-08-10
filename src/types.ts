@@ -202,7 +202,6 @@ export interface AssociationStatus {
   supported: boolean;
   registered: boolean;
   isDefault: boolean;
-  portable: boolean;
   message: string;
 }
 

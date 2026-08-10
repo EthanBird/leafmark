@@ -176,7 +176,6 @@ const EMPTY_ASSOCIATION_STATUS: AssociationStatus = {
   supported: false,
   registered: false,
   isDefault: false,
-  portable: false,
   message: "正在检查系统文件关联…",
 };
 
@@ -1003,12 +1002,12 @@ export default function App() {
         directory: true,
         multiple: false,
         recursive: true,
-        title: "导入整个 Markdown 文件夹",
+        title: "导入整个文档文件夹",
       })
       : await open({
         multiple: true,
-        filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
-        title: "导入 Markdown 文档",
+        filters: [{ name: "文档", extensions: ["md", "markdown", "docx", "doc", "rtf", "xlsx", "xls", "xlsb", "ods", "csv", "pptx", "ppt", "odp", "pdf"] }],
+        title: "导入本地文档",
       });
     if (!selected) return;
     setBusy(true);
@@ -1796,7 +1795,7 @@ export default function App() {
     <div className="sidebar-actions">
       <button className="icon-button" type="button" onClick={() => startCreate("file")} title="新建文档"><FilePlus2 size={16} /></button>
       <button className="icon-button" type="button" onClick={() => startCreate("directory")} title="新建文件夹"><FolderPlus size={16} /></button>
-      <button className="icon-button" type="button" onClick={() => setImportOpen(true)} title={android ? "导入 Markdown 文件" : "导入文件或文件夹"}><Upload size={15} /></button>
+      <button className="icon-button" type="button" onClick={() => setImportOpen(true)} title={android ? "导入本地文档" : "导入文件或文件夹"}><Upload size={15} /></button>
       {android && <button className="icon-button" type="button" onClick={() => setSidebarOpen(false)} title="收起目录"><PanelLeftClose size={16} /></button>}
     </div>
   </div>;
@@ -2228,12 +2227,12 @@ function ImportDialog({ android, onCancel, onImport }: {
         <div className="export-options import-options">
           <button type="button" onClick={() => onImport("files")}>
             <span className="import-option-icon"><Upload size={17} /></span>
-            <span><strong>导入 Markdown 文件</strong><small>可一次选择多篇 .md 或 .markdown 文档</small></span>
+            <span><strong>导入本地文档</strong><small>支持 Markdown、Word、Excel、PowerPoint 与 PDF</small></span>
           </button>
           {!android && (
             <button type="button" onClick={() => onImport("directory")}>
               <span className="import-option-icon"><FolderPlus size={17} /></span>
-              <span><strong>导入整个文件夹</strong><small>递归保留目录结构与空文件夹，自动忽略非 Markdown 文件</small></span>
+              <span><strong>导入整个文件夹</strong><small>递归保留目录结构与空文件夹，自动忽略不支持的文件</small></span>
             </button>
           )}
         </div>

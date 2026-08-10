@@ -670,6 +670,43 @@ mod tests {
     }
 
     #[test]
+    fn version_one_markdown_index_migrates_without_moving_its_snapshot() {
+        let root = test_root("archive-v1-migration");
+        let archive_root = root.join("archive");
+        let documents = archive_root.join("documents");
+        fs::create_dir_all(&documents).unwrap();
+        let id = "legacy-markdown";
+        fs::write(documents.join(format!("{id}.md")), "# v0.7.2 retained").unwrap();
+        fs::write(
+            archive_root.join("index.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1,
+                "documents": [{
+                    "id": id,
+                    "name": "legacy.md",
+                    "sourcePath": root.join("deleted.md").to_string_lossy(),
+                    "lastOpenedMs": 1,
+                    "favorite": true,
+                    "sourceExists": false,
+                    "size": 17,
+                    "modifiedMs": 1
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut archive = DocumentArchive::load(archive_root).unwrap();
+        let opened = archive.open(id).unwrap();
+
+        assert_eq!(opened.content, "# v0.7.2 retained");
+        assert_eq!(opened.entry.document_kind, "markdown");
+        assert_eq!(opened.entry.snapshot_extension, "md");
+        assert!(opened.entry.favorite);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn editing_retained_copy_never_mutates_external_source() {
         let root = test_root("external-copy");
         let source_dir = root.join("source");
