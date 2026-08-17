@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultAgentSettings } from "../settings-defaults";
-import { AgentPanel, buildAgentTools, type AgentDocumentHost } from "./AgentPanel";
+import { AgentPanel, buildAgentTools, buildSystemPrompt, type AgentDocumentHost } from "./AgentPanel";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -114,6 +114,16 @@ describe("AgentPanel", () => {
     const efforts = [...container.querySelectorAll<HTMLSelectElement>(".agent-context select option")].map((option) => option.value);
     expect(efforts).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
     expect(document.activeElement).toBe(container.querySelector("textarea"));
+  });
+
+  it("injects the slides playbook only when the user asks for a deck", () => {
+    const settings = { ...defaultAgentSettings(), enabled: true, enabledSkills: ["slides"] };
+    const idle = buildSystemPrompt(settings, host.current, "总结这一段");
+    const deck = buildSystemPrompt(settings, host.current, "根据当前文档做一套路演PPT");
+    expect(idle).toContain("幻灯片：做 PPT");
+    expect(idle).not.toContain("先通读材料");
+    expect(deck).toContain("先通读材料");
+    expect(deck).toContain("用 --- 分页");
   });
 
   it("keeps tool details in an accessible disclosure without disturbing adjacent cards", async () => {

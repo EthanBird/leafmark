@@ -35,6 +35,7 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - 类 VS Code 多文档标签栏；可在已打开文档间即时切换、查看未保存状态并单独关闭
 - 桌面端柔性 Dock 布局；文档库、历史、收藏、Agent 与大纲使用应用内指针拖放，可停靠上下左右、合并为页签并调整尺寸，不依赖 Windows WebView 的原生 HTML 拖放
 - 内置按需启动的流式文档 Agent；原生支持 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth，并完整提供 jcode 的 OpenAI-compatible provider catalog
+- Agent 内置办公 Skills（幻灯片 / 文稿 / 版式）：平时只注入短描述，匹配到 PPT、正式文稿或分页成品时才加载完整工作法
 - 订阅模式分别使用 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 协议，不会把订阅账户错误回退到按量 API Key
 - Agent 支持自动刷新登录、文档读写、并行只读子 Agent、会话检索、长期记忆、Skills、网页读取、Streamable HTTP MCP 和本机终端
 - Agent 可用 `create / replace / append` 方式把长篇 Markdown 直接流式写入目标标签；中止时保留已生成部分并可随整轮版本回退

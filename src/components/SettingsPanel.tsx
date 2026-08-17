@@ -17,6 +17,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AgentAuthAccountStatus, AgentAuthChallenge, AppSettings, AssociationStatus, ThemeMode, ThemePalette } from "../types";
 import { api } from "../api";
 import { AGENT_PROVIDER_PROFILES, PROVIDER_DEFAULTS, REASONING_EFFORT_LABELS, defaultReasoningEffort, isOAuthProvider, providerProfile, reasoningEffortsForProvider } from "../agent-providers";
+import { BUILTIN_SKILLS, BUILTIN_SKILL_GROUPS } from "../agent-skills";
 import { defaultDesktopDockLayout } from "../dock-layout";
 
 interface SettingsPanelProps {
@@ -257,12 +258,17 @@ export function SettingsPanel({
                   <Switch checked={settings.agent.allowDestructiveTerminal} onChange={(allowDestructiveTerminal) => patchAgent({ allowDestructiveTerminal })} />
                 </SettingRow>}
                 <div className="agent-settings-block">
-                  <strong>内置 Skills</strong><p>Skills 只向模型注入所需的方法约束，不引入额外运行库。</p>
-                  <div className="skill-options">
-                    {[["writing", "写作"], ["proofread", "校对"], ["translate", "翻译"], ["summarize", "总结"], ["structure", "结构化"], ["research", "研究"]].map(([id, label]) => (
-                      <label key={id}><input type="checkbox" checked={settings.agent.enabledSkills.includes(id)} onChange={(event) => patchAgent({ enabledSkills: event.target.checked ? [...settings.agent.enabledSkills, id] : settings.agent.enabledSkills.filter((item) => item !== id) })} />{label}</label>
-                    ))}
-                  </div>
+                  <strong>内置 Skills</strong><p>启用后只注入短描述；匹配到写作或办公任务时才加载完整工作法，不引入额外运行库。</p>
+                  {BUILTIN_SKILL_GROUPS.map((group) => (
+                    <div key={group.id} className="skill-group">
+                      <span>{group.label}</span>
+                      <div className="skill-options">
+                        {BUILTIN_SKILLS.filter((skill) => skill.group === group.id).map((skill) => (
+                          <label key={skill.id}><input type="checkbox" checked={settings.agent.enabledSkills.includes(skill.id)} onChange={(event) => patchAgent({ enabledSkills: event.target.checked ? [...settings.agent.enabledSkills, skill.id] : settings.agent.enabledSkills.filter((item) => item !== skill.id) })} />{skill.label}</label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
                 <AgentTextArea title="自定义 Skills" description="写入你希望 Agent 长期遵循的领域方法、格式规范或工作流。" value={settings.agent.customSkills} placeholder="例如：处理数学文档时，所有公式必须保持 LaTeX 原文…" onChange={(customSkills) => patchAgent({ customSkills })} />
                 <AgentTextArea title="系统提示词" description="定义 Agent 的基础角色；文档上下文、记忆和已启用 Skills 会在运行时追加。" value={settings.agent.systemPrompt} onChange={(systemPrompt) => patchAgent({ systemPrompt })} />
