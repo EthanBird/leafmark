@@ -138,3 +138,40 @@ describe("SettingsPanel appearance palettes", () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ themePalette: "monochrome" }));
   });
 });
+
+describe("SettingsPanel agent skills", () => {
+  it("lists office skills separately from writing skills", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    cleanup = () => {
+      act(() => root.unmount());
+      container.remove();
+      cleanup = () => {};
+    };
+
+    await act(async () => {
+      root.render(<SettingsPanel
+        settings={defaultAppSettings("/documents")}
+        associationStatus={{ supported: true, registered: true, isDefault: true, message: "ok" }}
+        onChange={() => {}}
+        onWorkspaceChange={async () => {}}
+        onAssociationChange={async () => {}}
+        onClose={() => {}}
+      />);
+    });
+
+    const agentSection = [...container.querySelectorAll<HTMLButtonElement>(".settings-nav button")]
+      .find((button) => button.textContent?.includes("AI Agent"));
+    await act(async () => agentSection?.click());
+
+    const labels = [...container.querySelectorAll(".skill-options label")].map((label) => label.textContent);
+    expect(labels).toContain("幻灯片");
+    expect(labels).toContain("文稿");
+    expect(labels).toContain("版式");
+    expect(container.querySelector(".skill-group span")?.textContent).toBe("写作");
+    const slides = [...container.querySelectorAll<HTMLLabelElement>(".skill-options label")]
+      .find((label) => label.textContent === "幻灯片");
+    expect(slides?.querySelector("input")?.checked).toBe(true);
+  });
+});

@@ -55,6 +55,7 @@ import type {
   DocumentOrigin,
 } from "../types";
 import { api } from "../api";
+import { buildEnabledSkillPrompt } from "../agent-skills";
 import { REASONING_EFFORT_LABELS, reasoningEffortsForProvider } from "../agent-providers";
 import {
   beginAgentJobJournal,
@@ -111,15 +112,6 @@ interface AgentPanelProps {
   onReasoningEffortChange: (effort: AgentReasoningEffort) => void;
   onActivityChange: (active: boolean) => void;
 }
-
-const BUILTIN_SKILLS: Record<string, string> = {
-  writing: "写作：保持作者原意，改善结构、节奏、可读性与信息密度。",
-  proofread: "校对：检查错别字、标点、病句、术语一致性与 Markdown 语法。",
-  translate: "翻译：忠实保留层级、链接、代码、公式和专有名词。",
-  summarize: "总结：先给结论，再按主题提炼事实、依据和待办。",
-  structure: "结构化：用清晰标题、列表、表格重组内容，避免空洞层级。",
-  research: "研究：区分已知事实、推断和待验证信息，必要时使用工具取证。",
-};
 
 export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortChange, onActivityChange }: AgentPanelProps) {
   const initial = useMemo(() => loadAgentSessions()[0] ?? newAgentSession(), []);
@@ -840,9 +832,7 @@ function compactActivities(activities: AgentToolActivity[]) {
   }));
 }
 
-function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["current"], query: string) {
-  const skills = settings.enabledSkills.map((skill) => BUILTIN_SKILLS[skill]).filter(Boolean);
-  if (settings.customSkills.trim()) skills.push(`自定义技能：\n${settings.customSkills.trim()}`);
+export function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["current"], query: string) {
   const document = current
     ? `\n\n当前活动文档：${current.path}\n\n<document>\n${current.content.slice(0, settings.contextChars)}\n</document>${current.content.length > settings.contextChars ? "\n[文档内容已按上下文字符上限截断，可用 read_document 精确读取]" : ""}`
     : "\n\n当前没有打开文档。";
@@ -851,7 +841,7 @@ function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["
 可用能力包括多轮工具调用、文档读写、移动与检索、会话检索、长期记忆、Web 获取和已配置的 MCP 工具。不要声称执行了未实际调用的工具。
 需要新建、完整重写或续写较长 Markdown 时，优先单独调用 begin_document_output。工具就绪后的下一次回复必须只包含要写入文档的原始 Markdown，不要添加代码围栏、解释、前言或后记；该回复会直接流式进入编辑窗口。精确的小范围修改仍使用 replace_text。
 本轮对当前文档库和 LeafMark 保留副本的文件修改会被记录为一个可回退版本。终端重做只恢复文件快照，不会重新执行命令；不要修改文档库以外的路径，也不要启动脱管或后台进程。
-${skills.length ? `\n已启用技能：\n- ${skills.join("\n- ")}` : ""}${settings.memoryEnabled ? relevantMemoryPrompt(query) : ""}${document}`;
+${buildEnabledSkillPrompt(settings.enabledSkills, settings.customSkills, query, current?.path ?? "")}${settings.memoryEnabled ? relevantMemoryPrompt(query) : ""}${document}`;
 }
 
 export function buildAgentTools(settings: AgentSettings, host: AgentDocumentHost, session: AgentSession, refreshMemory: () => void): AgentRuntimeTool[] {

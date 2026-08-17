@@ -21,7 +21,7 @@ export function defaultAgentSettings(): AgentSettings {
     webToolsEnabled: true,
     terminalToolsEnabled: false,
     allowDestructiveTerminal: false,
-    enabledSkills: ["writing", "proofread", "summarize", "structure"],
+    enabledSkills: ["writing", "proofread", "summarize", "structure", "slides"],
     customSkills: "",
     mcpServersJson: "",
   };
