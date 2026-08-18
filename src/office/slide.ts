@@ -153,6 +153,62 @@ export function updateShapeText(slide: SlideModel, shapeId: string, text: string
   slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
 }
 
+export function updateShapeStyle(slide: SlideModel, shapeId: string, patch: Partial<Pick<SlideShape, "bold" | "italic" | "fontSize" | "align" | "color" | "text">>) {
+  const shape = slide.shapes.find((item) => item.id === shapeId);
+  if (!shape) return;
+  Object.assign(shape, patch);
+  shape.dirty = true;
+  shape.originalXml = undefined;
+  slide.dirty = true;
+  if (patch.text !== undefined) slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+}
+
+export function deleteShape(slide: SlideModel, shapeId: string) {
+  const index = slide.shapes.findIndex((item) => item.id === shapeId);
+  if (index < 0) return undefined;
+  const [removed] = slide.shapes.splice(index, 1);
+  slide.dirty = true;
+  slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+  return removed;
+}
+
+export function setSlideBackground(slide: SlideModel, background: string) {
+  slide.background = background.startsWith("#") ? background : `#${background}`;
+  slide.dirty = true;
+  slide.originalXml = undefined;
+}
+
+function reindexSlides(document: PresentationDocument) {
+  document.slides.forEach((slide, index) => {
+    slide.index = index;
+    slide.path = `ppt/slides/slide${index + 1}.xml`;
+    slide.shapes.forEach((shape, shapeIndex) => {
+      shape.id = `${index}:${shapeIndex}`;
+    });
+  });
+}
+
+export function deleteSlide(document: PresentationDocument, index: number) {
+  if (document.slides.length <= 1) return document.slides[0];
+  const [removed] = document.slides.splice(index, 1);
+  reindexSlides(document);
+  return removed;
+}
+
+export function duplicateSlide(document: PresentationDocument, index: number) {
+  const source = document.slides[index];
+  if (!source) return addBlankSlide(document);
+  const copy: SlideModel = {
+    ...source,
+    shapes: source.shapes.map((shape) => ({ ...shape, dirty: true, originalXml: undefined })),
+    dirty: true,
+    originalXml: undefined,
+  };
+  document.slides.splice(index + 1, 0, copy);
+  reindexSlides(document);
+  return document.slides[index + 1];
+}
+
 export function addBlankSlide(document: PresentationDocument) {
   const index = document.slides.length;
   const slide: SlideModel = {
@@ -259,9 +315,19 @@ function serializeOdp(document: PresentationDocument) {
 
 function ensurePresentationParts(files: OfficePackage, document: PresentationDocument) {
   const sldIdLst = document.slides.map((_, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 2}"/>`).join("");
-  if (!packageText(files, "ppt/presentation.xml", false)) {
+  const presentation = packageText(files, "ppt/presentation.xml", false);
+  if (presentation && /<(?:p:)?sldIdLst\b[\s\S]*?<\/(?:p:)?sldIdLst>/.test(presentation)) {
+    setPackageText(files, "ppt/presentation.xml", presentation.replace(/<(?:p:)?sldIdLst\b[\s\S]*?<\/(?:p:)?sldIdLst>/, `<p:sldIdLst>${sldIdLst}</p:sldIdLst>`));
+  } else {
     setPackageText(files, "ppt/presentation.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldIdLst>${sldIdLst}</p:sldIdLst><p:sldSz cx="${document.width}" cy="${document.height}" type="screen16x9"/></p:presentation>`);
   }
+  const rels = document.slides.map((_, index) => `<Relationship Id="rId${index + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${index + 1}.xml"/>`).join("");
+  setPackageText(files, "ppt/_rels/presentation.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`);
+  const types = packageText(files, "[Content_Types].xml", false)
+    || `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/></Types>`;
+  const withoutSlides = types.replace(/<Override PartName="\/ppt\/slides\/slide\d+\.xml"[^/]*\/>/g, "");
+  const slideTypes = document.slides.map((_, index) => `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join("");
+  setPackageText(files, "[Content_Types].xml", withoutSlides.replace("</Types>", `${slideTypes}</Types>`));
 }
 
 function minimalPptx(): OfficePackage {

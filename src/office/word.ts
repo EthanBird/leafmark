@@ -12,11 +12,18 @@ export interface WordRun {
   font?: string;
 }
 
+export interface WordList {
+  type: "bullet" | "number";
+  level: number;
+  numId: number;
+}
+
 export interface WordParagraph {
   kind: "paragraph" | "heading";
   align?: "left" | "center" | "right" | "justify";
   level?: number;
   style?: string;
+  list?: WordList;
   runs: WordRun[];
   originalXml?: string;
   dirty?: boolean;
@@ -47,7 +54,7 @@ export interface WordDocument {
 
 const DEFAULT_SECT_PR = "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr>";
 
-export function parseWordBlocks(xml: string): { blocks: WordBlock[]; sectPr: string } {
+export function parseWordBlocks(xml: string, lists = new Map<number, "bullet" | "number">()): { blocks: WordBlock[]; sectPr: string } {
   const sectPr = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/.exec(xml)?.[0] ?? DEFAULT_SECT_PR;
   const body = xml.replace(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/, "");
   const blocks: WordBlock[] = [];
@@ -58,15 +65,34 @@ export function parseWordBlocks(xml: string): { blocks: WordBlock[]; sectPr: str
       blocks.push(parseTable(token));
       continue;
     }
-    blocks.push(parseParagraph(token));
+    blocks.push(parseParagraph(token, lists));
   }
   return { blocks, sectPr };
 }
 
-function parseParagraph(xml: string): WordParagraph {
+function parseNumbering(xml: string) {
+  const abstracts = new Map<number, "bullet" | "number">();
+  for (const match of xml.matchAll(/<w:abstractNum\b[\s\S]*?<\/w:abstractNum>/g)) {
+    const id = Number(xmlAttr(match[0].slice(0, 80), "w:abstractNumId"));
+    const fmt = xmlAttr(/<w:numFmt\b[^>]*>/.exec(match[0])?.[0] ?? "", "w:val");
+    abstracts.set(id, fmt === "bullet" ? "bullet" : "number");
+  }
+  const lists = new Map<number, "bullet" | "number">();
+  for (const match of xml.matchAll(/<w:num\b[\s\S]*?<\/w:num>/g)) {
+    const id = Number(xmlAttr(match[0].slice(0, 60), "w:numId"));
+    const abstract = Number(xmlAttr(/<w:abstractNumId\b[^>]*>/.exec(match[0])?.[0] ?? "", "w:val"));
+    lists.set(id, abstracts.get(abstract) ?? "number");
+  }
+  return lists;
+}
+
+function parseParagraph(xml: string, lists = new Map<number, "bullet" | "number">()): WordParagraph {
   const style = xmlAttr(/<w:pStyle\b[^>]*>/.exec(xml)?.[0] ?? "", "w:val");
   const alignRaw = xmlAttr(/<w:jc\b[^>]*>/.exec(xml)?.[0] ?? "", "w:val");
   const heading = /(?:heading|标题)\s*([1-6])/i.exec(style);
+  const numPr = /<w:numPr\b[\s\S]*?<\/w:numPr>/.exec(xml)?.[0] ?? "";
+  const numId = Number(xmlAttr(/<w:numId\b[^>]*>/.exec(numPr)?.[0] ?? "", "w:val"));
+  const ilvl = Number(xmlAttr(/<w:ilvl\b[^>]*>/.exec(numPr)?.[0] ?? "", "w:val"));
   const runs = parseRuns(xml);
   const align = alignRaw === "center" || alignRaw === "ctr"
     ? "center"
@@ -82,6 +108,9 @@ function parseParagraph(xml: string): WordParagraph {
     level: heading ? Number(heading[1]) : undefined,
     style: style || undefined,
     align,
+    list: numId
+      ? { type: lists.get(numId) ?? (numId === 1 ? "bullet" : "number"), level: Number.isFinite(ilvl) ? ilvl : 0, numId }
+      : undefined,
     runs: runs.length ? runs : [{ text: "" }],
     originalXml: xml,
   };
@@ -139,7 +168,8 @@ export function paragraphText(block: WordParagraph) {
 export function openDocx(buffer: ArrayBuffer): WordDocument {
   const files = unzipPackage(buffer);
   const xml = packageText(files, "word/document.xml");
-  const parsed = parseWordBlocks(xml);
+  const lists = parseNumbering(packageText(files, "word/numbering.xml", false));
+  const parsed = parseWordBlocks(xml, lists);
   return {
     type: "word",
     format: "docx",
@@ -181,6 +211,7 @@ export function serializeWord(document: WordDocument): Uint8Array {
   const body = document.blocks.map((block) => serializeBlock(block)).join("");
   const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" mc:Ignorable="wpc"><w:body>${body}${document.sectPr || DEFAULT_SECT_PR}</w:body></w:document>`;
   setPackageText(files, "word/document.xml", xml);
+  if (document.blocks.some((block) => block.kind !== "table" && block.list)) ensureNumberingParts(files);
   return zipPackage(files);
 }
 
@@ -199,8 +230,11 @@ function serializeBlock(block: WordBlock) {
   const align = block.align && block.align !== "left"
     ? `<w:jc w:val="${block.align === "center" ? "center" : block.align === "right" ? "right" : "both"}"/>`
     : "";
+  const list = block.list
+    ? `<w:numPr><w:ilvl w:val="${block.list.level}"/><w:numId w:val="${block.list.numId}"/></w:numPr>`
+    : "";
   const runs = (block.runs.length ? block.runs : [{ text: "" }]).map(serializeRun).join("");
-  return `<w:p>${style || align ? `<w:pPr>${style}${align}</w:pPr>` : ""}${runs}</w:p>`;
+  return `<w:p>${style || align || list ? `<w:pPr>${style}${align}${list}</w:pPr>` : ""}${runs}</w:p>`;
 }
 
 function serializeRun(run: WordRun) {
@@ -321,6 +355,90 @@ function mergeRuns(runs: WordRun[]) {
     }
   }
   return merged;
+}
+
+function ensureNumberingParts(files: OfficePackage) {
+  if (!packageText(files, "word/numbering.xml", false)) {
+    setPackageText(files, "word/numbering.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>`);
+  }
+  const types = packageText(files, "[Content_Types].xml", false);
+  if (types && !types.includes("/word/numbering.xml")) {
+    setPackageText(
+      files,
+      "[Content_Types].xml",
+      types.replace("</Types>", `<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`),
+    );
+  }
+  const relsPath = "word/_rels/document.xml.rels";
+  const rels = packageText(files, relsPath, false)
+    || `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+  if (!rels.includes("numbering.xml")) {
+    setPackageText(
+      files,
+      relsPath,
+      rels.replace(
+        "</Relationships>",
+        `<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`,
+      ),
+    );
+  }
+}
+
+export function insertWordBlock(document: WordDocument, index: number, block: WordBlock) {
+  document.blocks.splice(Math.max(0, Math.min(index, document.blocks.length)), 0, { ...block, dirty: true });
+  return document.blocks.length;
+}
+
+export function deleteWordBlock(document: WordDocument, index: number) {
+  const [removed] = document.blocks.splice(index, 1);
+  return removed;
+}
+
+export function replaceWordBlock(document: WordDocument, index: number, block: WordBlock) {
+  const previous = document.blocks[index];
+  document.blocks[index] = { ...block, dirty: true };
+  return previous;
+}
+
+export function splitParagraph(block: WordParagraph, offset: number): [WordParagraph, WordParagraph] {
+  const text = paragraphText(block);
+  const at = Math.max(0, Math.min(offset, text.length));
+  let seen = 0;
+  const left: WordRun[] = [];
+  const right: WordRun[] = [];
+  for (const run of block.runs) {
+    const start = seen;
+    const end = seen + run.text.length;
+    if (end <= at) left.push({ ...run });
+    else if (start >= at) right.push({ ...run });
+    else {
+      if (at > start) left.push({ ...run, text: run.text.slice(0, at - start) });
+      if (end > at) right.push({ ...run, text: run.text.slice(at - start) });
+    }
+    seen = end;
+  }
+  const a: WordParagraph = { ...block, runs: left.length ? left : [{ text: "" }], dirty: true, originalXml: undefined };
+  const b: WordParagraph = { ...block, runs: right.length ? right : [{ text: "" }], dirty: true, originalXml: undefined };
+  return [a, b];
+}
+
+export function applyParagraphStyle(
+  block: WordParagraph,
+  patch: Partial<Pick<WordParagraph, "align" | "kind" | "level" | "style">> & { list?: WordList | null },
+): WordParagraph {
+  const next: WordParagraph = { ...block, dirty: true, originalXml: undefined };
+  if (patch.align !== undefined) next.align = patch.align;
+  if (patch.style !== undefined) next.style = patch.style;
+  if (patch.kind !== undefined) next.kind = patch.kind;
+  if (patch.level !== undefined) next.level = patch.level;
+  if (patch.kind === "heading" && !next.level) next.level = 1;
+  if (patch.kind === "paragraph") {
+    next.level = undefined;
+    if (!patch.style) next.style = undefined;
+  }
+  if (patch.list === null) next.list = undefined;
+  else if (patch.list) next.list = { ...patch.list, numId: patch.list.numId || (patch.list.type === "bullet" ? 1 : 2) };
+  return next;
 }
 
 export function applyRunStyle(runs: WordRun[], style: Partial<WordRun>): WordRun[] {

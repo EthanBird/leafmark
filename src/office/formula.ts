@@ -1,18 +1,20 @@
-export type FormulaValue = number | string | boolean | null;
-export type FormulaResult = FormulaValue | FormulaError;
+import { callFunction, type FormulaArg } from "./formula-functions";
+import {
+  FormulaError,
+  type FormulaResult,
+  type SheetLookup,
+  asNumber,
+  asText,
+  asTruthy,
+  displayFormulaValue,
+} from "./formula-types";
 
-export class FormulaError extends Error {
-  readonly token: string;
-  constructor(token: string, message?: string) {
-    super(message ?? token);
-    this.token = token;
-  }
-}
-
-export interface SheetLookup {
-  getCell(row: number, col: number): FormulaResult;
-  getSheet?(name: string): SheetLookup | undefined;
-}
+export {
+  FormulaError,
+  displayFormulaValue,
+  type FormulaResult,
+  type SheetLookup,
+};
 
 interface Token {
   kind: "number" | "string" | "ref" | "range" | "name" | "op" | "paren" | "comma" | "error";
@@ -20,6 +22,12 @@ interface Token {
 }
 
 const OPERATORS = ["<>", "<=", ">=", "&", "+", "-", "*", "/", "^", "=", "<", ">", "%"];
+
+export interface FormulaOrigin {
+  row?: number;
+  col?: number;
+  now?: () => Date;
+}
 
 export function colName(index: number) {
   let value = index + 1;
@@ -33,7 +41,7 @@ export function colName(index: number) {
 }
 
 export function parseCellRef(ref: string) {
-  const match = /^(?:'([^']+)'|([^'!]+))?!?(\$?)([A-Za-z]+)(\$?)(\d+)$/.exec(ref.trim());
+  const match = /^(?:(?:'([^']+)'|([^'!]+))!)?(\$?)([A-Za-z]+)(\$?)(\d+)$/.exec(ref.trim());
   if (!match) return null;
   const col = lettersToIndex(match[4]);
   const row = Number(match[6]) - 1;
@@ -49,6 +57,15 @@ export function parseCellRef(ref: string) {
 
 export function formatCellRef(row: number, col: number) {
   return `${colName(col)}${row + 1}`;
+}
+
+export function formatParsedRef(parsed: NonNullable<ReturnType<typeof parseCellRef>>) {
+  const col = `${parsed.absCol ? "$" : ""}${colName(parsed.col)}`;
+  const row = `${parsed.absRow ? "$" : ""}${parsed.row + 1}`;
+  const cell = `${col}${row}`;
+  if (!parsed.sheet) return cell;
+  const sheet = /[^A-Za-z0-9_.]/.test(parsed.sheet) ? `'${parsed.sheet}'` : parsed.sheet;
+  return `${sheet}!${cell}`;
 }
 
 function lettersToIndex(letters: string) {
@@ -117,7 +134,7 @@ function tokenize(source: string): Token[] {
       index += range[0].length;
       continue;
     }
-    const ref = /^(?:'[^']+'|[A-Za-z0-9_\u0080-\uffff.]+)!\$?[A-Za-z]+\$?\d+|\$?[A-Za-z]+\$?\d+/.exec(input.slice(index));
+    const ref = /^(?:(?:'[^']+'|[A-Za-z0-9_\u0080-\uffff.]+)!)?\$?[A-Za-z]+\$?\d+/.exec(input.slice(index));
     if (ref && /[A-Za-z]/.test(ref[0]) && /\d/.test(ref[0]) && !/^[A-Za-z]+\(/.test(input.slice(index))) {
       const after = input[index + ref[0].length];
       if (after !== "(") {
@@ -147,7 +164,11 @@ function tokenize(source: string): Token[] {
 
 class Parser {
   private index = 0;
-  constructor(private readonly tokens: Token[], private readonly lookup: SheetLookup) {}
+  constructor(
+    private readonly tokens: Token[],
+    private readonly lookup: SheetLookup,
+    private readonly origin: Required<Pick<FormulaOrigin, "row" | "col">> & { now: () => Date },
+  ) {}
 
   parse(): FormulaResult {
     if (!this.tokens.length) return null;
@@ -170,7 +191,7 @@ class Parser {
     let left = this.parseAdd();
     while (this.matchOp("&")) {
       const right = this.parseAdd();
-      left = `${display(left)}${display(right)}`;
+      left = `${asText(left)}${asText(right)}`;
     }
     return left;
   }
@@ -180,7 +201,7 @@ class Parser {
     while (this.matchOp("+", "-")) {
       const op = this.previous().value;
       const right = this.parseMul();
-      left = op === "+" ? number(left) + number(right) : number(left) - number(right);
+      left = op === "+" ? asNumber(left) + asNumber(right) : asNumber(left) - asNumber(right);
     }
     return left;
   }
@@ -191,11 +212,11 @@ class Parser {
       const op = this.previous().value;
       const right = this.parsePow();
       if (op === "/") {
-        const divisor = number(right);
+        const divisor = asNumber(right);
         if (divisor === 0) throw new FormulaError("#DIV/0!");
-        left = number(left) / divisor;
+        left = asNumber(left) / divisor;
       } else {
-        left = number(left) * number(right);
+        left = asNumber(left) * asNumber(right);
       }
     }
     return left;
@@ -205,16 +226,16 @@ class Parser {
     let left = this.parseUnary();
     if (this.matchOp("^")) {
       const right = this.parsePow();
-      left = number(left) ** number(right);
+      left = asNumber(left) ** asNumber(right);
     }
     return left;
   }
 
   private parseUnary(): FormulaResult {
     if (this.matchOp("+")) return this.parseUnary();
-    if (this.matchOp("-")) return -number(this.parseUnary());
+    if (this.matchOp("-")) return -asNumber(this.parseUnary());
     const value = this.parsePrimary();
-    if (this.matchOp("%")) return number(value) / 100;
+    if (this.matchOp("%")) return asNumber(value) / 100;
     return value;
   }
 
@@ -239,25 +260,24 @@ class Parser {
     }
     if (token.kind === "range") {
       this.index += 1;
-      return flatten([this.resolveRange(token.value)]).reduce<number>((sum, item) => sum + (typeof item === "number" ? item : 0), 0);
+      return this.resolveRange(token.value).flat().reduce<number>((sum, item) => sum + (typeof item === "number" ? item : 0), 0);
     }
     if (token.kind === "name") {
       this.index += 1;
       if (this.matchParen("(")) {
-        const args: Array<FormulaResult | FormulaResult[][]> = [];
+        const args: FormulaArg[] = [];
         if (!this.matchParen(")")) {
           do {
-            const start = this.index;
-            if (this.peek()?.kind === "range") {
-              args.push(this.resolveRange(this.advance().value));
-            } else {
-              this.index = start;
-              args.push(this.parseComparison());
-            }
+            args.push(this.parseArgument());
           } while (this.matchKind("comma"));
           this.expectParen(")");
         }
-        return callFunction(token.value.toUpperCase(), args);
+        return callFunction(token.value.toUpperCase(), args, {
+          lookup: this.lookup,
+          now: this.origin.now,
+          row: this.origin.row,
+          col: this.origin.col,
+        });
       }
       const constant = token.value.toUpperCase();
       if (constant === "TRUE") return true;
@@ -271,6 +291,16 @@ class Parser {
       return value;
     }
     throw new FormulaError("#VALUE!");
+  }
+
+  private parseArgument(): FormulaArg {
+    try {
+      if (this.peek()?.kind === "range") return this.resolveRange(this.advance().value);
+      return this.parseComparison();
+    } catch (error) {
+      if (error instanceof FormulaError) return error;
+      throw error;
+    }
   }
 
   private resolveRef(ref: string): FormulaResult {
@@ -346,26 +376,9 @@ class Parser {
   }
 }
 
-function number(value: FormulaResult): number {
-  if (value instanceof FormulaError) throw value;
-  if (value == null || value === "") return 0;
-  if (typeof value === "number") return value;
-  if (typeof value === "boolean") return value ? 1 : 0;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new FormulaError("#VALUE!");
-  return parsed;
-}
-
-function display(value: FormulaResult) {
-  if (value instanceof FormulaError) throw value;
-  if (value == null) return "";
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  return String(value);
-}
-
 function compare(left: FormulaResult, right: FormulaResult, op: string): boolean {
   if (typeof left === "number" || typeof right === "number") {
-    const delta = number(left) - number(right);
+    const delta = asNumber(left) - asNumber(right);
     if (op === "=") return delta === 0;
     if (op === "<>") return delta !== 0;
     if (op === "<") return delta < 0;
@@ -373,8 +386,8 @@ function compare(left: FormulaResult, right: FormulaResult, op: string): boolean
     if (op === "<=") return delta <= 0;
     return delta >= 0;
   }
-  const a = display(left);
-  const b = display(right);
+  const a = asText(left);
+  const b = asText(right);
   if (op === "=") return a === b;
   if (op === "<>") return a !== b;
   if (op === "<") return a < b;
@@ -383,117 +396,89 @@ function compare(left: FormulaResult, right: FormulaResult, op: string): boolean
   return a >= b;
 }
 
-function flatten(values: Array<FormulaResult | FormulaResult[][]>): FormulaResult[] {
-  const result: FormulaResult[] = [];
-  for (const value of values) {
-    if (Array.isArray(value)) {
-      for (const row of value) result.push(...row);
-    } else {
-      result.push(value);
-    }
+function rewriteTokens(formula: string, mapRef: (raw: string) => string): string {
+  const eq = formula.startsWith("=");
+  const source = eq ? formula.slice(1) : formula;
+  let tokens: Token[];
+  try {
+    tokens = tokenize(source);
+  } catch {
+    return formula;
   }
-  return result;
+  const rebuilt = tokens.map((token) => {
+    if (token.kind === "string") return `"${token.value.replace(/"/g, "\"\"")}"`;
+    if (token.kind === "ref") return mapRef(token.value);
+    if (token.kind === "range") {
+      const [left, right] = token.value.split(":");
+      return `${mapRef(left)}:${mapRef(right)}`;
+    }
+    return token.value;
+  }).join("");
+  return eq ? `=${rebuilt}` : rebuilt;
 }
 
-function numbers(values: FormulaResult[]) {
-  return values.filter((value): value is number => typeof value === "number");
+export function translateFormula(formula: string, deltaRow: number, deltaCol: number): string {
+  return rewriteTokens(formula, (raw) => {
+    const parsed = parseCellRef(raw);
+    if (!parsed) return raw;
+    const row = parsed.absRow ? parsed.row : parsed.row + deltaRow;
+    const col = parsed.absCol ? parsed.col : parsed.col + deltaCol;
+    if (row < 0 || col < 0) return "#REF!";
+    return formatParsedRef({ ...parsed, row, col });
+  });
 }
 
-function callFunction(name: string, rawArgs: Array<FormulaResult | FormulaResult[][]>): FormulaResult {
-  const args = flatten(rawArgs);
-  switch (name) {
-    case "SUM": return numbers(args).reduce((sum, value) => sum + value, 0);
-    case "AVERAGE": {
-      const values = numbers(args);
-      if (!values.length) throw new FormulaError("#DIV/0!");
-      return values.reduce((sum, value) => sum + value, 0) / values.length;
+export function shiftFormula(formula: string, options: {
+  rowAt?: number;
+  rowDelta?: number;
+  colAt?: number;
+  colDelta?: number;
+  deletedRows?: { start: number; count: number };
+  deletedCols?: { start: number; count: number };
+}): string {
+  const rowAt = options.rowAt ?? 0;
+  const rowDelta = options.rowDelta ?? 0;
+  const colAt = options.colAt ?? 0;
+  const colDelta = options.colDelta ?? 0;
+  return rewriteTokens(formula, (raw) => {
+    const parsed = parseCellRef(raw);
+    if (!parsed) return raw;
+    let { row, col } = parsed;
+    if (options.deletedRows) {
+      const { start, count } = options.deletedRows;
+      if (row >= start && row < start + count) return "#REF!";
+      if (row >= start + count) row -= count;
+    } else if (rowDelta && row >= rowAt) {
+      row += rowDelta;
     }
-    case "MIN": return Math.min(...numbers(args));
-    case "MAX": return Math.max(...numbers(args));
-    case "COUNT": return numbers(args).length;
-    case "COUNTA": return args.filter((value) => value != null && value !== "").length;
-    case "ABS": return Math.abs(number(args[0]));
-    case "SQRT": {
-      const value = number(args[0]);
-      if (value < 0) throw new FormulaError("#NUM!");
-      return Math.sqrt(value);
+    if (options.deletedCols) {
+      const { start, count } = options.deletedCols;
+      if (col >= start && col < start + count) return "#REF!";
+      if (col >= start + count) col -= count;
+    } else if (colDelta && col >= colAt) {
+      col += colDelta;
     }
-    case "ROUND": {
-      const digits = Number(args[1] ?? 0);
-      const factor = 10 ** digits;
-      return Math.round(number(args[0]) * factor) / factor;
-    }
-    case "INT": return Math.floor(number(args[0]));
-    case "MOD": {
-      const divisor = number(args[1]);
-      if (divisor === 0) throw new FormulaError("#DIV/0!");
-      return number(args[0]) % divisor;
-    }
-    case "POWER": return number(args[0]) ** number(args[1]);
-    case "SIGN": return Math.sign(number(args[0]));
-    case "IF": return truthy(args[0]) ? args[1] ?? true : args[2] ?? false;
-    case "AND": return args.every(truthy);
-    case "OR": return args.some(truthy);
-    case "NOT": return !truthy(args[0]);
-    case "IFERROR":
-      try {
-        const value = args[0];
-        if (value instanceof FormulaError) return args[1] ?? "";
-        return value;
-      } catch (error) {
-        if (error instanceof FormulaError) return args[1] ?? "";
-        throw error;
-      }
-    case "LEN": return display(args[0]).length;
-    case "LEFT": return display(args[0]).slice(0, Number(args[1] ?? 1));
-    case "RIGHT": {
-      const text = display(args[0]);
-      return text.slice(Math.max(0, text.length - Number(args[1] ?? 1)));
-    }
-    case "MID": return display(args[0]).slice(Number(args[1] ?? 1) - 1, Number(args[1] ?? 1) - 1 + Number(args[2] ?? 0));
-    case "TRIM": return display(args[0]).trim().replace(/\s+/g, " ");
-    case "UPPER": return display(args[0]).toUpperCase();
-    case "LOWER": return display(args[0]).toLowerCase();
-    case "CONCAT":
-    case "CONCATENATE": return args.map(display).join("");
-    case "VALUE": return number(args[0]);
-    case "ISBLANK": return args[0] == null || args[0] === "";
-    case "ISNUMBER": return typeof args[0] === "number";
-    case "ISTEXT": return typeof args[0] === "string";
-    case "TRUE": return true;
-    case "FALSE": return false;
-    case "NOW": return Date.now() / 86400000 + 25569;
-    case "TODAY": return Math.floor(Date.now() / 86400000) + 25569;
-    default: throw new FormulaError("#NAME?", name);
-  }
+    if (row < 0 || col < 0) return "#REF!";
+    return formatParsedRef({ ...parsed, row, col });
+  });
 }
 
-function truthy(value: FormulaResult) {
-  if (value instanceof FormulaError) throw value;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") return value.length > 0;
-  return false;
-}
-
-export function evaluateFormula(source: string, lookup: SheetLookup, _visiting = new Set<string>()): FormulaResult {
+export function evaluateFormula(
+  source: string,
+  lookup: SheetLookup,
+  visitingOrOrigin?: Set<string> | FormulaOrigin,
+): FormulaResult {
   try {
     const formula = source.startsWith("=") ? source.slice(1) : source;
-    return new Parser(tokenize(formula), lookup).parse();
+    const origin: FormulaOrigin = visitingOrOrigin instanceof Set || visitingOrOrigin == null ? {} : visitingOrOrigin;
+    return new Parser(tokenize(formula), lookup, {
+      row: origin.row ?? 0,
+      col: origin.col ?? 0,
+      now: origin.now ?? (() => new Date()),
+    }).parse();
   } catch (error) {
     if (error instanceof FormulaError) return error;
     return new FormulaError("#VALUE!", error instanceof Error ? error.message : String(error));
   }
 }
 
-export function displayFormulaValue(value: FormulaResult) {
-  if (value instanceof FormulaError) return value.token;
-  if (value == null) return "";
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) return "#NUM!";
-    if (Number.isInteger(value)) return String(value);
-    return String(Number(value.toPrecision(12)));
-  }
-  return value;
-}

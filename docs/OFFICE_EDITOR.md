@@ -15,7 +15,7 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 保存 / 自动保存                  按脏节点重写 XML
 ```
 
-主线程不持有完整文档。Worker 保留最近 4 份文档的包与模型；UI 只订阅当前视口。这与 OnlyOffice 的 “模型在引擎、屏幕只画可见区域” 同一思路，但全部在本机完成，不上传。
+主线程不持有完整文档。Worker 用 LRU 保留最近 4 份 `OfficeSession`；UI 只订阅当前视口。引擎按设计模式拆开：Strategy（OOXML codec）、Command（撤销/重做）、Registry（Excel 函数表）、Facade（`OfficeSession` 统一 mutate/undo/serialize）。这与 OnlyOffice 的 “模型在引擎、屏幕只画可见区域” 同一思路，但全部在本机完成，不上传。
 
 ## 秒开策略
 
@@ -31,12 +31,12 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 ## 兼容与写回
 
-- **Word**：解析 `word/document.xml` 的段落、Run 级加粗/斜体/下划线/颜色/字号、表格。未修改块原样写回；修改块生成 WordprocessingML。样式、主题、媒体等其它包部件保持不动。
-- **Excel**：原生解析 SpreadsheetML（sharedStrings + sheetData）。单元格保留 style index；公式用内置引擎重算后再写 `<f>` / `<v>`。CSV 直接读写。旧版 `.xls` / `.xlsb` / `.ods` 经 SheetJS 读入同一稀疏模型后按原 bookType 写回。
-- **PowerPoint**：改文本时只替换对应 `a:t`；几何、图片、母版仍在原包中。可新增幻灯片。
+- **Word**：解析段落、Run 级格式、表格、标题与 `w:numPr` 列表。未修改块原样写回；修改块生成 WordprocessingML。使用列表时补齐 `word/numbering.xml` 与 Content_Types，以便 Microsoft Word / WPS 识别项目符号与编号。支持插入/删除/拆分段落、撤销。
+- **Excel**：原生 SpreadsheetML。单元格保留 style index；公式用函数注册表重算后再写 `<f>` / `<v>`。支持插入/删除行列（相对引用平移）、复制/粘贴、向下填充、百分比输入、撤销。CSV 直接读写。旧版 `.xls` / `.xlsb` / `.ods` 经 SheetJS 读入同一稀疏模型后按原 bookType 写回。
+- **PowerPoint**：改文本时只替换对应 `a:t`；几何、图片、母版仍在原包中。可新增、删除、复制幻灯片，改背景与形状加粗/对齐。写回时更新 `sldIdLst` 与关系部件。
 - **外部来源**（微信、邮件、临时 `content://`）：仍然只写 LeafMark 保留副本，绝不回写来源路径。文档库内的文件保存时同步更新工作区文件与快照。
 
-公式引擎覆盖常见 Excel 语义：四则与比较、`A1` / `$A$1` / `Sheet1!B2` 引用、区域，以及 `SUM AVERAGE MIN MAX COUNT COUNTA IF AND OR NOT IFERROR ABS ROUND INT MOD POWER SQRT LEN LEFT RIGHT MID TRIM UPPER LOWER CONCAT VALUE ISBLANK ISNUMBER ISTEXT NOW TODAY`。循环引用返回 `#CYCLE!`。
+公式引擎对齐 Microsoft Excel / WPS / OnlyOffice 常见语义：四则与比较、`A1` / `$A$1` / `Sheet1!B2`、区域、`IFERROR` 捕获参数错误，以及 `SUM AVERAGE MIN MAX COUNT COUNTA COUNTBLANK COUNTIF COUNTIFS SUMIF SUMIFS AVERAGEIF PRODUCT ABS ROUND ROUNDUP ROUNDDOWN INT TRUNC CEILING FLOOR MOD POWER SQRT LN LOG LOG10 EXP PI SIGN IF IFNA AND OR NOT TRUE FALSE ISBLANK ISNUMBER ISTEXT ISERROR ISNA N LEN LEFT RIGHT MID TRIM UPPER LOWER PROPER CONCAT TEXTJOIN VALUE FIND SEARCH SUBSTITUTE REPLACE REPT EXACT CHAR CODE NOW TODAY DATE YEAR MONTH DAY WEEKDAY TEXT NA CHOOSE COLUMN ROW COLUMNS ROWS LARGE SMALL MEDIAN SUMPRODUCT VLOOKUP HLOOKUP INDEX MATCH`。循环引用返回 `#CYCLE!`。对照用例见 `src/office/office-compat.test.ts`。
 
 ## 明确不做的事（本版本）
 
@@ -52,6 +52,6 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 ## 验证
 
 - `npm run typecheck`
-- `npm test`（含 DOCX/XLSX/PPTX 往返与公式）
+- `npm test`（含 DOCX/XLSX/PPTX 往返、撤销，以及与 Microsoft Excel 语义对照的公式套件）
 - Windows / Linux `cargo test`
 - 真实语料：冷启动首屏、编辑后用 Microsoft Office 打开、源文件删除后从保留副本继续编辑

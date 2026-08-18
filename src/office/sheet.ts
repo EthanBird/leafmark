@@ -1,5 +1,5 @@
 import * as XLSX from "@e965/xlsx";
-import { displayFormulaValue, evaluateFormula, formatCellRef, FormulaError, type FormulaResult, type SheetLookup } from "./formula";
+import { displayFormulaValue, evaluateFormula, formatCellRef, FormulaError, shiftFormula, translateFormula, type FormulaResult, type SheetLookup } from "./formula";
 import { clonePackage, findPackagePart, packageText, setPackageText, type OfficePackage, unzipPackage, zipPackage } from "./package";
 import { decodeXml, encodedTextNode, encodeXml, xmlAttr } from "./xml";
 
@@ -346,6 +346,10 @@ export function editCell(workbook: WorkbookModel, sheetName: string, row: number
     cell.formula = undefined;
     cell.value = trimmed.toLowerCase() === "true";
     cell.type = "b";
+  } else if (/^-?\d+(\.\d+)?%$/.test(trimmed)) {
+    cell.formula = undefined;
+    cell.value = Number(trimmed.slice(0, -1)) / 100;
+    cell.type = "n";
   } else if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)) {
     cell.formula = undefined;
     cell.value = Number(trimmed);
@@ -526,6 +530,131 @@ function minimalXlsx(workbook: WorkbookModel): OfficePackage {
     files[`xl/worksheets/sheet${index + 1}.xml`] = new TextEncoder().encode("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData/></worksheet>");
   });
   return files;
+}
+
+export function getCellInput(sheet: SheetModel, row: number, col: number) {
+  const cell = getCell(sheet, row, col);
+  if (!cell) return "";
+  if (cell.formula) return cell.formula.startsWith("=") ? cell.formula : `=${cell.formula}`;
+  if (typeof cell.value === "boolean") return cell.value ? "TRUE" : "FALSE";
+  if (cell.value instanceof FormulaError) return cell.value.token;
+  return displayFormulaValue(cell.value);
+}
+
+function findSheet(workbook: WorkbookModel, sheetName: string) {
+  const sheet = workbook.sheets.find((item) => item.name === sheetName);
+  if (!sheet) throw new Error(`找不到工作表：${sheetName}`);
+  return sheet;
+}
+
+function cloneCell(cell: SheetCell): SheetCell {
+  return { ...cell, originalXml: undefined, dirty: true };
+}
+
+function rewriteSheetFormulas(sheet: SheetModel, rewrite: (formula: string) => string) {
+  for (const line of sheet.cells.values()) {
+    for (const cell of line.values()) {
+      if (!cell.formula) continue;
+      const next = rewrite(cell.formula);
+      if (next !== cell.formula) {
+        cell.formula = next.replace(/^=/, "");
+        cell.dirty = true;
+        cell.originalXml = undefined;
+      }
+    }
+  }
+}
+
+export function copyRange(workbook: WorkbookModel, sheetName: string, row: number, col: number, rowCount: number, colCount: number) {
+  const sheet = findSheet(workbook, sheetName);
+  const values: string[][] = [];
+  for (let r = 0; r < Math.max(1, rowCount); r += 1) {
+    const line: string[] = [];
+    for (let c = 0; c < Math.max(1, colCount); c += 1) line.push(getCellInput(sheet, row + r, col + c));
+    values.push(line);
+  }
+  return values;
+}
+
+export function pasteRange(workbook: WorkbookModel, sheetName: string, row: number, col: number, values: string[][]) {
+  values.forEach((line, r) => {
+    line.forEach((input, c) => editCell(workbook, sheetName, row + r, col + c, input));
+  });
+}
+
+export function fillDown(workbook: WorkbookModel, sheetName: string, row: number, col: number, rowCount: number, colCount: number) {
+  const sheet = findSheet(workbook, sheetName);
+  const height = Math.max(1, rowCount);
+  const width = Math.max(1, colCount);
+  for (let c = 0; c < width; c += 1) {
+    const source = getCellInput(sheet, row, col + c);
+    for (let r = 1; r < height; r += 1) {
+      const next = source.startsWith("=") ? translateFormula(source, r, 0) : source;
+      editCell(workbook, sheetName, row + r, col + c, next);
+    }
+  }
+}
+
+export function insertRows(workbook: WorkbookModel, sheetName: string, at: number, count = 1) {
+  const sheet = findSheet(workbook, sheetName);
+  const next = cellMap();
+  for (const [row, line] of sheet.cells) {
+    const target = row >= at ? row + count : row;
+    const shifted = new Map<number, SheetCell>();
+    for (const [col, cell] of line) shifted.set(col, cloneCell(cell));
+    next.set(target, shifted);
+  }
+  sheet.cells = next;
+  sheet.rows += count;
+  rewriteSheetFormulas(sheet, (formula) => shiftFormula(formula, { rowAt: at, rowDelta: count }));
+  recalcWorkbook(workbook);
+}
+
+export function insertCols(workbook: WorkbookModel, sheetName: string, at: number, count = 1) {
+  const sheet = findSheet(workbook, sheetName);
+  const next = cellMap();
+  for (const [row, line] of sheet.cells) {
+    const shifted = new Map<number, SheetCell>();
+    for (const [col, cell] of line) shifted.set(col >= at ? col + count : col, cloneCell(cell));
+    next.set(row, shifted);
+  }
+  sheet.cells = next;
+  sheet.cols += count;
+  rewriteSheetFormulas(sheet, (formula) => shiftFormula(formula, { colAt: at, colDelta: count }));
+  recalcWorkbook(workbook);
+}
+
+export function deleteRows(workbook: WorkbookModel, sheetName: string, at: number, count = 1) {
+  const sheet = findSheet(workbook, sheetName);
+  const next = cellMap();
+  for (const [row, line] of sheet.cells) {
+    if (row >= at && row < at + count) continue;
+    const target = row >= at + count ? row - count : row;
+    const shifted = new Map<number, SheetCell>();
+    for (const [col, cell] of line) shifted.set(col, cloneCell(cell));
+    next.set(target, shifted);
+  }
+  sheet.cells = next;
+  sheet.rows = Math.max(0, sheet.rows - count);
+  rewriteSheetFormulas(sheet, (formula) => shiftFormula(formula, { deletedRows: { start: at, count } }));
+  recalcWorkbook(workbook);
+}
+
+export function deleteCols(workbook: WorkbookModel, sheetName: string, at: number, count = 1) {
+  const sheet = findSheet(workbook, sheetName);
+  const next = cellMap();
+  for (const [row, line] of sheet.cells) {
+    const shifted = new Map<number, SheetCell>();
+    for (const [col, cell] of line) {
+      if (col >= at && col < at + count) continue;
+      shifted.set(col >= at + count ? col - count : col, cloneCell(cell));
+    }
+    if (shifted.size) next.set(row, shifted);
+  }
+  sheet.cells = next;
+  sheet.cols = Math.max(0, sheet.cols - count);
+  rewriteSheetFormulas(sheet, (formula) => shiftFormula(formula, { deletedCols: { start: at, count } }));
+  recalcWorkbook(workbook);
 }
 
 export function addSheet(workbook: WorkbookModel, name?: string) {

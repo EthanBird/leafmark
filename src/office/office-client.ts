@@ -3,6 +3,7 @@ import type { WordBlock } from "./word";
 import type { SheetViewport } from "./sheet";
 import type { SlideModel } from "./slide";
 import type {
+  OfficeMutation,
   OfficeOpenResult,
   OfficeSource,
   OfficeWorkerRequest,
@@ -113,6 +114,22 @@ export function updatePresentationShape(key: string, index: number, shapeId: str
 
 export function addPresentationSlide(key: string) {
   return callWorker<{ slide: SlideModel; slides: Array<{ index: number; title: string }> }>({ action: "slideAdd", key });
+}
+
+export function mutateOffice(key: string, mutation: OfficeMutation) {
+  return callWorker<unknown>({ action: "mutate", key, mutation });
+}
+
+export function copySheetRange(key: string, name: string, row: number, col: number, rowCount: number, colCount: number) {
+  return callWorker<string[][]>({ action: "sheetCopy", key, name, row, col, rowCount, colCount });
+}
+
+export function undoOffice(key: string) {
+  return callWorker<{ ok: boolean; snapshot: OfficeOpenResult }>({ action: "undo", key });
+}
+
+export function redoOffice(key: string) {
+  return callWorker<{ ok: boolean; snapshot: OfficeOpenResult }>({ action: "redo", key });
 }
 
 export async function serializeOfficeDocument(key: string) {

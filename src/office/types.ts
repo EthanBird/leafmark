@@ -1,6 +1,6 @@
-import type { WordBlock, WordDocument } from "./word";
-import type { SheetViewport, WorkbookModel } from "./sheet";
-import type { PresentationDocument, SlideModel } from "./slide";
+import type { WordBlock, WordList, WordParagraph } from "./word";
+import type { SheetViewport } from "./sheet";
+import type { SlideModel, SlideShape } from "./slide";
 
 export type OfficeKind = "word" | "spreadsheet" | "presentation";
 
@@ -43,6 +43,26 @@ export interface PresentationOpenResult {
 
 export type OfficeOpenResult = WordOpenResult | SpreadsheetOpenResult | PresentationOpenResult | CompatibilityResult;
 
+export type OfficeMutation =
+  | { op: "wordReplace"; index: number; block: WordBlock }
+  | { op: "wordInsert"; index: number; block: WordBlock }
+  | { op: "wordDelete"; index: number }
+  | { op: "wordSplit"; index: number; offset: number }
+  | { op: "wordStyle"; index: number; patch: Partial<Pick<WordParagraph, "align" | "kind" | "level" | "style">> & { list?: WordList | null } }
+  | { op: "sheetEdit"; name: string; row: number; col: number; input: string }
+  | { op: "sheetAdd"; name?: string }
+  | { op: "sheetInsert"; name: string; axis: "row" | "col"; index: number; count?: number }
+  | { op: "sheetDelete"; name: string; axis: "row" | "col"; index: number; count?: number }
+  | { op: "sheetFill"; name: string; row: number; col: number; rowCount: number; colCount: number }
+  | { op: "sheetPaste"; name: string; row: number; col: number; values: string[][] }
+  | { op: "slideText"; index: number; shapeId: string; text: string }
+  | { op: "slideAdd" }
+  | { op: "slideDelete"; index: number }
+  | { op: "slideDuplicate"; index: number }
+  | { op: "slideBackground"; index: number; background: string }
+  | { op: "slideShape"; index: number; shapeId: string; patch: Partial<Pick<SlideShape, "bold" | "italic" | "fontSize" | "align" | "color" | "text">> }
+  | { op: "slideDeleteShape"; index: number; shapeId: string };
+
 export type OfficeWorkerRequest =
   | { id: number; action: "open"; source: Omit<OfficeSource, "assetPath">; buffer: ArrayBuffer }
   | { id: number; action: "status"; key: string }
@@ -55,7 +75,12 @@ export type OfficeWorkerRequest =
   | { id: number; action: "slideGet"; key: string; index: number }
   | { id: number; action: "slideText"; key: string; index: number; shapeId: string; text: string }
   | { id: number; action: "slideAdd"; key: string }
-  | { id: number; action: "serialize"; key: string };
+  | { id: number; action: "serialize"; key: string }
+  | { id: number; action: "mutate"; key: string; mutation: OfficeMutation }
+  | { id: number; action: "undo"; key: string }
+  | { id: number; action: "redo"; key: string }
+  | { id: number; action: "canUndo"; key: string }
+  | { id: number; action: "sheetCopy"; key: string; name: string; row: number; col: number; rowCount: number; colCount: number };
 
 export interface OfficeWorkerResponse {
   id: number;

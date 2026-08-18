@@ -796,7 +796,29 @@ button:disabled { opacity: .42; cursor: default !important; }
 .office-ribbon button:hover { background: var(--surface-hover); color: var(--text); }
 .office-ribbon span { width: 1px; height: 16px; margin: 0 6px; background: var(--border); }
 .office-ribbon small, .office-ribbon strong { color: var(--text-tertiary); font-size: 10px; }
-.sheet-formula-bar { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.office-ribbon .office-find {
+  width: 140px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 11px;
+}
+.office-color { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; color: var(--text-tertiary); font-size: 10px; }
+.office-color input { width: 22px; height: 18px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.sheet-formula-bar, .sheet-toolbar { display: flex; gap: 8px; align-items: center; }
+.sheet-toolbar { display: flex; flex-wrap: wrap; }
+.sheet-toolbar input { flex: 1; min-width: 120px; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); color: var(--text); font: 12px/1.4 ui-monospace, "SF Mono", Consolas, monospace; }
+.sheet-cell.selected { background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised)); }
+.word-list { padding-left: 1.4em; }
+.word-list-bullet { list-style: disc; display: list-item; }
+.word-list-number { list-style: decimal; display: list-item; }
+.word-block-active { outline: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent); }
+.presentation-viewer.office-editor { grid-template-columns: 184px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.presentation-viewer.office-editor .office-ribbon { grid-column: 1 / -1; }
+.slide-shape.active { outline: 2px solid var(--accent); }
 .sheet-formula-bar strong { font-size: 11px; color: var(--text); text-align: center; }
 .sheet-formula-bar input {
   height: 26px;
@@ -807,7 +829,7 @@ button:disabled { opacity: .42; cursor: default !important; }
   color: var(--text);
   font: 12px/1.4 ui-monospace, "SF Mono", Consolas, monospace;
 }
-.spreadsheet-viewer.office-editor { grid-template-rows: 36px minmax(0, 1fr) 34px; }
+.spreadsheet-viewer.office-editor { grid-template-rows: auto minmax(0, 1fr) 34px; }
 .sheet-virtual { position: relative; overflow: auto; background: var(--surface-raised); }
 .sheet-spacer { position: relative; }
 .sheet-corner, .sheet-col-header, .sheet-row-header, .sheet-cell, .sheet-cell-input {
