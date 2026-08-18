@@ -1,6 +1,7 @@
 import type { WordBlock, WordList, WordParagraph } from "./word";
 import type { SheetViewport } from "./sheet";
 import type { SlideModel, SlideShape } from "./slide";
+import type { OfficeExcerptQuery } from "./office-agent";
 
 export type OfficeKind = "word" | "spreadsheet" | "presentation";
 
@@ -102,7 +103,9 @@ export type OfficeWorkerRequest =
   | { id: number; action: "undo"; key: string }
   | { id: number; action: "redo"; key: string }
   | { id: number; action: "canUndo"; key: string }
-  | { id: number; action: "sheetCopy"; key: string; name: string; row: number; col: number; rowCount: number; colCount: number };
+  | { id: number; action: "sheetCopy"; key: string; name: string; row: number; col: number; rowCount: number; colCount: number }
+  | { id: number; action: "inspect"; key: string }
+  | { id: number; action: "excerpt"; key: string; query?: OfficeExcerptQuery };
 
 export interface OfficeWorkerResponse {
   id: number;

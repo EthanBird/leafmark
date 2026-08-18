@@ -174,3 +174,20 @@ describe("WPS 演示日常能力", () => {
     expect(session.model.slides[0].hidden).toBe(false);
   });
 });
+
+describe("Agent 办公摘录", () => {
+  it("inspect 与 excerpt 返回有限文本而不是整包 OOXML", () => {
+    const word = new OfficeSession("word", "docx", openDocx(bufferOf(sampleDocx(`<w:p><w:r><w:t>秒开本地文档</w:t></w:r></w:p>`))));
+    expect(word.inspect().kind).toBe("word");
+    expect(word.inspect().word?.preview.some((line) => line.includes("秒开本地文档"))).toBe(true);
+    expect(word.excerpt({ offset: 0, count: 4 })).toContain("秒开本地文档");
+
+    const book = new OfficeSession("spreadsheet", "xlsx", openSpreadsheet(bufferOf(sampleXlsx(`<c r="A1"><v>12</v></c>`)), "xlsx"));
+    expect(book.inspect().kind).toBe("spreadsheet");
+    expect(book.excerpt({ sheet: "Sheet1", row: 0, col: 0, rowCount: 1, colCount: 1 })).toContain("A1");
+
+    const deck = new OfficeSession("presentation", "pptx", openPptx(bufferOf(samplePptx("封面"))));
+    expect(deck.inspect().kind).toBe("presentation");
+    expect(deck.excerpt({ slide: 0 })).toContain("封面");
+  });
+});

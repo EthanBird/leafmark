@@ -4,9 +4,11 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import {
   isOfficeEditableFormat,
   officeAssetUrl,
+  officeDocumentStatus,
   openOfficeDocument,
   serializeOfficeDocument,
 } from "../office/office-client";
+import { OFFICE_MUTATED_EVENT } from "../ask-ai";
 import type { PresentationOpenResult, SpreadsheetOpenResult, WordOpenResult } from "../office/types";
 import type { DocumentKind } from "../types";
 import { PresentationEditor } from "./office/PresentationEditor";
@@ -18,6 +20,8 @@ export interface OfficeEditorHandle {
   isDirty(): boolean;
   serialize(): Promise<Uint8Array>;
   markSaved(): void;
+  markDirty(): void;
+  reload(): Promise<void>;
 }
 
 interface OfficeEditorProps {
@@ -39,6 +43,7 @@ const OfficeDocumentEditor = forwardRef<OfficeEditorHandle, Omit<OfficeEditorPro
     const dirtyRef = useRef(false);
     const [result, setResult] = useState<WordOpenResult | SpreadsheetOpenResult | PresentationOpenResult | { type: "compatibility"; title: string; message: string } | null>(null);
     const [error, setError] = useState("");
+    const [revision, setRevision] = useState(0);
     const markDirty = useCallback(() => {
       if (!dirtyRef.current) {
         dirtyRef.current = true;
@@ -63,11 +68,34 @@ const OfficeDocumentEditor = forwardRef<OfficeEditorHandle, Omit<OfficeEditorPro
       return () => { active = false; };
     }, [assetPath, documentKey, format, kind, onDirtyChange]);
 
+    useEffect(() => {
+      const onMutated = (event: Event) => {
+        const key = (event as CustomEvent<{ key?: string }>).detail?.key;
+        if (key !== documentKey) return;
+        void officeDocumentStatus(documentKey).then((snapshot) => {
+          if (snapshot) {
+            setResult(snapshot);
+            setRevision((value) => value + 1);
+          }
+        }).catch(() => undefined);
+      };
+      window.addEventListener(OFFICE_MUTATED_EVENT, onMutated);
+      return () => window.removeEventListener(OFFICE_MUTATED_EVENT, onMutated);
+    }, [documentKey]);
+
     useImperativeHandle(ref, () => ({
       isDirty: () => dirtyRef.current,
       serialize: () => serializeOfficeDocument(documentKey),
       markSaved: () => markClean(),
-    }), [documentKey, markClean]);
+      markDirty,
+      reload: async () => {
+        const snapshot = await officeDocumentStatus(documentKey);
+        if (snapshot) {
+          setResult(snapshot);
+          setRevision((value) => value + 1);
+        }
+      },
+    }), [documentKey, markClean, markDirty]);
 
     if (error) return <ViewerMessage icon={<AlertTriangle />} title="文档解析失败" message={error} />;
     if (!result) return <ViewerLoading label={`正在秒开 ${name}`} />;
@@ -79,9 +107,9 @@ const OfficeDocumentEditor = forwardRef<OfficeEditorHandle, Omit<OfficeEditorPro
         action={<button type="button" className="primary-button" onClick={() => void openPath(assetPath)}>使用系统应用打开保留副本</button>}
       />;
     }
-    if (result.type === "word") return <WordEditor documentKey={documentKey} initial={result} editable={isOfficeEditableFormat(kind, format)} onDirty={markDirty} />;
-    if (result.type === "spreadsheet") return <SpreadsheetEditor documentKey={documentKey} initial={result} onDirty={markDirty} />;
-    return <PresentationEditor documentKey={documentKey} initial={result} onDirty={markDirty} />;
+    if (result.type === "word") return <WordEditor key={revision} documentKey={documentKey} initial={result} editable={isOfficeEditableFormat(kind, format)} onDirty={markDirty} />;
+    if (result.type === "spreadsheet") return <SpreadsheetEditor key={revision} documentKey={documentKey} initial={result} onDirty={markDirty} />;
+    return <PresentationEditor key={revision} documentKey={documentKey} initial={result} onDirty={markDirty} />;
   },
 );
 

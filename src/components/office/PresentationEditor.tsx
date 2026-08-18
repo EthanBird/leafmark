@@ -4,6 +4,7 @@ import { addPresentationSlide, loadPresentationSlide, mutateOffice, redoOffice, 
 import type { PresentationOpenResult } from "../../office/types";
 import type { SlideModel, SlideShape } from "../../office/slide";
 import { ViewerLoading } from "./ViewerChrome";
+import { AskAiRibbonButton } from "../AskAiToolbar";
 
 const LAYOUTS: Array<{ value: NonNullable<SlideModel["layout"]>; label: string }> = [
   { value: "title", label: "标题" },
@@ -152,6 +153,13 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
                 {LAYOUTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
               <button type="button" title="文本框" onClick={() => slide && void run({ op: "slideAddTextBox", index: slide.index })}><Type size={14} /> 文本框</button>
+              <AskAiRibbonButton
+                getSelection={() => ({
+                  text: window.getSelection()?.toString().trim() || shape?.text || slide?.shapes.map((item) => item.text).filter(Boolean).join("\n") || "",
+                  kind: "presentation",
+                  location: slide ? `幻灯片 ${slide.index + 1}${shape ? ` · ${shape.id}` : ""}` : undefined,
+                })}
+              />
               <span />
               <button type="button" title="加粗" disabled={!shape} onClick={() => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { bold: !shape.bold } })}><Bold size={14} /></button>
               <button type="button" title="斜体" disabled={!shape} onClick={() => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { italic: !shape.italic } })}><Italic size={14} /></button>

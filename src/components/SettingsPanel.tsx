@@ -18,6 +18,7 @@ import type { AgentAuthAccountStatus, AgentAuthChallenge, AppSettings, Associati
 import { api } from "../api";
 import { AGENT_PROVIDER_PROFILES, PROVIDER_DEFAULTS, REASONING_EFFORT_LABELS, defaultReasoningEffort, isOAuthProvider, providerProfile, reasoningEffortsForProvider } from "../agent-providers";
 import { defaultDesktopDockLayout } from "../dock-layout";
+import { AGENT_SKILLS } from "../agent-skills";
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -241,7 +242,7 @@ export function SettingsPanel({
                 <SettingRow title="并行子 Agent" description="主 Agent 可把审阅、核查或改写方案并行委派给多个只读子 Agent，再统一汇总；设为 0 可关闭。">
                   <NumberField value={settings.agent.maxParallelAgents} min={0} max={4} step={1} onChange={(maxParallelAgents) => patchAgent({ maxParallelAgents })} />
                 </SettingRow>
-                <SettingRow title="允许修改文档" description="关闭时 Agent 仍可阅读、检索和给建议，但写入类工具会被运行时拒绝。">
+                <SettingRow title="允许修改文档" description="关闭时 Agent 仍可阅读、检索和给建议。开启后可改 Markdown，以及当前打开的 Word / Excel / PPT（本地 OOXML 引擎，不是 WPS COM）。">
                   <Switch checked={settings.agent.allowDocumentEdits} onChange={(allowDocumentEdits) => patchAgent({ allowDocumentEdits })} />
                 </SettingRow>
                 <SettingRow title="长期记忆" description="使用本地、无模型依赖的语义特征索引；跨会话检索，不加载嵌入模型。">
@@ -257,10 +258,10 @@ export function SettingsPanel({
                   <Switch checked={settings.agent.allowDestructiveTerminal} onChange={(allowDestructiveTerminal) => patchAgent({ allowDestructiveTerminal })} />
                 </SettingRow>}
                 <div className="agent-settings-block">
-                  <strong>内置 Skills</strong><p>Skills 只向模型注入所需的方法约束，不引入额外运行库。</p>
+                  <strong>内置 Skills</strong><p>Skills 只向模型注入所需的方法约束。WPS 系列对应一叶本地办公引擎，不是安装版 WPS 插件。</p>
                   <div className="skill-options">
-                    {[["writing", "写作"], ["proofread", "校对"], ["translate", "翻译"], ["summarize", "总结"], ["structure", "结构化"], ["research", "研究"]].map(([id, label]) => (
-                      <label key={id}><input type="checkbox" checked={settings.agent.enabledSkills.includes(id)} onChange={(event) => patchAgent({ enabledSkills: event.target.checked ? [...settings.agent.enabledSkills, id] : settings.agent.enabledSkills.filter((item) => item !== id) })} />{label}</label>
+                    {AGENT_SKILLS.map((skill) => (
+                      <label key={skill.id}><input type="checkbox" checked={settings.agent.enabledSkills.includes(skill.id)} onChange={(event) => patchAgent({ enabledSkills: event.target.checked ? [...settings.agent.enabledSkills, skill.id] : settings.agent.enabledSkills.filter((item) => item !== skill.id) })} />{skill.label}</label>
                     ))}
                   </div>
                 </div>

@@ -2,6 +2,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import type { WordBlock } from "./word";
 import type { SheetViewport } from "./sheet";
 import type { SlideModel } from "./slide";
+import type { OfficeExcerptQuery, OfficeInspectResult } from "./office-agent";
 import type {
   OfficeMutation,
   OfficeOpenResult,
@@ -118,6 +119,18 @@ export function addPresentationSlide(key: string) {
 
 export function mutateOffice(key: string, mutation: OfficeMutation) {
   return callWorker<unknown>({ action: "mutate", key, mutation });
+}
+
+export function inspectOfficeDocument(key: string) {
+  return callWorker<OfficeInspectResult>({ action: "inspect", key });
+}
+
+export function excerptOfficeDocument(key: string, query: OfficeExcerptQuery = {}) {
+  return callWorker<string>({ action: "excerpt", key, query });
+}
+
+export function officeDocumentStatus(key: string) {
+  return callWorker<OfficeOpenResult | null>({ action: "status", key });
 }
 
 export function copySheetRange(key: string, name: string, row: number, col: number, rowCount: number, colCount: number) {

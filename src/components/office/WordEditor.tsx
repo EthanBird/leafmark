@@ -4,6 +4,7 @@ import { loadWordChunk, mutateOffice, redoOffice, replaceWordBlock, undoOffice }
 import type { OfficeMutation, WordOpenResult } from "../../office/types";
 import type { WordBlock, WordParagraph, WordRun } from "../../office/word";
 import { htmlToRuns, paragraphText, wordCount } from "../../office/word";
+import { AskAiRibbonButton } from "../AskAiToolbar";
 
 const WORD_CHUNK = 160;
 const FONTS = ["微软雅黑", "宋体", "黑体", "楷体", "Calibri", "Arial", "Times New Roman", "Consolas"];
@@ -155,6 +156,13 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
                 }}>清除</button>
                 <span />
                 <button type="button" title="查找" onClick={() => setFindOpen((open) => !open)}><Search size={14} /></button>
+                <AskAiRibbonButton
+                  getSelection={() => ({
+                    text: window.getSelection()?.toString().trim() || (paragraph ? paragraphText(paragraph) : ""),
+                    kind: "word",
+                    location: paragraph ? `第 ${focus + 1} 段` : undefined,
+                  })}
+                />
                 {findOpen && (
                   <>
                     <input className="office-find" value={query} placeholder="查找" onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") findNext(); }} />

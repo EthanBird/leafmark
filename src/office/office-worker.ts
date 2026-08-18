@@ -50,6 +50,8 @@ async function handleRequest(request: OfficeWorkerRequest) {
   if (request.action === "redo") return { ok: session.redoOnce(), snapshot: session.snapshot() };
   if (request.action === "canUndo") return { undo: session.undo.canUndo, redo: session.undo.canRedo };
   if (request.action === "sheetCopy") return session.copyCells(request.name, request.row, request.col, request.rowCount, request.colCount);
+  if (request.action === "inspect") return session.inspect();
+  if (request.action === "excerpt") return session.excerpt(request.query);
   return session.serialize();
 }
 

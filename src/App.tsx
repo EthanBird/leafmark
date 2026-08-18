@@ -45,6 +45,7 @@ import { api } from "./api";
 import { DocumentLibrary } from "./components/DocumentLibrary";
 import { DocumentViewer, documentKindIcon } from "./components/DocumentViewer";
 import { OfficeEditor, type OfficeEditorHandle } from "./components/OfficeEditor";
+import { AskAiToolbar } from "./components/AskAiToolbar";
 import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
 import {
@@ -106,6 +107,15 @@ import {
   type OpenDocumentTab,
 } from "./document-tabs";
 import type { DockPanelId, DockZone } from "./types";
+import { OPEN_AGENT_EVENT, dispatchOfficeMutated } from "./ask-ai";
+import {
+  excerptOfficeDocument,
+  inspectOfficeDocument,
+  mutateOffice,
+  redoOffice,
+  undoOffice,
+} from "./office/office-client";
+import { parseOfficeExcerptQuery, parseOfficeMutation } from "./office/office-agent";
 
 interface EntryDialogState {
   action: "create" | "rename";
@@ -1429,6 +1439,20 @@ export default function App() {
     if (panel === "workspace" || panel === "history" || panel === "favorites" || panel === "agent") setSidebarView(panel);
     if (panel === "outline") setOutlineOpen(true);
   };
+
+  useEffect(() => {
+    const onOpenAgent = () => {
+      if (android) {
+        setSidebarView("agent");
+        setSidebarOpen(true);
+      } else {
+        updateDockLayout(activateDockPanel(dockLayout, "agent"));
+        setSidebarView("agent");
+      }
+    };
+    window.addEventListener(OPEN_AGENT_EVENT, onOpenAgent);
+    return () => window.removeEventListener(OPEN_AGENT_EVENT, onOpenAgent);
+  }, [android, dockLayout]);
   const hidePanel = (panel: DockPanelId) => {
     if (panel === "agent" && agentTurnActiveRef.current) {
       setNotice("Agent 工作期间不能隐藏 Agent 面板，请先停止或等待任务完成");
@@ -1763,6 +1787,23 @@ export default function App() {
     else clearCurrentDocument();
   };
 
+  const officeDocumentKey = archiveId || activeTabKey;
+  const officeContext = selectedPath && (documentKind === "word" || documentKind === "spreadsheet" || documentKind === "presentation")
+    ? {
+      key: officeDocumentKey,
+      kind: documentKind,
+      path: documentOrigin === "archive" ? nativeFileName(sourcePath || selectedPath) : selectedPath,
+      format: documentFormat,
+    }
+    : null;
+
+  const persistOfficeMutation = async (label: string) => {
+    officeEditorRef.current?.markDirty();
+    dispatchOfficeMutated(officeDocumentKey);
+    if (!await persistCurrent(true)) throw new Error(`${label}后未能安全保存`);
+    await officeEditorRef.current?.reload();
+  };
+
   const agentHost: AgentDocumentHost = {
     current: selectedPath && documentKind === "markdown" ? {
       path: documentOrigin === "archive" ? nativeFileName(sourcePath || selectedPath) : selectedPath,
@@ -1770,14 +1811,24 @@ export default function App() {
       origin: documentOrigin,
       archiveId,
     } : null,
-    documents: entries.filter((entry) => entry.kind === "directory" || entry.documentKind === "markdown"),
+    office: officeContext,
+    documents: entries.filter((entry) => entry.kind === "directory" || (entry.documentKind !== "unsupported" && entry.documentKind !== "pdf")),
     readDocument: async (path) => {
-      const entry = entries.find((item) => item.path === path);
-      if (entry?.kind === "file" && entry.documentKind !== "markdown") throw new Error("Office 与 PDF 文档当前为只读查看，Agent 只处理 Markdown");
+      const target = path || selectedRef.current;
+      const currentKind = documentKindRef.current;
+      if ((!path || path === selectedRef.current) && (currentKind === "word" || currentKind === "spreadsheet" || currentKind === "presentation")) {
+        return excerptOfficeDocument(officeDocumentKey);
+      }
+      const entry = entries.find((item) => item.path === target);
+      if (entry?.kind === "file" && entry.documentKind === "pdf") throw new Error("PDF 仍为只读查看");
+      if (entry?.kind === "file" && entry.documentKind !== "markdown" && entry.documentKind !== "directory") {
+        throw new Error("请先在标签中打开该 Office 文档，再使用 inspect_office / read_office");
+      }
       if (!path || path === selectedRef.current) return contentRef.current;
       return (await api.readDocument(path)).content;
     },
     replaceCurrentDocument: async (next) => {
+      if (documentKindRef.current !== "markdown") throw new Error("Office 文档请使用 office_execute，不能整篇替换为 Markdown");
       if (!selectedRef.current) throw new Error("当前没有打开文档");
       setContent(next);
       contentRef.current = next;
@@ -1785,6 +1836,7 @@ export default function App() {
       if (!await persistCurrent(true)) throw new Error("Agent 修改未能安全保存");
     },
     replaceText: async (path, searchText, replacement, all) => {
+      if (documentKindRef.current !== "markdown" && !path) throw new Error("Office 文档请使用 office_execute（例如 wordFindReplace）");
       if (!searchText) throw new Error("search 不能为空");
       const target = path || selectedRef.current;
       if (!target) throw new Error("当前没有打开文档");
@@ -1836,6 +1888,36 @@ export default function App() {
         } catch { /* one inaccessible document must not abort the search */ }
       }
       return results;
+    },
+    inspectOffice: async () => {
+      if (!officeContext) throw new Error("当前没有打开 Word / Excel / PPT");
+      return JSON.stringify(await inspectOfficeDocument(officeContext.key), null, 2);
+    },
+    readOffice: async (query) => {
+      if (!officeContext) throw new Error("当前没有打开 Word / Excel / PPT");
+      return excerptOfficeDocument(officeContext.key, parseOfficeExcerptQuery(query));
+    },
+    executeOffice: async (mutation) => {
+      if (!officeContext) throw new Error("当前没有打开 Word / Excel / PPT");
+      const parsed = parseOfficeMutation(mutation);
+      const result = await mutateOffice(officeContext.key, parsed);
+      await persistOfficeMutation("office_execute");
+      const text = JSON.stringify(result);
+      return text.length > 8_000 ? `${text.slice(0, 8_000)}\n…[结果已截断]` : text;
+    },
+    undoOffice: async () => {
+      if (!officeContext) throw new Error("当前没有打开 Word / Excel / PPT");
+      const result = await undoOffice(officeContext.key);
+      if (!result.ok) return "没有可撤销的办公编辑";
+      await persistOfficeMutation("office_undo");
+      return "已撤销最近一次办公编辑";
+    },
+    redoOffice: async () => {
+      if (!officeContext) throw new Error("当前没有打开 Word / Excel / PPT");
+      const result = await redoOffice(officeContext.key);
+      if (!result.ok) return "没有可重做的办公编辑";
+      await persistOfficeMutation("office_redo");
+      return "已重做最近一次办公编辑";
     },
     flushDocumentChanges: flushAgentChanges,
     reconcileExternalChanges: reconcileAgentFiles,
@@ -2047,6 +2129,12 @@ export default function App() {
         </header>
 
         <div className={`document-host mode-${documentKind === "markdown" ? mode : documentKind === "pdf" ? "viewer" : "editor"}${settings.showStatusBar ? " with-status" : ""}`}>
+          {selectedPath && documentKind !== "pdf" && documentKind !== "unsupported" && (
+            <AskAiToolbar
+              path={documentOrigin === "archive" ? nativeFileName(sourcePath || selectedPath) : selectedPath}
+              kind={documentKind}
+            />
+          )}
           {!bootstrapped ? (
             <StartupWorkspace />
           ) : !selectedPath ? (

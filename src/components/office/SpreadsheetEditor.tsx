@@ -10,8 +10,10 @@ import {
   redoOffice,
   undoOffice,
 } from "../../office/office-client";
+import { a1Range } from "../../office/office-agent";
 import type { CellFormat, SheetMerge, SheetViewport, ViewportCell } from "../../office/sheet";
 import type { SpreadsheetOpenResult } from "../../office/types";
+import { askAiAbout } from "../../ask-ai";
 
 const ROW_H = 24;
 const COL_W = 92;
@@ -221,6 +223,21 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
           {tab === "home" && (
             <>
               <button type="button" title="复制" onClick={() => void copy()}><Copy size={14} /></button>
+              <button
+                type="button"
+                title="划词问 AI"
+                onClick={() => {
+                  void copySheetRange(documentKey, sheetName, rowStartSel, colStartSel, rowEndSel - rowStartSel + 1, colEndSel - colStartSel + 1).then((values) => {
+                    const text = values.map((line) => line.join("\t")).join("\n").trim();
+                    if (!text) return;
+                    askAiAbout({
+                      text,
+                      kind: "spreadsheet",
+                      location: `${sheetName}!${a1Range(rowStartSel, colStartSel, rowEndSel - rowStartSel + 1, colEndSel - colStartSel + 1)}`,
+                    });
+                  });
+                }}
+              >问 AI</button>
               <button type="button" title="粘贴" onClick={() => void paste()}><ClipboardPaste size={14} /></button>
               <button type="button" title="向下填充" onClick={() => void run({ op: "sheetFill", name: sheetName, row: rowStartSel, col: colStartSel, rowCount: rowEndSel - rowStartSel + 1, colCount: colEndSel - colStartSel + 1 })}>↓填</button>
               <button type="button" title="向右填充" onClick={() => void run({ op: "sheetFillRight", name: sheetName, row: rowStartSel, col: colStartSel, rowCount: rowEndSel - rowStartSel + 1, colCount: colEndSel - colStartSel + 1 })}>→填</button>

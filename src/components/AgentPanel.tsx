@@ -2,6 +2,8 @@ import {
   Bot,
   BrainCircuit,
   ChevronDown,
+  Copy,
+  Download,
   FilePenLine,
   History,
   LoaderCircle,
@@ -54,6 +56,8 @@ import type {
   DocumentEntry,
   DocumentOrigin,
 } from "../types";
+import { copyTextToClipboard, enabledSkillPrompt, suggestedMarkdownPath } from "../agent-skills";
+import { ASK_AI_EVENT } from "../ask-ai";
 import { api } from "../api";
 import { REASONING_EFFORT_LABELS, reasoningEffortsForProvider } from "../agent-providers";
 import {
@@ -67,8 +71,16 @@ import {
   type AgentJobPhase,
 } from "../agent-job-journal";
 
+export interface AgentOfficeContext {
+  key: string;
+  kind: "word" | "spreadsheet" | "presentation";
+  path: string;
+  format: string;
+}
+
 export interface AgentDocumentHost {
   current: { path: string; content: string; origin: DocumentOrigin; archiveId: string } | null;
+  office: AgentOfficeContext | null;
   documents: DocumentEntry[];
   readDocument: (path?: string) => Promise<string>;
   replaceCurrentDocument: (content: string) => Promise<void>;
@@ -81,6 +93,11 @@ export interface AgentDocumentHost {
   abortDocumentStream: (id: string) => Promise<void>;
   openDocument: (path: string) => Promise<void>;
   searchDocuments: (query: string, limit: number) => Promise<Array<{ path: string; excerpt: string }>>;
+  inspectOffice: () => Promise<string>;
+  readOffice: (query?: Record<string, unknown>) => Promise<string>;
+  executeOffice: (mutation: unknown) => Promise<string>;
+  undoOffice: () => Promise<string>;
+  redoOffice: () => Promise<string>;
   flushDocumentChanges: () => Promise<void>;
   reconcileExternalChanges: () => Promise<void>;
   beginVersionTurn: (sessionId: string, turnId: string, label: string) => Promise<void>;
@@ -112,15 +129,6 @@ interface AgentPanelProps {
   onActivityChange: (active: boolean) => void;
 }
 
-const BUILTIN_SKILLS: Record<string, string> = {
-  writing: "写作：保持作者原意，改善结构、节奏、可读性与信息密度。",
-  proofread: "校对：检查错别字、标点、病句、术语一致性与 Markdown 语法。",
-  translate: "翻译：忠实保留层级、链接、代码、公式和专有名词。",
-  summarize: "总结：先给结论，再按主题提炼事实、依据和待办。",
-  structure: "结构化：用清晰标题、列表、表格重组内容，避免空洞层级。",
-  research: "研究：区分已知事实、推断和待验证信息，必要时使用工具取证。",
-};
-
 export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortChange, onActivityChange }: AgentPanelProps) {
   const initial = useMemo(() => loadAgentSessions()[0] ?? newAgentSession(), []);
   const [session, setSession] = useState<AgentSession>(initial);
@@ -142,6 +150,8 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
   const reasoningRef = useRef("");
   const activitiesRef = useRef<AgentToolActivity[]>([]);
   const recoveryStartedRef = useRef(false);
+  const sendRef = useRef<(override?: string) => Promise<void>>(async () => {});
+  const workingRef = useRef(false);
 
   const refreshVersionStatus = async () => {
     try { setVersionStatus(await host.versionStatus()); }
@@ -163,6 +173,21 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
   useEffect(() => {
     onActivityChange(working || versionBusy || recoveryLocked);
   }, [onActivityChange, recoveryLocked, versionBusy, working]);
+
+  useEffect(() => {
+    const onAsk = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
+      if (typeof prompt !== "string" || !prompt.trim()) return;
+      if (workingRef.current) {
+        setPrompt(prompt);
+        setNotice("当前回合进行中，已填入输入框");
+        return;
+      }
+      void sendRef.current(prompt);
+    };
+    window.addEventListener(ASK_AI_EVENT, onAsk);
+    return () => window.removeEventListener(ASK_AI_EVENT, onAsk);
+  }, []);
 
   useEffect(() => {
     const flush = () => {
@@ -509,7 +534,7 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
       setNotice("Agent 正在工作");
       checkpoint({ phase: "running_model" });
       updateKeepAlive("Agent 正在思考…");
-      const systemPrompt = buildSystemPrompt(settings, host.current, text);
+      const systemPrompt = buildSystemPrompt(settings, host.current, host.office, text);
       const result = await runAgentTurn({
         settings,
         systemPrompt,
@@ -641,6 +666,8 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
       composerRef.current?.focus();
     }
   };
+  sendRef.current = send;
+  workingRef.current = working;
 
   const visibleMessages = activeAgentMessages(session);
   const promptsByTurn = new Map(visibleMessages
@@ -683,7 +710,7 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
           <div className="agent-welcome">
             <span><Sparkles size={20} /></span>
             <strong>让文档自己生长</strong>
-            <p>Agent 可以阅读、检索、创建和修改文档，调用记忆、Web 与 Streamable HTTP MCP 工具。</p>
+            <p>Agent 可以阅读 Markdown 与已打开的 Word / Excel / PPT，划词提问，并把回答复制或存成 Markdown。</p>
             <div>
               <button type="button" onClick={() => void send("检查当前文档的结构、错别字与 Markdown 语法，只给出修改建议。")}>检查文档</button>
               <button type="button" onClick={() => void send("总结当前文档，列出核心结论与待办。")}>总结内容</button>
@@ -694,6 +721,18 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
           <article key={`${message.createdAt}-${index}`} className={`agent-message ${message.role}`}>
             <small>{message.role === "user" ? "你" : "Agent"}</small>
             {message.role === "assistant" ? <AgentMarkdown content={message.content} /> : <p>{message.content}</p>}
+            {message.role === "assistant" && message.content.trim() && (
+              <AssistantMessageActions
+                content={message.content}
+                busy={working || versionBusy}
+                onCopied={() => setNotice("已复制回答")}
+                onSave={async () => {
+                  const path = suggestedMarkdownPath(message.content);
+                  const result = await host.createDocument(path, message.content);
+                  setNotice(result);
+                }}
+              />
+            )}
             {message.reasoning && <ReasoningActivity content={message.reasoning} />}
             {message.activities?.map((activity) => <ToolActivity key={activity.id} activity={activity} />)}
             {message.role === "assistant" && message.version && <VersionActivity
@@ -713,7 +752,7 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
       <div className="agent-composer">
         <div className="agent-context">
           <FilePenLine size={11} />
-          <span>{host.current?.path || "未选择文档"}</span>
+          <span>{host.current?.path || host.office?.path || "未选择文档"}</span>
           <label title="推理强度会随下一条消息立即生效">思考
             <select value={settings.reasoningEffort} onChange={(event) => onReasoningEffortChange(event.target.value as AgentReasoningEffort)}>
               {reasoningEffortsForProvider(settings.provider).map((effort) => <option key={effort} value={effort}>{REASONING_EFFORT_LABELS[effort]}</option>)}
@@ -740,6 +779,53 @@ export function AgentPanel({ settings, host, onOpenSettings, onReasoningEffortCh
         </button>
       </div>
     </section>
+  );
+}
+
+function AssistantMessageActions({
+  content,
+  busy,
+  onCopied,
+  onSave,
+}: {
+  content: string;
+  busy: boolean;
+  onCopied: () => void;
+  onSave: () => Promise<void>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <div className="agent-message-actions">
+      <button
+        type="button"
+        title="复制回答"
+        disabled={busy || !content.trim()}
+        onClick={() => {
+          void copyTextToClipboard(content).then(() => {
+            setCopied(true);
+            setError("");
+            onCopied();
+            window.setTimeout(() => setCopied(false), 1600);
+          }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+        }}
+      ><Copy size={11} /> {copied ? "已复制" : "复制"}</button>
+      <button
+        type="button"
+        title="保存为 Markdown"
+        disabled={busy || saving || !content.trim()}
+        onClick={() => {
+          setSaving(true);
+          setError("");
+          void onSave().then(() => setSaving(false)).catch((reason) => {
+            setSaving(false);
+            setError(reason instanceof Error ? reason.message : String(reason));
+          });
+        }}
+      ><Download size={11} /> {saving ? "保存中" : "保存为 Markdown"}</button>
+      {error && <small>{error}</small>}
+    </div>
   );
 }
 
@@ -840,16 +926,19 @@ function compactActivities(activities: AgentToolActivity[]) {
   }));
 }
 
-function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["current"], query: string) {
-  const skills = settings.enabledSkills.map((skill) => BUILTIN_SKILLS[skill]).filter(Boolean);
+export function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["current"], office: AgentDocumentHost["office"], query: string) {
+  const skills = enabledSkillPrompt(settings.enabledSkills);
   if (settings.customSkills.trim()) skills.push(`自定义技能：\n${settings.customSkills.trim()}`);
   const document = current
     ? `\n\n当前活动文档：${current.path}\n\n<document>\n${current.content.slice(0, settings.contextChars)}\n</document>${current.content.length > settings.contextChars ? "\n[文档内容已按上下文字符上限截断，可用 read_document 精确读取]" : ""}`
-    : "\n\n当前没有打开文档。";
+    : office
+      ? `\n\n当前活动办公文档：${office.path}（${office.kind} / ${office.format}）。主线程不持有全文；请先 inspect_office / read_office，需要修改时使用 office_execute。不要声称调用了 WPS COM。`
+      : "\n\n当前没有打开文档。";
   return `${settings.systemPrompt.trim() || "你是一叶 LeafMark 内置的文档 Agent。先理解目标，再使用工具；修改文档前确认工具权限，保持 Markdown、公式、链接和代码完整。"}
 
-可用能力包括多轮工具调用、文档读写、移动与检索、会话检索、长期记忆、Web 获取和已配置的 MCP 工具。不要声称执行了未实际调用的工具。
+可用能力包括多轮工具调用、文档读写、Office 本地编辑（inspect_office / read_office / office_execute）、移动与检索、会话检索、长期记忆、Web 获取和已配置的 MCP 工具。不要声称执行了未实际调用的工具。
 需要新建、完整重写或续写较长 Markdown 时，优先单独调用 begin_document_output。工具就绪后的下一次回复必须只包含要写入文档的原始 Markdown，不要添加代码围栏、解释、前言或后记；该回复会直接流式进入编辑窗口。精确的小范围修改仍使用 replace_text。
+用户划词提问时，优先针对 <excerpt> 作答；只有明确要求改原文时才写入。
 本轮对当前文档库和 LeafMark 保留副本的文件修改会被记录为一个可回退版本。终端重做只恢复文件快照，不会重新执行命令；不要修改文档库以外的路径，也不要启动脱管或后台进程。
 ${skills.length ? `\n已启用技能：\n- ${skills.join("\n- ")}` : ""}${settings.memoryEnabled ? relevantMemoryPrompt(query) : ""}${document}`;
 }
@@ -862,7 +951,7 @@ export function buildAgentTools(settings: AgentSettings, host: AgentDocumentHost
   });
   const tools: AgentRuntimeTool[] = [
     tool("read_document", "读取当前文档或文档库中的指定 Markdown。", { path: { type: "string", description: "留空读取当前文档" } }, [], async (input) => host.readDocument(stringArg(input.path))),
-    tool("list_documents", "列出文档库中的 Markdown 文件。", { limit: { type: "integer", minimum: 1, maximum: 200 } }, [], async (input) => host.documents.filter((entry) => entry.kind === "file").slice(0, numberArg(input.limit, 80)).map((entry) => entry.path).join("\n") || "文档库为空"),
+    tool("list_documents", "列出文档库中的 Markdown 与 Office 文件。", { limit: { type: "integer", minimum: 1, maximum: 200 } }, [], async (input) => host.documents.filter((entry) => entry.kind === "file").slice(0, numberArg(input.limit, 80)).map((entry) => `${entry.path}${entry.documentKind && entry.documentKind !== "markdown" ? ` [${entry.documentKind}]` : ""}`).join("\n") || "文档库为空"),
     tool("search_documents", "在文档库中搜索内容，返回文件名与命中片段。", { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 30 } }, ["query"], async (input) => JSON.stringify(await host.searchDocuments(stringArg(input.query), numberArg(input.limit, 10)))),
     tool("open_document", "在 LeafMark 中打开指定文档标签。", { path: { type: "string" } }, ["path"], async (input) => { await host.openDocument(stringArg(input.path)); return `已打开 ${stringArg(input.path)}`; }),
     tool("replace_current_document", "用完整 Markdown 替换当前文档。仅在已获得编辑权限时可用。", { content: { type: "string" } }, ["content"], async (input) => {
@@ -979,6 +1068,33 @@ export function buildAgentTools(settings: AgentSettings, host: AgentDocumentHost
     }));
   }
   void session;
+  tools.push(
+    tool("inspect_office", "查看当前打开的 Word / Excel / PPT 摘要（类型、规模、目录）。PDF 与未打开的二进制文件不可用。", {}, [], async () => host.inspectOffice()),
+    tool("read_office", "按需读取当前办公文档摘录。Word 用 offset/count；Excel 用 sheet、row、col、rowCount、colCount；PPT 用 slide。", {
+      offset: { type: "integer", minimum: 0 },
+      count: { type: "integer", minimum: 1, maximum: 80 },
+      sheet: { type: "string" },
+      row: { type: "integer", minimum: 0 },
+      col: { type: "integer", minimum: 0 },
+      rowCount: { type: "integer", minimum: 1, maximum: 80 },
+      colCount: { type: "integer", minimum: 1, maximum: 26 },
+      slide: { type: "integer", minimum: 0 },
+    }, [], async (input) => host.readOffice(input)),
+    tool("office_execute", "对当前打开的办公文档执行一次本地 OOXML 变异。mutation.op 必须是引擎支持的 word*/sheet*/slide* 操作。需要开启“允许修改文档”。不要调用 WPS COM。", {
+      mutation: { type: "object", description: "含 op 及该操作所需字段，例如 wordFindReplace、sheetEdit、slideText" },
+    }, ["mutation"], async (input) => {
+      requireEdits(settings);
+      return host.executeOffice(input.mutation ?? input);
+    }),
+    tool("office_undo", "撤销当前办公文档最近一次本地编辑。", {}, [], async () => {
+      requireEdits(settings);
+      return host.undoOffice();
+    }),
+    tool("office_redo", "重做当前办公文档最近一次本地撤销。", {}, [], async () => {
+      requireEdits(settings);
+      return host.redoOffice();
+    }),
+  );
   return tools;
 }
 

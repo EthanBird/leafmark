@@ -42,8 +42,17 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 - 不执行 VBA / 宏 / 外部链接 / 嵌入脚本
 - 不保证复杂浮动图文、SmartArt、透视图、动画的像素级还原
-- Agent 仍只读写 Markdown，避免大二进制文档被工具误伤
+- PDF、二进制 `.doc` / `.ppt`、VBA / 宏 / 外部链接 / 嵌入脚本
+- 不保证复杂浮动图文、SmartArt、透视图、动画的像素级还原
 - 二进制 `.doc` / `.ppt` 不在应用内实现不完整的 OLE 排版器
+
+## Agent 与划词问 AI
+
+当前打开的 Word / Excel / PPT 可以由内置 Agent 通过 `inspect_office`、`read_office`、`office_execute` 操作，对应仓库 `skills/wps-*/SKILL.md`（ZCode 风格 YAML `name`/`description`）。这些技能描述的是 LeafMark 本地 `OfficeSession`，不是安装版 WPS 的 COM / `wps_office_search`。
+
+- 划词后出现「解释 / 改写 / 翻译 / 总结 / 问 AI」；表格功能区也有「问 AI」，把当前选区交给 Agent。
+- Agent 回答可复制，或保存为文档库中的 Markdown（`agent-replies/`）。
+- 写入仍受「允许修改文档」开关保护；PDF 只读。主线程不把整份 OOXML 塞进提示词。
 
 ## 安全边界
 

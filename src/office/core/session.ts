@@ -7,13 +7,16 @@ import {
   findReplaceWord,
   insertTable,
   insertWordBlock,
+  paragraphText,
   replaceWordBlock,
   setHeaderFooter,
   splitParagraph,
   tableMutate,
+  wordCount,
   type WordBlock,
   type WordParagraph,
 } from "../word";
+import { a1Range, clipAgentText, type OfficeExcerptQuery, type OfficeInspectResult } from "../office-agent";
 import {
   addSheet,
   autoSum,
@@ -565,6 +568,84 @@ export class OfficeSession {
 
   copyCells(name: string, row: number, col: number, rowCount: number, colCount: number) {
     return copyRange(this.book(), name, row, col, rowCount, colCount);
+  }
+
+  inspect(): OfficeInspectResult {
+    if (isWord(this.model)) {
+      const counts = wordCount(this.model.blocks);
+      const preview = this.model.blocks.slice(0, 8).map((block, index) => {
+        if (block.kind === "table") return `[${index}] 表格 ${block.rows.length}×${block.rows[0]?.length ?? 0}`;
+        const text = paragraphText(block).replace(/\s+/g, " ").trim();
+        return `[${index}] ${block.kind === "heading" ? `H${block.level ?? 1} ` : ""}${text.slice(0, 120) || "（空段落）"}`;
+      });
+      return {
+        kind: "word",
+        format: this.format,
+        summary: `Word · ${this.format} · ${counts.paragraphs} 段 · ${counts.characters} 字 · ${this.model.blocks.length} 块`,
+        word: {
+          totalBlocks: this.model.blocks.length,
+          characters: counts.characters,
+          words: counts.words,
+          paragraphs: counts.paragraphs,
+          header: this.model.header,
+          footer: this.model.footer,
+          preview,
+        },
+      };
+    }
+    if (isWorkbook(this.model)) {
+      const sheets = this.model.sheets.map((sheet) => ({ name: sheet.name, rows: sheet.rows, cols: sheet.cols }));
+      return {
+        kind: "spreadsheet",
+        format: this.format,
+        summary: `Excel · ${this.format} · ${sheets.length} 个工作表`,
+        spreadsheet: { sheets, active: sheets[0]?.name },
+      };
+    }
+    const slides = this.model.slides.map((slide) => ({
+      index: slide.index,
+      title: slide.title,
+      hidden: slide.hidden,
+      shapeCount: slide.shapes.length,
+    }));
+    return {
+      kind: "presentation",
+      format: this.format,
+      summary: `PPT · ${this.format} · ${slides.length} 页`,
+      presentation: { slides },
+    };
+  }
+
+  excerpt(query: OfficeExcerptQuery = {}) {
+    if (isWord(this.model)) {
+      const offset = Math.max(0, query.offset ?? 0);
+      const count = Math.min(80, Math.max(1, query.count ?? 24));
+      const lines = this.model.blocks.slice(offset, offset + count).map((block, index) => {
+        const at = offset + index;
+        if (block.kind === "table") {
+          const table = block.rows.map((row) => row.map((cell) => cell.text).join(" | ")).join("\n");
+          return `[${at}] table\n${table}`;
+        }
+        return `[${at}] ${block.kind}${block.level ? ` h${block.level}` : ""}${block.list ? ` ${block.list.type}:${block.list.level}` : ""}: ${paragraphText(block)}`;
+      });
+      return clipAgentText(`Word 摘录 ${offset}–${offset + lines.length - 1} / ${this.model.blocks.length - 1}\n${lines.join("\n") || "（范围内无内容）"}`);
+    }
+    if (isWorkbook(this.model)) {
+      const name = query.sheet || this.model.sheets[0]?.name;
+      if (!name) return "工作簿没有工作表";
+      const row = Math.max(0, query.row ?? 0);
+      const col = Math.max(0, query.col ?? 0);
+      const rowCount = Math.min(80, Math.max(1, query.rowCount ?? 20));
+      const colCount = Math.min(26, Math.max(1, query.colCount ?? 8));
+      const values = copyRange(this.model, name, row, col, rowCount, colCount);
+      const tsv = values.map((line) => line.join("\t")).join("\n");
+      return clipAgentText(`工作表 ${name} ${a1Range(row, col, rowCount, colCount)}\n${tsv || "（空区域）"}`);
+    }
+    const index = Math.max(0, query.slide ?? 0);
+    const slide = this.model.slides[index];
+    if (!slide) return `没有第 ${index + 1} 页`;
+    const shapes = slide.shapes.map((shape) => `- ${shape.id} (${shape.kind ?? "text"}): ${shape.text.replace(/\s+/g, " ").trim()}`).join("\n");
+    return clipAgentText(`幻灯片 ${index + 1}/${this.model.slides.length} 「${slide.title}」${slide.hidden ? "（隐藏）" : ""}\n版式：${slide.layout ?? "titleContent"}\n形状：\n${shapes || "（无文本形状）"}\n备注：\n${slide.notes || "（无）"}`);
   }
 }
 

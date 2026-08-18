@@ -813,6 +813,30 @@ button:disabled { opacity: .42; cursor: default !important; }
 }
 .office-ribbon button:hover { background: var(--surface-hover); color: var(--text); }
 .office-ribbon span { width: 1px; height: 16px; margin: 0 6px; background: var(--border); }
+.ask-ai-toolbar {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-md);
+  color: var(--accent-strong);
+}
+.ask-ai-toolbar button {
+  min-height: 24px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 8px;
+}
+.ask-ai-toolbar button:hover { background: var(--accent-soft); color: var(--accent-strong); }
 .office-ribbon small, .office-ribbon strong { color: var(--text-tertiary); font-size: 10px; }
 .office-ribbon .office-find {
   width: 140px;
@@ -1060,6 +1084,11 @@ button:disabled { opacity: .42; cursor: default !important; }
 .agent-message { display: flex; flex: 0 0 auto; flex-direction: column; align-self: stretch; min-width: 0; gap: 4px; }
 .agent-message.user { align-self: flex-end; max-width: 91%; padding: 8px 10px; border-radius: 11px 11px 3px 11px; background: var(--accent-soft); }
 .agent-message.assistant { padding: 2px 3px; }
+.agent-message-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0 4px; }
+.agent-message-actions button { display: inline-flex; align-items: center; min-height: 22px; gap: 3px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); color: var(--text-tertiary); cursor: pointer; font-size: 8px; }
+.agent-message-actions button:hover { border-color: var(--accent); color: var(--accent-strong); }
+.agent-message-actions button:disabled { opacity: .45; cursor: default; }
+.agent-message-actions small { color: var(--danger); font-size: 7px; }
 .agent-message small { color: var(--text-tertiary); font-size: 8px; font-weight: 700; }
 .agent-message > p { margin: 0; color: var(--text); font-size: 10px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; }
 .agent-markdown { min-width: 0; color: var(--text); font-size: 10px; line-height: 1.65; overflow-wrap: anywhere; }
