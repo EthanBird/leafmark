@@ -62,6 +62,17 @@ const wildcardRe = (pat: string, caseInsensitive: boolean): RegExp => {
   return new RegExp(`^${body}$`, caseInsensitive ? "i" : "");
 };
 
+function parseIndirect(ref: string) {
+  const match = /^(?:(?:'([^']+)'|([^'!]+))!)?(\$?)([A-Za-z]+)(\$?)(\d+)$/.exec(ref.trim());
+  if (!match) return null;
+  let col = 0;
+  for (const char of match[4].toUpperCase()) {
+    if (char < "A" || char > "Z") return null;
+    col = col * 26 + (char.charCodeAt(0) - 64);
+  }
+  return { sheet: match[1] || match[2] || "", col: col - 1, row: Number(match[6]) - 1 };
+}
+
 export const matchCriteria = (value: FormulaResult, criteria: FormulaResult): boolean => {
   if (value instanceof FormulaError) return false;
   const crit = criteria instanceof FormulaError ? String(criteria) : criteria;
@@ -468,7 +479,7 @@ const FUNCTIONS: Record<string, Fn> = {
   },
   COUNTIFS: (args) => {
     if (args.length < 2 || args.length % 2) throw err("#VALUE!");
-    const grids = [];
+    const grids: Array<{ cells: FormulaResult[]; crit: FormulaResult }> = [];
     for (let i = 0; i < args.length; i += 2) {
       grids.push({ cells: flattenGrid(to2d(args[i])), crit: scalar(args[i + 1]) });
     }
@@ -482,7 +493,7 @@ const FUNCTIONS: Record<string, Fn> = {
   SUMIFS: (args) => {
     if (args.length < 3 || args.length % 2 === 0) throw err("#VALUE!");
     const sumCells = flattenGrid(to2d(args[0]));
-    const grids = [];
+    const grids: Array<{ cells: FormulaResult[]; crit: FormulaResult }> = [];
     for (let i = 1; i < args.length; i += 2) {
       grids.push({ cells: flattenGrid(to2d(args[i])), crit: scalar(args[i + 1]) });
     }
@@ -549,7 +560,282 @@ const FUNCTIONS: Record<string, Fn> = {
     }
     throw err("#N/A");
   },
+  IFS: (args) => {
+    for (let i = 0; i + 1 < args.length; i += 2) {
+      if (asTruthy(scalar(args[i]))) return scalar(args[i + 1]);
+    }
+    throw err("#N/A");
+  },
+  SWITCH: (args) => {
+    const expr = scalar(args[0]);
+    for (let i = 1; i + 1 < args.length; i += 2) {
+      if (scalar(args[i]) === expr || String(scalar(args[i])).toLowerCase() === String(expr).toLowerCase()) return scalar(args[i + 1]);
+    }
+    if (args.length % 2 === 0) return scalar(args[args.length - 1]);
+    throw err("#N/A");
+  },
+  XOR: (args) => flatten(args).map(asTruthy).filter(Boolean).length % 2 === 1,
+  MAXIFS: (args) => {
+    const maxCells = flattenGrid(to2d(args[0]));
+    const grids: Array<{ cells: FormulaResult[]; crit: FormulaResult }> = [];
+    for (let i = 1; i < args.length; i += 2) grids.push({ cells: flattenGrid(to2d(args[i])), crit: scalar(args[i + 1]) });
+    const values = maxCells.filter((cell, i) => typeof cell === "number" && grids.every((g) => matchCriteria(g.cells[i], g.crit))) as number[];
+    if (!values.length) throw err("#N/A");
+    return Math.max(...values);
+  },
+  MINIFS: (args) => {
+    const minCells = flattenGrid(to2d(args[0]));
+    const grids: Array<{ cells: FormulaResult[]; crit: FormulaResult }> = [];
+    for (let i = 1; i < args.length; i += 2) grids.push({ cells: flattenGrid(to2d(args[i])), crit: scalar(args[i + 1]) });
+    const values = minCells.filter((cell, i) => typeof cell === "number" && grids.every((g) => matchCriteria(g.cells[i], g.crit))) as number[];
+    if (!values.length) throw err("#N/A");
+    return Math.min(...values);
+  },
+  AVERAGEIFS: (args) => {
+    const avgCells = flattenGrid(to2d(args[0]));
+    const grids: Array<{ cells: FormulaResult[]; crit: FormulaResult }> = [];
+    for (let i = 1; i < args.length; i += 2) grids.push({ cells: flattenGrid(to2d(args[i])), crit: scalar(args[i + 1]) });
+    let total = 0;
+    let n = 0;
+    avgCells.forEach((cell, i) => {
+      if (typeof cell === "number" && grids.every((g) => matchCriteria(g.cells[i], g.crit))) {
+        total += cell;
+        n += 1;
+      }
+    });
+    if (!n) throw err("#DIV/0!");
+    return total / n;
+  },
+  RANK: (args) => {
+    const value = asNumber(scalar(args[0]));
+    const list = nums([args[1]]).sort((a, b) => b - a);
+    const order = asNumber(scalar(args[2] ?? 0));
+    const ranked = order ? [...list].sort((a, b) => a - b) : list;
+    const i = ranked.indexOf(value);
+    if (i < 0) throw err("#N/A");
+    return i + 1;
+  },
+  STDEV: (args) => {
+    const n = nums(args);
+    if (n.length < 2) throw err("#DIV/0!");
+    const mean = n.reduce((a, b) => a + b, 0) / n.length;
+    return Math.sqrt(n.reduce((a, b) => a + (b - mean) ** 2, 0) / (n.length - 1));
+  },
+  STDEVP: (args) => {
+    const n = nums(args);
+    if (!n.length) throw err("#DIV/0!");
+    const mean = n.reduce((a, b) => a + b, 0) / n.length;
+    return Math.sqrt(n.reduce((a, b) => a + (b - mean) ** 2, 0) / n.length);
+  },
+  VAR: (args) => {
+    const n = nums(args);
+    if (n.length < 2) throw err("#DIV/0!");
+    const mean = n.reduce((a, b) => a + b, 0) / n.length;
+    return n.reduce((a, b) => a + (b - mean) ** 2, 0) / (n.length - 1);
+  },
+  VARP: (args) => {
+    const n = nums(args);
+    if (!n.length) throw err("#DIV/0!");
+    const mean = n.reduce((a, b) => a + b, 0) / n.length;
+    return n.reduce((a, b) => a + (b - mean) ** 2, 0) / n.length;
+  },
+  PMT: (args) => {
+    const rate = asNumber(scalar(args[0]));
+    const nper = asNumber(scalar(args[1]));
+    const pv = asNumber(scalar(args[2]));
+    const fv = asNumber(scalar(args[3] ?? 0));
+    const type = asNumber(scalar(args[4] ?? 0));
+    if (rate === 0) return -(pv + fv) / nper;
+    const pow = (1 + rate) ** nper;
+    return -(pv * pow + fv) * rate / ((1 + rate * type) * (pow - 1));
+  },
+  FV: (args) => {
+    const rate = asNumber(scalar(args[0]));
+    const nper = asNumber(scalar(args[1]));
+    const pmt = asNumber(scalar(args[2]));
+    const pv = asNumber(scalar(args[3] ?? 0));
+    const type = asNumber(scalar(args[4] ?? 0));
+    if (rate === 0) return -pv - pmt * nper;
+    const pow = (1 + rate) ** nper;
+    return -pv * pow - pmt * (1 + rate * type) * (pow - 1) / rate;
+  },
+  PV: (args) => {
+    const rate = asNumber(scalar(args[0]));
+    const nper = asNumber(scalar(args[1]));
+    const pmt = asNumber(scalar(args[2]));
+    const fv = asNumber(scalar(args[3] ?? 0));
+    const type = asNumber(scalar(args[4] ?? 0));
+    if (rate === 0) return -fv - pmt * nper;
+    const pow = (1 + rate) ** nper;
+    return (-fv - pmt * (1 + rate * type) * (pow - 1) / rate) / pow;
+  },
+  NPV: (args) => {
+    const rate = asNumber(scalar(args[0]));
+    return flatten(args.slice(1)).reduce<number>((sum, value, index) => {
+      if (typeof value !== "number") return sum;
+      return sum + value / (1 + rate) ** (index + 1);
+    }, 0);
+  },
+  NPER: (args) => {
+    const rate = asNumber(scalar(args[0]));
+    const pmt = asNumber(scalar(args[1]));
+    const pv = asNumber(scalar(args[2]));
+    const fv = asNumber(scalar(args[3] ?? 0));
+    const type = asNumber(scalar(args[4] ?? 0));
+    if (rate === 0) return -(pv + fv) / pmt;
+    return Math.log((pmt * (1 + rate * type) / rate - fv) / (pv + pmt * (1 + rate * type) / rate)) / Math.log(1 + rate);
+  },
+  EDATE: (args) => {
+    const { y, m, d } = ymdFromExcelSerial(asNumber(scalar(args[0])));
+    return excelSerialFromYmd(y, m + Math.trunc(asNumber(scalar(args[1]))), d);
+  },
+  EOMONTH: (args) => {
+    const { y, m } = ymdFromExcelSerial(asNumber(scalar(args[0])));
+    const months = Math.trunc(asNumber(scalar(args[1])));
+    return excelSerialFromYmd(y, m + months + 1, 0);
+  },
+  DAYS: (args) => asNumber(scalar(args[0])) - asNumber(scalar(args[1])),
+  DATEDIF: (args) => {
+    const start = asNumber(scalar(args[0]));
+    const end = asNumber(scalar(args[1]));
+    const unit = asText(scalar(args[2])).toUpperCase();
+    const a = ymdFromExcelSerial(start);
+    const b = ymdFromExcelSerial(end);
+    if (unit === "D") return end - start;
+    if (unit === "M") return (b.y - a.y) * 12 + (b.m - a.m) - (b.d < a.d ? 1 : 0);
+    if (unit === "Y") return b.y - a.y - (b.m < a.m || (b.m === a.m && b.d < a.d) ? 1 : 0);
+    return end - start;
+  },
+  HOUR: (args) => Math.floor((asNumber(scalar(args[0])) % 1) * 24),
+  MINUTE: (args) => Math.floor((asNumber(scalar(args[0])) * 1440) % 60),
+  SECOND: (args) => Math.floor((asNumber(scalar(args[0])) * 86400) % 60),
+  TIME: (args) => (asNumber(scalar(args[0])) * 3600 + asNumber(scalar(args[1])) * 60 + asNumber(scalar(args[2]))) / 86400,
+  NETWORKDAYS: (args) => {
+    const start = Math.trunc(asNumber(scalar(args[0])));
+    const end = Math.trunc(asNumber(scalar(args[1])));
+    let n = 0;
+    for (let serial = Math.min(start, end); serial <= Math.max(start, end); serial += 1) {
+      const wd = ymdFromExcelSerial(serial);
+      const day = new Date(Date.UTC(wd.y, wd.m - 1, wd.d)).getUTCDay();
+      if (day !== 0 && day !== 6) n += 1;
+    }
+    return n;
+  },
+  SIN: (args) => Math.sin(asNumber(scalar(args[0]))),
+  COS: (args) => Math.cos(asNumber(scalar(args[0]))),
+  TAN: (args) => Math.tan(asNumber(scalar(args[0]))),
+  ASIN: (args) => Math.asin(asNumber(scalar(args[0]))),
+  ACOS: (args) => Math.acos(asNumber(scalar(args[0]))),
+  ATAN: (args) => Math.atan(asNumber(scalar(args[0]))),
+  DEGREES: (args) => asNumber(scalar(args[0])) * (180 / Math.PI),
+  RADIANS: (args) => asNumber(scalar(args[0])) * (Math.PI / 180),
+  FACT: (args) => {
+    const n = Math.trunc(asNumber(scalar(args[0])));
+    if (n < 0) throw err("#NUM!");
+    let r = 1;
+    for (let i = 2; i <= n; i += 1) r *= i;
+    return r;
+  },
+  GCD: (args) => {
+    const values = nums(args).map((n) => Math.abs(Math.trunc(n)));
+    const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+    return values.reduce((a, b) => gcd(a, b), values[0] ?? 0);
+  },
+  LCM: (args) => {
+    const values = nums(args).map((n) => Math.abs(Math.trunc(n)));
+    const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+    return values.reduce((a, b) => a * b / gcd(a, b), 1);
+  },
+  EVEN: (args) => {
+    const n = asNumber(scalar(args[0]));
+    const sign = n < 0 ? -1 : 1;
+    const up = Math.ceil(Math.abs(n));
+    return sign * (up % 2 === 0 ? up : up + 1);
+  },
+  ODD: (args) => {
+    const n = asNumber(scalar(args[0]));
+    const sign = n < 0 ? -1 : 1;
+    const up = Math.ceil(Math.abs(n));
+    return sign * (up % 2 === 1 ? up : up + 1);
+  },
+  COMBIN: (args) => {
+    const n = Math.trunc(asNumber(scalar(args[0])));
+    const k = Math.trunc(asNumber(scalar(args[1])));
+    if (k < 0 || k > n) throw err("#NUM!");
+    let r = 1;
+    for (let i = 1; i <= k; i += 1) r = r * (n - k + i) / i;
+    return Math.round(r);
+  },
+  FIXED: (args) => asNumber(scalar(args[0])).toFixed(Math.trunc(asNumber(scalar(args[1] ?? 2)))),
+  DOLLAR: (args) => `$${asNumber(scalar(args[0])).toFixed(Math.trunc(asNumber(scalar(args[1] ?? 2))))}`,
+  T: (args) => (typeof scalar(args[0]) === "string" ? scalar(args[0]) : ""),
+  HYPERLINK: (args) => asText(scalar(args[1] ?? args[0])),
+  RANDBETWEEN: (args) => {
+    const min = Math.ceil(asNumber(scalar(args[0])));
+    const max = Math.floor(asNumber(scalar(args[1])));
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  },
+  QUOTIENT: (args) => Math.trunc(asNumber(scalar(args[0])) / asNumber(scalar(args[1]))),
+  ISEVEN: (args) => Math.trunc(asNumber(scalar(args[0]))) % 2 === 0,
+  ISODD: (args) => Math.trunc(asNumber(scalar(args[0]))) % 2 !== 0,
+  UNIQUE: (args) => {
+    const seen = new Set<string>();
+    let n = 0;
+    for (const value of flatten(args)) {
+      const key = String(value);
+      if (!seen.has(key)) {
+        seen.add(key);
+        n += 1;
+      }
+    }
+    return n;
+  },
+  LOOKUP: (args) => {
+    const key = scalar(args[0]);
+    const list = flattenGrid(to2d(args[1]));
+    const result = args[2] !== undefined ? flattenGrid(to2d(args[2])) : list;
+    let last = -1;
+    for (let i = 0; i < list.length; i += 1) {
+      const v = list[i];
+      if (typeof v === "number" && typeof key === "number") {
+        if (v <= key) last = i;
+        else break;
+      } else if (String(v).toLowerCase() <= String(key).toLowerCase()) last = i;
+      else break;
+    }
+    if (last < 0) throw err("#N/A");
+    const found = result[last];
+    if (found === undefined) throw err("#N/A");
+    return found;
+  },
+  XLOOKUP: (args) => {
+    const key = scalar(args[0]);
+    const lookup = flattenGrid(to2d(args[1]));
+    const result = flattenGrid(to2d(args[2]));
+    const i = lookup.findIndex((v) => v === key || String(v).toLowerCase() === String(key).toLowerCase());
+    if (i < 0) {
+      if (args[3] !== undefined) return scalar(args[3]);
+      throw err("#N/A");
+    }
+    const found = result[i];
+    if (found === undefined) throw err("#N/A");
+    return found;
+  },
+  INDIRECT: (args, ctx) => {
+    const ref = parseIndirect(asText(scalar(args[0])));
+    if (!ref) throw err("#REF!");
+    const lookup = ref.sheet ? ctx.lookup.getSheet?.(ref.sheet) : ctx.lookup;
+    if (!lookup) throw err("#REF!");
+    return lookup.getCell(ref.row, ref.col);
+  },
 };
+
+FUNCTIONS["RANK.EQ"] = FUNCTIONS.RANK;
+FUNCTIONS["STDEV.S"] = FUNCTIONS.STDEV;
+FUNCTIONS["STDEV.P"] = FUNCTIONS.STDEVP;
+FUNCTIONS["VAR.S"] = FUNCTIONS.VAR;
+FUNCTIONS["VAR.P"] = FUNCTIONS.VARP;
+FUNCTIONS["CONCATENATE"] = FUNCTIONS.CONCAT;
 
 export const callFunction = (
   name: string,

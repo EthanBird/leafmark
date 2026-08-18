@@ -21,6 +21,8 @@ export interface SlideShape {
   italic?: boolean;
   align: "left" | "center" | "right";
   text: string;
+  fill?: string;
+  kind?: "text" | "rect";
   originalXml?: string;
   dirty?: boolean;
 }
@@ -32,6 +34,9 @@ export interface SlideModel {
   shapes: SlideShape[];
   imageCount: number;
   path: string;
+  notes?: string;
+  hidden?: boolean;
+  layout?: "title" | "titleContent" | "blank" | "twoContent";
   originalXml?: string;
   dirty?: boolean;
 }
@@ -54,7 +59,13 @@ export function openPptx(buffer: ArrayBuffer): PresentationDocument {
   const width = Number(sizeMatch?.[1] ?? 12_192_000);
   const height = Number(sizeMatch?.[2] ?? 6_858_000);
   const names = findPackagePart(files, /^ppt\/slides\/slide\d+\.xml$/);
-  const slides = names.map((path, index) => parsePptxSlide(packageText(files, path), index, path, width, height));
+  const slides = names.map((path, index) => {
+    const model = parsePptxSlide(packageText(files, path), index, path, width, height);
+    const notesXml = packageText(files, `ppt/notesSlides/notesSlide${index + 1}.xml`, false);
+    if (notesXml) model.notes = extractSlideText(notesXml);
+    if (/show="0"/.test(packageText(files, path))) model.hidden = true;
+    return model;
+  });
   return { type: "presentation", format: "pptx", slides, files, width, height, editable: true };
 }
 
@@ -153,7 +164,7 @@ export function updateShapeText(slide: SlideModel, shapeId: string, text: string
   slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
 }
 
-export function updateShapeStyle(slide: SlideModel, shapeId: string, patch: Partial<Pick<SlideShape, "bold" | "italic" | "fontSize" | "align" | "color" | "text">>) {
+export function updateShapeStyle(slide: SlideModel, shapeId: string, patch: Partial<Pick<SlideShape, "bold" | "italic" | "fontSize" | "align" | "color" | "text" | "fill">>) {
   const shape = slide.shapes.find((item) => item.id === shapeId);
   if (!shape) return;
   Object.assign(shape, patch);
@@ -251,11 +262,88 @@ export function addBlankSlide(document: PresentationDocument) {
   return slide;
 }
 
+export function addTextBox(slide: SlideModel, patch?: Partial<SlideShape>) {
+  const shape: SlideShape = {
+    id: `${slide.index}:${slide.shapes.length}`,
+    x: 0.12,
+    y: 0.2 + slide.shapes.length * 0.08,
+    width: 0.76,
+    height: 0.18,
+    text: "文本框",
+    fontSize: 18,
+    color: "#202124",
+    bold: false,
+    align: "left",
+    kind: "text",
+    dirty: true,
+    ...patch,
+  };
+  slide.shapes.push(shape);
+  slide.dirty = true;
+  return shape;
+}
+
+export function moveShape(slide: SlideModel, shapeId: string, x: number, y: number, width?: number, height?: number) {
+  const shape = slide.shapes.find((item) => item.id === shapeId);
+  if (!shape) return;
+  shape.x = x;
+  shape.y = y;
+  if (width != null) shape.width = width;
+  if (height != null) shape.height = height;
+  shape.dirty = true;
+  shape.originalXml = undefined;
+  slide.dirty = true;
+}
+
+export function setSlideNotes(slide: SlideModel, notes: string) {
+  slide.notes = notes;
+  slide.dirty = true;
+}
+
+export function hideSlide(slide: SlideModel, hidden: boolean) {
+  slide.hidden = hidden;
+  slide.dirty = true;
+}
+
+export function applySlideLayout(slide: SlideModel, layout: NonNullable<SlideModel["layout"]>) {
+  slide.layout = layout;
+  slide.dirty = true;
+  slide.originalXml = undefined;
+  if (layout === "blank") {
+    slide.shapes = [];
+    return;
+  }
+  if (layout === "title") {
+    slide.shapes = slide.shapes.slice(0, 1);
+    if (!slide.shapes.length) addTextBox(slide, { y: 0.35, height: 0.2, fontSize: 36, bold: true, align: "center", text: "标题" });
+    return;
+  }
+  if (layout === "titleContent") {
+    if (!slide.shapes.length) addTextBox(slide, { y: 0.08, height: 0.16, fontSize: 32, bold: true, align: "center", text: "标题" });
+    if (slide.shapes.length < 2) addTextBox(slide, { y: 0.32, height: 0.5, fontSize: 18, text: "单击编辑正文" });
+    return;
+  }
+  if (layout === "twoContent" && slide.shapes.length < 3) {
+    if (!slide.shapes.length) addTextBox(slide, { y: 0.08, height: 0.14, fontSize: 28, bold: true, align: "center", text: "标题" });
+    addTextBox(slide, { x: 0.08, y: 0.32, width: 0.4, height: 0.5, text: "左侧" });
+    addTextBox(slide, { x: 0.52, y: 0.32, width: 0.4, height: 0.5, text: "右侧" });
+  }
+}
+
+export function reorderSlides(document: PresentationDocument, from: number, to: number) {
+  const [slide] = document.slides.splice(from, 1);
+  document.slides.splice(Math.max(0, Math.min(to, document.slides.length)), 0, slide);
+  document.slides.forEach((item, index) => { item.index = index; });
+}
+
 export function serializePresentation(document: PresentationDocument): Uint8Array {
   if (document.format === "odp") return serializeOdp(document);
   const files = document.files ? clonePackage(document.files) : minimalPptx();
   for (const slide of document.slides) {
     setPackageText(files, slide.path || `ppt/slides/slide${slide.index + 1}.xml`, serializeSlideXml(slide, document));
+    if (slide.notes) {
+      setPackageText(files, `ppt/notesSlides/notesSlide${slide.index + 1}.xml`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Notes"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${encodeXml(slide.notes)}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>`);
+    }
   }
   ensurePresentationParts(files, document);
   return zipPackage(files);
@@ -277,7 +365,7 @@ function serializeSlideXml(slide: SlideModel, document: PresentationDocument) {
   }
   if (slide.originalXml && !slide.dirty) return slide.originalXml;
   const shapes = slide.shapes.map((shape) => shapeXml(shape, document)).join("");
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${slide.background.replace(/^#/, "")}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${document.width}" cy="${document.height}"/><a:chOff x="0" y="0"/><a:chExt cx="${document.width}" cy="${document.height}"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"${slide.hidden ? ` show="0"` : ""}><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${slide.background.replace(/^#/, "")}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${document.width}" cy="${document.height}"/><a:chOff x="0" y="0"/><a:chExt cx="${document.width}" cy="${document.height}"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
 }
 
 function rewriteShapeText(xml: string, text: string) {
@@ -299,7 +387,8 @@ function shapeXml(shape: SlideShape, document: PresentationDocument) {
   const cx = Math.round(shape.width * document.width);
   const cy = Math.round(shape.height * document.height);
   const align = shape.align === "center" ? "ctr" : shape.align === "right" ? "r" : "l";
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${Number(shape.id.split(":")[1] ?? 2) + 2}" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/><a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="zh-CN" sz="${Math.round(shape.fontSize * 100)}" b="${shape.bold ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${shape.color.replace(/^#/, "")}"/></a:solidFill></a:rPr><a:t>${encodeXml(shape.text)}</a:t></a:r></a:p></p:txBody></p:sp>`;
+  const fill = shape.fill ? `<a:solidFill><a:srgbClr val="${shape.fill.replace(/^#/, "")}"/></a:solidFill>` : "";
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${Number(shape.id.split(":")[1] ?? 2) + 2}" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${fill}</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/><a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="zh-CN" sz="${Math.round(shape.fontSize * 100)}" b="${shape.bold ? 1 : 0}" i="${shape.italic ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${shape.color.replace(/^#/, "")}"/></a:solidFill></a:rPr><a:t>${encodeXml(shape.text)}</a:t></a:r></a:p></p:txBody></p:sp>`;
 }
 
 function serializeOdp(document: PresentationDocument) {
@@ -327,7 +416,8 @@ function ensurePresentationParts(files: OfficePackage, document: PresentationDoc
     || `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/></Types>`;
   const withoutSlides = types.replace(/<Override PartName="\/ppt\/slides\/slide\d+\.xml"[^/]*\/>/g, "");
   const slideTypes = document.slides.map((_, index) => `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join("");
-  setPackageText(files, "[Content_Types].xml", withoutSlides.replace("</Types>", `${slideTypes}</Types>`));
+  const notesTypes = document.slides.filter((slide) => slide.notes).map((slide) => `<Override PartName="/ppt/notesSlides/notesSlide${slide.index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>`).join("");
+  setPackageText(files, "[Content_Types].xml", withoutSlides.replace("</Types>", `${slideTypes}${notesTypes}</Types>`));
 }
 
 function minimalPptx(): OfficePackage {

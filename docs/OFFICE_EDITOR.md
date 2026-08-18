@@ -31,12 +31,12 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 ## 兼容与写回
 
-- **Word**：解析段落、Run 级格式、表格、标题与 `w:numPr` 列表。未修改块原样写回；修改块生成 WordprocessingML。使用列表时补齐 `word/numbering.xml` 与 Content_Types，以便 Microsoft Word / WPS 识别项目符号与编号。支持插入/删除/拆分段落、撤销。
-- **Excel**：原生 SpreadsheetML。单元格保留 style index；公式用函数注册表重算后再写 `<f>` / `<v>`。支持插入/删除行列（相对引用平移）、复制/粘贴、向下填充、百分比输入、撤销。CSV 直接读写。旧版 `.xls` / `.xlsb` / `.ods` 经 SheetJS 读入同一稀疏模型后按原 bookType 写回。
-- **PowerPoint**：改文本时只替换对应 `a:t`；几何、图片、母版仍在原包中。可新增、删除、复制幻灯片，改背景与形状加粗/对齐。写回时更新 `sldIdLst` 与关系部件。
+- **Word / WPS 文字**：Run 级字体、字号、颜色、高亮、上标/下标、超链接；段落对齐、缩进、行距、分页符、多级列表。可插入/增删表格行列、查找替换、页眉页脚、字数统计。未修改块原样写回；修改块生成 WordprocessingML。使用列表时补齐 `word/numbering.xml`（9 级）与 Content_Types。
+- **Excel / WPS 表格**：原生 SpreadsheetML。数字格式（常规/数值/货币/百分比/日期/科学计数/文本）、字体对齐换行填充、合并单元格、列宽、冻结窗格、排序、自动筛选、向右填充、自动求和、重命名/删除工作表。打开时解析已有合并/冻结/筛选/列宽；写回时更新 `workbook.xml` 工作表列表且保留主题/样式关系。公式用函数注册表重算后再写 `<f>` / `<v>`。
+- **PowerPoint / WPS 演示**：改文本时只替换对应 `a:t`；可新增文本框、移动形状、改填充、备注、隐藏幻灯片、版式、重排。写回时更新 `sldIdLst`、关系部件与 notesSlide。
 - **外部来源**（微信、邮件、临时 `content://`）：仍然只写 LeafMark 保留副本，绝不回写来源路径。文档库内的文件保存时同步更新工作区文件与快照。
 
-公式引擎对齐 Microsoft Excel / WPS / OnlyOffice 常见语义：四则与比较、`A1` / `$A$1` / `Sheet1!B2`、区域、`IFERROR` 捕获参数错误，以及 `SUM AVERAGE MIN MAX COUNT COUNTA COUNTBLANK COUNTIF COUNTIFS SUMIF SUMIFS AVERAGEIF PRODUCT ABS ROUND ROUNDUP ROUNDDOWN INT TRUNC CEILING FLOOR MOD POWER SQRT LN LOG LOG10 EXP PI SIGN IF IFNA AND OR NOT TRUE FALSE ISBLANK ISNUMBER ISTEXT ISERROR ISNA N LEN LEFT RIGHT MID TRIM UPPER LOWER PROPER CONCAT TEXTJOIN VALUE FIND SEARCH SUBSTITUTE REPLACE REPT EXACT CHAR CODE NOW TODAY DATE YEAR MONTH DAY WEEKDAY TEXT NA CHOOSE COLUMN ROW COLUMNS ROWS LARGE SMALL MEDIAN SUMPRODUCT VLOOKUP HLOOKUP INDEX MATCH`。循环引用返回 `#CYCLE!`。对照用例见 `src/office/office-compat.test.ts`。
+公式引擎对齐 Microsoft Excel / WPS / OnlyOffice 常见语义：四则与比较、`A1` / `$A$1` / `Sheet1!B2`、区域、`IFERROR` 捕获参数错误，以及 `SUM AVERAGE MIN MAX COUNT COUNTA COUNTBLANK COUNTIF COUNTIFS SUMIF SUMIFS AVERAGEIF AVERAGEIFS MAXIFS MINIFS PRODUCT ABS ROUND ROUNDUP ROUNDDOWN INT TRUNC CEILING FLOOR MOD POWER SQRT LN LOG LOG10 EXP PI SIGN RAND RANDBETWEEN IF IFS SWITCH IFNA AND OR XOR NOT TRUE FALSE ISBLANK ISNUMBER ISTEXT ISERROR ISNA ISEVEN ISODD N LEN LEFT RIGHT MID TRIM UPPER LOWER PROPER CONCAT CONCATENATE TEXTJOIN VALUE FIND SEARCH SUBSTITUTE REPLACE REPT EXACT CHAR CODE FIXED DOLLAR T HYPERLINK NOW TODAY DATE YEAR MONTH DAY WEEKDAY HOUR MINUTE SECOND TIME EDATE EOMONTH DAYS DATEDIF NETWORKDAYS TEXT NA CHOOSE COLUMN ROW COLUMNS ROWS LARGE SMALL MEDIAN SUMPRODUCT VLOOKUP HLOOKUP LOOKUP XLOOKUP INDEX MATCH INDIRECT RANK RANK.EQ STDEV STDEV.S STDEVP STDEV.P VAR VAR.S VARP VAR.P PMT FV PV NPV NPER SIN COS TAN ASIN ACOS ATAN DEGREES RADIANS FACT GCD LCM EVEN ODD COMBIN QUOTIENT UNIQUE`。循环引用返回 `#CYCLE!`。对照用例见 `src/office/office-compat.test.ts` 与 `src/office/office-wps.test.ts`。
 
 ## 明确不做的事（本版本）
 
