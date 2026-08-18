@@ -771,6 +771,73 @@ button:disabled { opacity: .42; cursor: default !important; }
 }
 .viewer-empty, .viewer-limit-note { color: var(--text-tertiary); font-size: 10px; }
 
+.office-editor { display: grid; min-height: 0; }
+.word-viewer.office-editor { grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+.office-ribbon {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 36px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+.office-ribbon button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.office-ribbon button:hover { background: var(--surface-hover); color: var(--text); }
+.office-ribbon span { width: 1px; height: 16px; margin: 0 6px; background: var(--border); }
+.office-ribbon small, .office-ribbon strong { color: var(--text-tertiary); font-size: 10px; }
+.sheet-formula-bar { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.sheet-formula-bar strong { font-size: 11px; color: var(--text); text-align: center; }
+.sheet-formula-bar input {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: 12px/1.4 ui-monospace, "SF Mono", Consolas, monospace;
+}
+.spreadsheet-viewer.office-editor { grid-template-rows: 36px minmax(0, 1fr) 34px; }
+.sheet-virtual { position: relative; overflow: auto; background: var(--surface-raised); }
+.sheet-spacer { position: relative; }
+.sheet-corner, .sheet-col-header, .sheet-row-header, .sheet-cell, .sheet-cell-input {
+  position: absolute;
+  box-sizing: border-box;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sheet-corner { top: 0; left: 0; z-index: 4; width: 46px; height: 24px; background: var(--surface-muted); }
+.sheet-col-header { top: 0; z-index: 3; height: 24px; background: var(--surface-muted); color: var(--text-tertiary); font: 10px/24px Inter, "Segoe UI", sans-serif; text-align: center; }
+.sheet-row-header { left: 0; z-index: 3; width: 46px; height: 24px; background: var(--surface-muted); color: var(--text-tertiary); font: 10px/24px Inter, "Segoe UI", sans-serif; text-align: right; padding-right: 6px; }
+.sheet-cell { overflow: hidden; padding: 0 6px; font: 12px/24px Inter, "Segoe UI", sans-serif; color: var(--text); background: var(--surface-raised); text-overflow: ellipsis; white-space: nowrap; cursor: cell; }
+.sheet-cell.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.sheet-cell.active { outline: 2px solid var(--accent); outline-offset: -2px; z-index: 2; }
+.sheet-cell-input {
+  z-index: 5;
+  padding: 0 6px;
+  border: 2px solid var(--accent);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: 12px/20px ui-monospace, "SF Mono", Consolas, monospace;
+}
+.sheet-add, .slide-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-tertiary);
+}
+.word-page [contenteditable="true"]:focus, .slide-shape[contenteditable="true"]:focus { outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); }
+
 .spreadsheet-viewer { display: grid; grid-template-rows: 34px minmax(0, 1fr) auto; overflow: hidden; }
 .sheet-tabs { display: flex; align-items: end; min-width: 0; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface-muted); }
 .sheet-tabs button { flex: 0 0 auto; height: 29px; padding: 0 14px; border: 0; border-right: 1px solid var(--border-subtle); background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }

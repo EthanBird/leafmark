@@ -757,6 +757,32 @@ fn write_document(
 }
 
 #[tauri::command]
+fn write_office_document(
+    request: tauri::ipc::Request,
+    state: State<'_, AppState>,
+) -> Result<ArchiveEntry, String> {
+    let bytes = decode_binary_request_body(request.body(), MAX_VIEWER_DOCUMENT_BYTES as usize)?;
+    let origin = decode_invoke_header(&request, "LeafMark-Origin")?;
+    let archive_id = decode_invoke_header(&request, "LeafMark-Archive-Id")?;
+    let relative_path = decode_invoke_header(&request, "LeafMark-Relative-Path").unwrap_or_default();
+    let mut inner = state.0.lock();
+    if origin == "workspace" && !relative_path.trim().is_empty() {
+        let relative = validate_document_path(&relative_path)?;
+        let kind = document_kind(&relative).ok_or_else(|| "不支持此文档格式".to_string())?;
+        if !matches!(kind, "word" | "spreadsheet" | "presentation") {
+            return Err("仅 Word、Excel 与 PowerPoint 文档可在应用内写回".into());
+        }
+        let target = secure_target_path(&inner.workspace, &relative)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(error_string)?;
+        }
+        atomic_write(&target, bytes.as_ref())?;
+        inner.cache.invalidate(&path_to_slash(&relative));
+    }
+    inner.library.write_bytes(&archive_id, bytes.as_ref())
+}
+
+#[tauri::command]
 fn create_entry(
     relative_path: String,
     kind: String,
@@ -1741,9 +1767,16 @@ fn decode_invoke_header(request: &tauri::ipc::Request, name: &str) -> Result<Str
 fn decode_export_request_body(
     body: &tauri::ipc::InvokeBody,
 ) -> Result<Cow<'_, [u8]>, String> {
+    decode_binary_request_body(body, MAX_EXPORT_PAYLOAD_BYTES)
+}
+
+fn decode_binary_request_body(
+    body: &tauri::ipc::InvokeBody,
+    max_size: usize,
+) -> Result<Cow<'_, [u8]>, String> {
     match body {
         tauri::ipc::InvokeBody::Raw(bytes) => {
-            validate_export_payload_size(bytes.len())?;
+            validate_payload_size(bytes.len(), max_size)?;
             Ok(Cow::Borrowed(bytes))
         }
         tauri::ipc::InvokeBody::Json(serde_json::Value::Object(payload)) => {
@@ -1759,7 +1792,7 @@ fn decode_export_request_body(
                 .and_then(serde_json::Value::as_u64)
                 .and_then(|size| usize::try_from(size).ok())
                 .ok_or_else(|| "Android 导出数据的 byteLength 无效".to_string())?;
-            validate_export_payload_size(declared_size)?;
+            validate_payload_size(declared_size, max_size)?;
             let encoded = payload
                 .get("data")
                 .and_then(serde_json::Value::as_str)
@@ -1787,7 +1820,7 @@ fn decode_export_request_body(
             Ok(Cow::Owned(decoded))
         }
         tauri::ipc::InvokeBody::Json(serde_json::Value::Array(values)) => {
-            validate_export_payload_size(values.len())?;
+            validate_payload_size(values.len(), max_size)?;
             let mut decoded = Vec::with_capacity(values.len());
             for (index, value) in values.iter().enumerate() {
                 let byte = value
@@ -1805,8 +1838,15 @@ fn decode_export_request_body(
 }
 
 fn validate_export_payload_size(size: usize) -> Result<(), String> {
-    if size > MAX_EXPORT_PAYLOAD_BYTES {
-        Err("单次导出不能超过 64 MiB".into())
+    validate_payload_size(size, MAX_EXPORT_PAYLOAD_BYTES)
+}
+
+fn validate_payload_size(size: usize, max_size: usize) -> Result<(), String> {
+    if size > max_size {
+        Err(format!(
+            "单次二进制传输不能超过 {} MiB",
+            max_size / 1024 / 1024
+        ))
     } else {
         Ok(())
     }
@@ -2245,6 +2285,7 @@ pub fn run() {
             load_export_font,
             render_markdown,
             write_document,
+            write_office_document,
             create_entry,
             rename_entry,
             delete_entry,
