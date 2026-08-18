@@ -26,7 +26,7 @@
 | `.ppt` | 回退 | 保留原件后交给系统 Office/LibreOffice | 不在应用内实现不完整的 OLE 演示排版器 |
 | `.pdf` | 是 | 系统 WebView 原生 PDF 引擎 | 桌面端依赖系统 WebView 的 PDF 能力；原件始终保留，可交给系统应用打开 |
 
-“打开”与“编辑”明确分离：Office/PDF 为只读查看，Markdown 仍保留阅读、源码、分栏、实时编辑、导出与 Agent 写入。这样可以避免第三方格式写回造成不可逆损坏。
+“打开”与“编辑”在 0.8 中对 Word / Excel / PowerPoint 合并为本地 OOXML 编辑器；PDF 仍为只读。写回策略与兼容边界见 [Office 编辑器](OFFICE_EDITOR.md)。
 
 ## 文件留存
 

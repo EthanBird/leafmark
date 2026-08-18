@@ -44,6 +44,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import { DocumentLibrary } from "./components/DocumentLibrary";
 import { DocumentViewer, documentKindIcon } from "./components/DocumentViewer";
+import { OfficeEditor, type OfficeEditorHandle } from "./components/OfficeEditor";
 import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
 import {
@@ -232,6 +233,7 @@ export default function App() {
   const documentKindRef = useRef<DocumentKind>(documentKind);
   const modeRef = useRef<ViewMode>(mode);
   const liveEditorRef = useRef<HTMLElement>(null);
+  const officeEditorRef = useRef<OfficeEditorHandle | null>(null);
   const settingsReady = useRef(false);
   const renderRequest = useRef(0);
   const documentVersionRef = useRef(0);
@@ -249,7 +251,7 @@ export default function App() {
   const agentTurnActiveRef = useRef(false);
   const android = api.isAndroid();
 
-  const dirty = documentKind === "markdown" && Boolean(selectedPath) && content !== savedContent;
+  const dirty = Boolean(selectedPath) && documentKind !== "pdf" && content !== savedContent;
   const files = useMemo(() => entries.filter((entry) => entry.kind === "file"), [entries]);
   const tree = useMemo(() => buildTree(entries), [entries]);
   const entryMap = useMemo(() => new Map(entries.map((entry) => [entry.path, entry])), [entries]);
@@ -316,10 +318,90 @@ export default function App() {
     return next;
   }, []);
 
+  const handleOfficeDirty = useCallback((nextDirty: boolean) => {
+    const value = nextDirty ? "dirty" : "";
+    contentRef.current = value;
+    setContent(value);
+    if (!nextDirty) {
+      savedRef.current = "";
+      setSavedContent("");
+    }
+    const tabKey = activeTabKeyRef.current;
+    setOpenTabs((tabs) => tabs.map((tab) => (
+      tab.key === tabKey
+        ? { ...tab, content: value, savedContent: nextDirty ? tab.savedContent : "" }
+        : tab
+    )));
+  }, []);
+
   const persistCurrent = useCallback((quiet = false): Promise<boolean> => {
-    if (documentKindRef.current !== "markdown") {
+    const kind = documentKindRef.current;
+    if (kind === "pdf" || kind === "unsupported") {
       setSaveStatus("saved");
       return Promise.resolve(true);
+    }
+    if (kind === "word" || kind === "spreadsheet" || kind === "presentation") {
+      const editor = officeEditorRef.current;
+      if (!editor?.isDirty()) {
+        setSaveStatus("saved");
+        return Promise.resolve(true);
+      }
+      const path = selectedRef.current;
+      const origin = originRef.current;
+      const archive = archiveIdRef.current;
+      const version = documentVersionRef.current;
+      const key = `office:${version}:${origin}:${origin === "archive" ? archive : path}`;
+      const queued = queuedSaveRef.current;
+      if (queued?.key === key) return queued.promise;
+      setSaveStatus("saving");
+      const writeTask = saveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const bytes = await editor.serialize();
+          const updated = await api.writeOfficeDocument({
+            origin,
+            archiveId: archive,
+            relativePath: path,
+            bytes,
+          });
+          if (updated && documentVersionRef.current === version && archiveIdRef.current === archive) {
+            setSourceExists(updated.sourceExists);
+          }
+        });
+      saveQueueRef.current = writeTask;
+      const result = writeTask.then(() => {
+        if (
+          documentVersionRef.current === version
+          && selectedRef.current === path
+          && originRef.current === origin
+          && (origin !== "archive" || archiveIdRef.current === archive)
+        ) {
+          editor.markSaved();
+          savedRef.current = "";
+          contentRef.current = "";
+          setSavedContent("");
+          setContent("");
+          const tabKey = origin === "archive" ? `archive:${archive}` : `workspace:${path}`;
+          setOpenTabs((tabs) => tabs.map((tab) => tab.key === tabKey ? { ...tab, content: "", savedContent: "" } : tab));
+          setSaveStatus("saved");
+          if (!quiet) setNotice(`已保存 ${nativeFileName(path)}`);
+        }
+        void refreshLibrary().catch(() => undefined);
+        return true;
+      }).catch((error: unknown) => {
+        if (
+          documentVersionRef.current === version
+          && selectedRef.current === path
+          && queuedSaveRef.current?.key === key
+        ) {
+          queuedSaveRef.current = null;
+          setSaveStatus("error");
+          setNotice(`保存失败：${String(error)}。内容仍保留在编辑器中，可点击保存重试`);
+        }
+        return false;
+      });
+      queuedSaveRef.current = { key, value: "dirty", promise: result };
+      return result;
     }
     const stream = agentDocumentStreamRef.current;
     if (stream?.tabKey === activeTabKeyRef.current) {
@@ -1927,7 +2009,7 @@ export default function App() {
               : dirty
                 ? <span className="save-state saving"><span /> 保存中</span>
                 : selectedPath
-                  ? <span className="save-state"><Check size={12} /> {documentKind === "markdown" ? "已保存" : "只读查看"}</span>
+                  ? <span className="save-state"><Check size={12} /> {documentKind === "pdf" ? "只读查看" : "已保存"}</span>
                   : null}
           </div>
 
@@ -1958,24 +2040,31 @@ export default function App() {
             </button>
             <button className={`icon-button${android ? outlineOpen : !dockLayout.hidden.includes("outline") ? " active" : ""}`} type="button" onClick={toggleOutlinePanel} title="文章大纲" disabled={!selectedPath || documentKind !== "markdown"}><LayoutPanelLeft size={16} /></button>
             {!android && <button className={`icon-button${layoutMenuOpen ? " active" : ""}`} type="button" onClick={(event) => { event.stopPropagation(); setLayoutMenuOpen((open) => !open); }} title="管理停靠面板"><PanelsTopLeft size={16} /></button>}
-            <button className="icon-button" type="button" onClick={() => void persistCurrent()} title="保存 (Ctrl+S)" disabled={documentKind !== "markdown" || !dirty || agentTurnActive || activeDocumentStreaming}><Save size={16} /></button>
+            <button className="icon-button" type="button" onClick={() => void persistCurrent()} title="保存 (Ctrl+S)" disabled={documentKind === "pdf" || documentKind === "unsupported" || !dirty || agentTurnActive || activeDocumentStreaming}><Save size={16} /></button>
             <button className="icon-button" type="button" onClick={() => setExportOpen(true)} title="导出" disabled={documentKind !== "markdown" || !selectedPath || !api.isTauri() || agentTurnActive || Boolean(streamingDocument)}><Download size={15} /></button>
             <button className="icon-button" type="button" onClick={() => setSettingsOpen(true)} title="设置 (Ctrl+,)"><Settings size={16} /></button>
           </div>
         </header>
 
-        <div className={`document-host mode-${documentKind === "markdown" ? mode : "viewer"}${settings.showStatusBar ? " with-status" : ""}`}>
+        <div className={`document-host mode-${documentKind === "markdown" ? mode : documentKind === "pdf" ? "viewer" : "editor"}${settings.showStatusBar ? " with-status" : ""}`}>
           {!bootstrapped ? (
             <StartupWorkspace />
           ) : !selectedPath ? (
             <EmptyWorkspace onCreate={() => startCreate("file", "")} onImport={() => setImportOpen(true)} />
-          ) : documentKind !== "markdown" && documentKind !== "unsupported" ? (
+          ) : documentKind === "pdf" ? (
             <DocumentViewer
+              assetPath={documentAssetPath}
+              name={nativeFileName(sourcePath || selectedPath)}
+            />
+          ) : documentKind === "word" || documentKind === "spreadsheet" || documentKind === "presentation" ? (
+            <OfficeEditor
+              ref={officeEditorRef}
               documentKey={archiveId || activeTabKey}
               kind={documentKind}
               format={documentFormat}
               assetPath={documentAssetPath}
               name={nativeFileName(sourcePath || selectedPath)}
+              onDirtyChange={handleOfficeDirty}
             />
           ) : (
             <>
@@ -2031,7 +2120,7 @@ export default function App() {
         {settings.showStatusBar && (
           <footer className="statusbar">
             <span className={notice.includes("失败") ? "error" : ""}>{notice}</span>
-            {selectedPath && <div>{!sourceExists && <span>LeafMark 副本</span>}{documentKind === "markdown" ? <><span>UTF-8</span><span>Markdown</span><span>{countWords(content).toLocaleString()} 字</span><span>{formatBytes(new Blob([content]).size)}</span></> : <><span>本地只读</span><span>{documentFormat}</span><span>{formatBytes(currentArchiveEntry?.size ?? 0)}</span></>}</div>}
+            {selectedPath && <div>{!sourceExists && <span>LeafMark 副本</span>}{documentKind === "markdown" ? <><span>UTF-8</span><span>Markdown</span><span>{countWords(content).toLocaleString()} 字</span><span>{formatBytes(new Blob([content]).size)}</span></> : <><span>{documentKind === "pdf" ? "本地只读" : "本地编辑"}</span><span>{documentFormat}</span><span>{formatBytes(currentArchiveEntry?.size ?? 0)}</span></>}</div>}
           </footer>
         )}
         {layoutMenuOpen && <div className="dock-panel-menu" onClick={(event) => event.stopPropagation()}>

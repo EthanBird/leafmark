@@ -73,7 +73,7 @@ jobs:
       - name: Verify v0.7.2 product baseline
         shell: bash
         run: |
-          test "$(node -p "require('./package.json').version")" = "0.7.7"
+          test "$(node -p "require('./package.json').version")" = "0.8.0"
           ! grep -q 'offlineInstaller' src-tauri/tauri.conf.json
           ! grep -q 'portable' src-tauri/Cargo.toml
           grep -q 'release-android:' .github/workflows/release.yml

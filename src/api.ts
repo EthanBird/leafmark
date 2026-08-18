@@ -400,6 +400,24 @@ export const api = {
   async write(path: string, content: string): Promise<void> {
     if (isTauri()) await invoke("write_document", { relativePath: path, content });
   },
+  async writeOfficeDocument(input: {
+    origin: string;
+    archiveId: string;
+    relativePath: string;
+    bytes: Uint8Array;
+  }): Promise<ArchiveEntry | null> {
+    if (!isTauri()) return null;
+    const headers = {
+      "LeafMark-Origin": encodeURIComponent(input.origin),
+      "LeafMark-Archive-Id": encodeURIComponent(input.archiveId),
+      "LeafMark-Relative-Path": encodeURIComponent(input.relativePath),
+    };
+    if (isAndroid()) {
+      const payload = await encodeAndroidExportPayload(input.bytes);
+      return invoke("write_office_document", payload, { headers });
+    }
+    return invoke("write_office_document", input.bytes, { headers });
+  },
   async create(path: string, kind: EntryKind): Promise<void> {
     if (isTauri()) await invoke("create_entry", { relativePath: path, kind });
   },

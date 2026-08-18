@@ -128,11 +128,12 @@ jobs:
           releaseName: LeafMark v__VERSION__
           releaseBody: |
             - 以 v0.7.2 的 UI、主题、Agent、文档移动、Mermaid 矢量 PDF 与全平台产品树为唯一基线；不包含后续分支的便携版、离线 WebView2 或 Native 改造
-            - 本地只读打开 Word、Excel、PowerPoint、OpenDocument、CSV 与 PDF；Office 解析在独立 Worker 中进行，主界面保持可操作
-            - Word 内容块、表格行和幻灯片按需载入；文档 Worker 使用 4 文档 LRU，并限制 OOXML/ODF XML 展开量，兼顾首屏速度和内存安全
-            - Office/PDF 打开后保存逐字节原件快照；源文件删除后，历史与收藏仍可继续打开，收藏项不会被清除历史操作删除
+            - 0.8 起可在本机编辑 Word、Excel、PowerPoint（以及 RTF / CSV / OpenDocument 电子表格与演示）；OOXML 为原生模型，未修改部件原样写回，Microsoft / WPS / OnlyOffice 可继续打开
+            - WPS 文字：字体/高亮/缩进/行距/分页、多级列表、表格、查找替换、页眉页脚；WPS 表格：数字格式、合并、冻结、排序筛选、自动求和与常用公式；WPS 演示：版式、文本框、备注、隐藏与放映
+            - Office 解析与重算在独立 Worker 中进行，首屏只渲染当前视口；文档 Worker 使用 4 文档 LRU，并限制 OOXML XML 展开量
+            - 文档库内的 Office 文件保存时同步更新工作区与保留快照；微信等外部来源仍只写 LeafMark 私有副本。PDF 与旧版 `.doc` / `.ppt` 仍为只读或系统应用回退
             - Windows、Linux 与 Android 均保留 v0.7.2 发布路线；Windows 安装包注册 Markdown、Office 与 PDF 打开方式，设置中仍可配置 Markdown 默认应用
-            - Markdown 完整编辑、导出、Agent 写入和版本回退保持不变；Office/PDF 明确为只读，避免格式写回损坏原件
+            - Markdown 完整编辑、导出、Agent 写入和版本回退保持不变；不执行 VBA/宏，不还原 SmartArt、透视图或动画
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
             Android APK 继续使用 v0.7.0 起固定的社区更新证书，可直接覆盖更新；该公开证书不提供私钥保密或发布者真实性，请只从本项目官方 GitHub Releases 下载。Windows 未签名构建可能触发 SmartScreen 提示。

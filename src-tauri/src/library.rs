@@ -355,13 +355,38 @@ impl DocumentArchive {
         let source = PathBuf::from(&self.index.documents[position].source_path);
         let source_exists = source.is_file();
         if self.index.documents[position].document_kind != "markdown" {
-            return Err("Office 与 PDF 文档当前为只读模式".into());
+            return Err("Office 与 PDF 文档请使用二进制写回".into());
         }
         let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
         atomic_write(&snapshot_path, content.as_bytes())?;
         let entry = &mut self.index.documents[position];
         entry.source_exists = source_exists;
         entry.size = content.len() as u64;
+        entry.modified_ms = now_ms();
+        entry.last_opened_ms = now_ms();
+        let result = entry.clone();
+        self.persist()?;
+        Ok(result)
+    }
+
+    pub(crate) fn write_bytes(&mut self, id: &str, bytes: &[u8]) -> Result<ArchiveEntry, String> {
+        let position = self
+            .index
+            .documents
+            .iter()
+            .position(|entry| entry.id == id)
+            .ok_or_else(|| "历史记录不存在".to_string())?;
+        let kind = self.index.documents[position].document_kind.as_str();
+        if kind == "markdown" || kind == "pdf" {
+            return Err("此文档类型不支持 Office 二进制写回".into());
+        }
+        let source = PathBuf::from(&self.index.documents[position].source_path);
+        let source_exists = source.is_file();
+        let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
+        atomic_write(&snapshot_path, bytes)?;
+        let entry = &mut self.index.documents[position];
+        entry.source_exists = source_exists;
+        entry.size = bytes.len() as u64;
         entry.modified_ms = now_ms();
         entry.last_opened_ms = now_ms();
         let result = entry.clone();
@@ -666,6 +691,11 @@ mod tests {
 
         assert_eq!(fs::read(retained.snapshot_path).unwrap(), payload);
         assert!(!retained.entry.source_exists);
+
+        let edited = b"edited-xlsx-payload";
+        let written = archive.write_bytes(&retained.entry.id, edited).unwrap();
+        assert_eq!(written.size, edited.len() as u64);
+        assert_eq!(fs::read(archive.open_binary(&retained.entry.id).unwrap().snapshot_path).unwrap(), edited);
         let _ = fs::remove_dir_all(root);
     }
 

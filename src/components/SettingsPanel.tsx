@@ -360,7 +360,7 @@ export function SettingsPanel({
                 </div>}
                 <div className="settings-note">
                   {isAndroid
-                    ? "LeafMark 可接收 Markdown、Office 与 PDF；首次打开时在系统选择器中选 LeafMark。Markdown 仍支持编辑，其余格式以本地只读方式打开。"
+                    ? "LeafMark 可接收 Markdown、Office 与 PDF。Markdown、Word、Excel 与 PowerPoint 可在应用内编辑；PDF 以本地只读方式打开。"
                     : "Windows 会阻止应用静默篡改默认程序。LeafMark 会先注册为 Markdown 打开方式，再带你进入系统确认页；确认后，右键“打开方式”和双击都会交给 LeafMark。"}
                 </div>
               </>
