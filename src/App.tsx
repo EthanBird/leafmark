@@ -116,6 +116,7 @@ import {
   undoOffice,
 } from "./office/office-client";
 import { parseOfficeExcerptQuery, parseOfficeMutation } from "./office/office-agent";
+import { isOfficeKind } from "./office/types";
 
 interface EntryDialogState {
   action: "create" | "rename";
@@ -1788,7 +1789,7 @@ export default function App() {
   };
 
   const officeDocumentKey = archiveId || activeTabKey;
-  const officeContext = selectedPath && (documentKind === "word" || documentKind === "spreadsheet" || documentKind === "presentation")
+  const officeContext = selectedPath && isOfficeKind(documentKind)
     ? {
       key: officeDocumentKey,
       kind: documentKind,
@@ -1799,9 +1800,8 @@ export default function App() {
 
   const persistOfficeMutation = async (label: string) => {
     officeEditorRef.current?.markDirty();
-    dispatchOfficeMutated(officeDocumentKey);
     if (!await persistCurrent(true)) throw new Error(`${label}后未能安全保存`);
-    await officeEditorRef.current?.reload();
+    dispatchOfficeMutated(officeDocumentKey);
   };
 
   const agentHost: AgentDocumentHost = {
@@ -1816,8 +1816,8 @@ export default function App() {
     readDocument: async (path) => {
       const target = path || selectedRef.current;
       const currentKind = documentKindRef.current;
-      if ((!path || path === selectedRef.current) && (currentKind === "word" || currentKind === "spreadsheet" || currentKind === "presentation")) {
-        return excerptOfficeDocument(officeDocumentKey);
+      if ((!path || path === selectedRef.current) && isOfficeKind(currentKind)) {
+        return excerptOfficeDocument(archiveIdRef.current || activeTabKeyRef.current);
       }
       const entry = entries.find((item) => item.path === target);
       if (entry?.kind === "file" && entry.documentKind === "pdf") throw new Error("PDF 仍为只读查看");
@@ -1879,10 +1879,15 @@ export default function App() {
       const results: Array<{ path: string; excerpt: string }> = [];
       for (const entry of files.slice(0, 120)) {
         if (results.length >= limit) break;
+        const nameHit = entry.path.toLocaleLowerCase().includes(needle);
+        if (entry.documentKind !== "markdown") {
+          if (nameHit) results.push({ path: entry.path, excerpt: `${entry.documentKind} · 文件名匹配` });
+          continue;
+        }
         try {
           const value = entry.path === selectedRef.current ? contentRef.current : (await api.readDocument(entry.path)).content;
           const index = value.toLocaleLowerCase().indexOf(needle);
-          if (index >= 0 || entry.path.toLocaleLowerCase().includes(needle)) {
+          if (index >= 0 || nameHit) {
             results.push({ path: entry.path, excerpt: index >= 0 ? value.slice(Math.max(0, index - 120), index + needle.length + 240) : "文件名匹配" });
           }
         } catch { /* one inaccessible document must not abort the search */ }

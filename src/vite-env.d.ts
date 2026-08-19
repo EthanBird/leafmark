@@ -23,3 +23,9 @@ interface LeafMarkAndroidBridge {
 interface Window {
   LeafMarkAndroid?: LeafMarkAndroidBridge;
 }
+
+interface WindowEventMap {
+  "leafmark:ask-ai": CustomEvent<{ prompt: string }>;
+  "leafmark:open-agent": CustomEvent<void>;
+  "leafmark:office-mutated": CustomEvent<{ key: string }>;
+}

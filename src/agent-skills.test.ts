@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_SKILLS, enabledSkillPrompt, parseSkillMarkdown, suggestedMarkdownPath } from "./agent-skills";
-import { buildAskAiPrompt } from "./ask-ai";
+import { AGENT_SKILLS, enabledSkillPrompt, normalizeEnabledSkills, parseSkillMarkdown, suggestedMarkdownPath } from "./agent-skills";
+import { askAiToolbarPosition, buildAskAiPrompt } from "./ask-ai";
 import { parseOfficeMutation } from "./office/office-agent";
 
 describe("agent skills", () => {
@@ -16,11 +16,19 @@ describe("agent skills", () => {
     expect(parsed).toMatchObject({ name: "demo", description: "用于测试的技能说明。", body: "# Demo\nbody" });
   });
 
-  it("injects enabled WPS skills into the agent prompt", () => {
-    const prompt = enabledSkillPrompt(["writing", "wps-word"]).join("\n");
-    expect(prompt).toContain("写作");
-    expect(prompt).toContain("wps-word");
-    expect(prompt).toContain("wordFindReplace");
+  it("injects compact office skill hints until an Office document is open", () => {
+    const compact = enabledSkillPrompt(["writing", "wps-word"]).join("\n");
+    expect(compact).toContain("写作");
+    expect(compact).toContain("wps-word");
+    expect(compact).not.toContain("wordFindReplace");
+    const expanded = enabledSkillPrompt(["wps-word"], true).join("\n");
+    expect(expanded).toContain("wordFindReplace");
+  });
+
+  it("filters unknown skills and can migrate missing WPS skills", () => {
+    expect(normalizeEnabledSkills(["writing", "unknown", "writing"])).toEqual(["writing"]);
+    expect(normalizeEnabledSkills(["writing"], true)).toEqual(["writing", "wps-office", "wps-word", "wps-excel", "wps-ppt"]);
+    expect(normalizeEnabledSkills([])).toEqual([]);
   });
 
   it("builds a timestamped markdown path from an agent reply", () => {
@@ -35,6 +43,7 @@ describe("划词问 AI", () => {
     expect(prompt).toContain("文档：说明.docx");
     expect(prompt).toContain("位置：第 2 段");
     expect(prompt).toContain("解释");
+    expect(askAiToolbarPosition({ left: 20, bottom: 40 } as DOMRect, { width: 800, height: 600 })).toEqual({ x: 20, y: 46 });
   });
 });
 

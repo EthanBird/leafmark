@@ -258,12 +258,17 @@ export function SettingsPanel({
                   <Switch checked={settings.agent.allowDestructiveTerminal} onChange={(allowDestructiveTerminal) => patchAgent({ allowDestructiveTerminal })} />
                 </SettingRow>}
                 <div className="agent-settings-block">
-                  <strong>内置 Skills</strong><p>Skills 只向模型注入所需的方法约束。WPS 系列对应一叶本地办公引擎，不是安装版 WPS 插件。</p>
-                  <div className="skill-options">
-                    {AGENT_SKILLS.map((skill) => (
-                      <label key={skill.id}><input type="checkbox" checked={settings.agent.enabledSkills.includes(skill.id)} onChange={(event) => patchAgent({ enabledSkills: event.target.checked ? [...settings.agent.enabledSkills, skill.id] : settings.agent.enabledSkills.filter((item) => item !== skill.id) })} />{skill.label}</label>
-                    ))}
-                  </div>
+                  <strong>内置 Skills</strong><p>Skills 只向模型注入方法约束。写作类始终可用；WPS 系列在打开 Word / Excel / PPT 时展开完整工作流，对应一叶本地 OOXML 引擎，不是安装版 WPS 插件。</p>
+                  {(["writing", "office"] as const).map((group) => (
+                    <div key={group} className="skill-group">
+                      <small>{group === "writing" ? "写作" : "WPS / Office"}</small>
+                      <div className="skill-options">
+                        {AGENT_SKILLS.filter((skill) => skill.group === group).map((skill) => (
+                          <label key={skill.id}><input type="checkbox" checked={settings.agent.enabledSkills.includes(skill.id)} onChange={(event) => patchAgent({ enabledSkills: event.target.checked ? [...settings.agent.enabledSkills, skill.id] : settings.agent.enabledSkills.filter((item) => item !== skill.id) })} />{skill.label}</label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
                 <AgentTextArea title="自定义 Skills" description="写入你希望 Agent 长期遵循的领域方法、格式规范或工作流。" value={settings.agent.customSkills} placeholder="例如：处理数学文档时，所有公式必须保持 LaTeX 原文…" onChange={(customSkills) => patchAgent({ customSkills })} />
                 <AgentTextArea title="系统提示词" description="定义 Agent 的基础角色；文档上下文、记忆和已启用 Skills 会在运行时追加。" value={settings.agent.systemPrompt} onChange={(systemPrompt) => patchAgent({ systemPrompt })} />

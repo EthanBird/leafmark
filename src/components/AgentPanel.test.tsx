@@ -265,4 +265,16 @@ describe("AgentPanel", () => {
     expect(prompt).toContain("inspect_office");
     expect(prompt).not.toContain("wps_office_search");
   });
+
+  it("keeps WPS skill bodies compact when no Office document is open", () => {
+    const prompt = buildSystemPrompt(
+      { ...defaultAgentSettings(), enabledSkills: ["wps-excel"] },
+      { path: "笔记.md", content: "# 笔记", origin: "workspace", archiveId: "a" },
+      null,
+      "总结",
+    );
+    expect(prompt).toContain("wps-excel");
+    expect(prompt).toContain("inspect_office");
+    expect(prompt).not.toContain("sheetEdit");
+  });
 });

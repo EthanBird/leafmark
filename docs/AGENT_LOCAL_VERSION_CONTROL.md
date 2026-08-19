@@ -36,6 +36,8 @@ agent-vcs/
 
 未完成回合会先以 `pending` 状态原子写入索引。LeafMark 意外退出后，下次启动会把当前磁盘状态作为恢复后的 `after` 快照提交，使崩溃前的修改仍有归属并可回退。
 
+Office 文档的 Agent 编辑（`office_execute`）同样走本轮检查点：写回的是 OOXML 字节，不是把整包展开进对话。PDF 与旧版 `.doc` / `.ppt` 不会进入写入工具。
+
 ## 当前安全边界
 
 - 只保证当前 LeafMark 文档库和当前 LeafMark 保留副本中的文件变化。

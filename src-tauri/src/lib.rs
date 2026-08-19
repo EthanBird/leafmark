@@ -45,7 +45,8 @@ const SPREADSHEET_EXTENSIONS: [&str; 5] = ["xlsx", "xls", "xlsb", "ods", "csv"];
 const PRESENTATION_EXTENSIONS: [&str; 3] = ["pptx", "ppt", "odp"];
 const PDF_EXTENSIONS: [&str; 1] = ["pdf"];
 const MAX_VIEWER_DOCUMENT_BYTES: u64 = 512 * 1024 * 1024;
-const SETTINGS_SCHEMA_VERSION: u32 = 5;
+const SETTINGS_SCHEMA_VERSION: u32 = 6;
+const OFFICE_AGENT_SKILLS: [&str; 4] = ["wps-office", "wps-word", "wps-excel", "wps-ppt"];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +82,21 @@ fn default_desktop_layout() -> serde_json::Value {
     })
 }
 
+fn merge_office_agent_skills(agent: &mut serde_json::Value) {
+    let Some(skills) = agent
+        .get_mut("enabledSkills")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        agent["enabledSkills"] = default_agent_settings()["enabledSkills"].clone();
+        return;
+    };
+    for skill in OFFICE_AGENT_SKILLS {
+        if !skills.iter().any(|item| item.as_str() == Some(skill)) {
+            skills.push(serde_json::Value::String((*skill).into()));
+        }
+    }
+}
+
 fn default_agent_settings() -> serde_json::Value {
     serde_json::json!({
         "enabled": false,
@@ -101,7 +117,7 @@ fn default_agent_settings() -> serde_json::Value {
         "webToolsEnabled": true,
         "terminalToolsEnabled": false,
         "allowDestructiveTerminal": false,
-        "enabledSkills": ["writing", "proofread", "summarize", "structure"],
+        "enabledSkills": ["writing", "proofread", "summarize", "structure", "wps-office", "wps-word", "wps-excel", "wps-ppt"],
         "customSkills": "",
         "mcpServersJson": ""
     })
@@ -171,6 +187,9 @@ impl AppSettings {
             && self.agent.get("reasoningEffort").and_then(serde_json::Value::as_str) == Some("none")
         {
             self.agent["reasoningEffort"] = serde_json::Value::String("low".into());
+        }
+        if self.settings_schema_version < 6 {
+            merge_office_agent_skills(&mut self.agent);
         }
         if self.settings_schema_version < SETTINGS_SCHEMA_VERSION {
             self.settings_schema_version = SETTINGS_SCHEMA_VERSION;
@@ -2438,6 +2457,21 @@ mod tests {
         let migrated = settings.normalize();
 
         assert_eq!(migrated.agent["reasoningEffort"], "low");
+        assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_v5_agent_skills_to_include_native_wps_office_skills() {
+        let mut settings = AppSettings::defaults(Path::new("/tmp/leafmark"));
+        settings.settings_schema_version = 5;
+        settings.agent["enabledSkills"] = serde_json::json!(["writing", "proofread", "summarize", "structure"]);
+
+        let migrated = settings.normalize();
+
+        let skills = migrated.agent["enabledSkills"].as_array().unwrap();
+        for skill in ["wps-office", "wps-word", "wps-excel", "wps-ppt"] {
+            assert!(skills.iter().any(|item| item.as_str() == Some(skill)), "{skill}");
+        }
         assert_eq!(migrated.settings_schema_version, SETTINGS_SCHEMA_VERSION);
     }
 

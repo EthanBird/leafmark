@@ -39,6 +39,7 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - 内置按需启动的流式文档 Agent；原生支持 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth，并完整提供 jcode 的 OpenAI-compatible provider catalog
 - 订阅模式分别使用 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 协议，不会把订阅账户错误回退到按量 API Key
 - Agent 支持自动刷新登录、文档读写、并行只读子 Agent、会话检索、长期记忆、Skills、网页读取、Streamable HTTP MCP 和本机终端
+- 可在 Markdown / Word / Excel / PPT 中划词问 AI；助手回答可复制或保存为 Markdown。WPS 系列 Skills（`skills/wps-*`）驱动本地 OOXML 引擎，不是安装版 WPS COM
 - Agent 可用 `create / replace / append` 方式把长篇 Markdown 直接流式写入目标标签；中止时保留已生成部分并可随整轮版本回退
 - Agent 每轮对话都建立不依赖 Git 的本地文件版本；消息、文档工具和 PowerShell 修改可一起回退或重做，重做不会再次执行命令
 - Windows 终端工具固定使用隐藏窗口 PowerShell；版本化回合采用可完整捕获的前台命令，支持超时和破坏性命令 Rust 级拦截，不会弹出黑色命令行

@@ -56,6 +56,7 @@ import type {
   DocumentEntry,
   DocumentOrigin,
 } from "../types";
+import type { OfficeKind } from "../office/types";
 import { copyTextToClipboard, enabledSkillPrompt, suggestedMarkdownPath } from "../agent-skills";
 import { ASK_AI_EVENT } from "../ask-ai";
 import { api } from "../api";
@@ -73,7 +74,7 @@ import {
 
 export interface AgentOfficeContext {
   key: string;
-  kind: "word" | "spreadsheet" | "presentation";
+  kind: OfficeKind;
   path: string;
   format: string;
 }
@@ -927,7 +928,7 @@ function compactActivities(activities: AgentToolActivity[]) {
 }
 
 export function buildSystemPrompt(settings: AgentSettings, current: AgentDocumentHost["current"], office: AgentDocumentHost["office"], query: string) {
-  const skills = enabledSkillPrompt(settings.enabledSkills);
+  const skills = enabledSkillPrompt(settings.enabledSkills, Boolean(office));
   if (settings.customSkills.trim()) skills.push(`自定义技能：\n${settings.customSkills.trim()}`);
   const document = current
     ? `\n\n当前活动文档：${current.path}\n\n<document>\n${current.content.slice(0, settings.contextChars)}\n</document>${current.content.length > settings.contextChars ? "\n[文档内容已按上下文字符上限截断，可用 read_document 精确读取]" : ""}`

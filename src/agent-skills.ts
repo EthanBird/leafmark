@@ -56,15 +56,39 @@ export const AGENT_SKILLS: AgentSkillDefinition[] = [
 ];
 
 export const AGENT_SKILL_MAP = Object.fromEntries(AGENT_SKILLS.map((skill) => [skill.id, skill])) as Record<string, AgentSkillDefinition>;
+export const KNOWN_AGENT_SKILL_IDS = AGENT_SKILLS.map((skill) => skill.id);
+export const DEFAULT_OFFICE_SKILL_IDS = AGENT_SKILLS.filter((skill) => skill.group === "office").map((skill) => skill.id);
+export const DEFAULT_ENABLED_SKILL_IDS = ["writing", "proofread", "summarize", "structure", ...DEFAULT_OFFICE_SKILL_IDS];
 
-export function skillPromptFor(id: string) {
+export function skillPromptFor(id: string, officeOpen = false) {
   const skill = AGENT_SKILL_MAP[id];
   if (!skill) return "";
+  if (skill.group === "office" && !officeOpen) {
+    return `${skill.label}（${skill.id}）：已启用。打开 Word / Excel / PPT 后会展开完整工作流；当前可用 inspect_office、read_office、office_execute。`;
+  }
   return skill.body ? `${skill.label}（${skill.id}）\n${skill.body}` : skill.summary;
 }
 
-export function enabledSkillPrompt(ids: string[]) {
-  return ids.map(skillPromptFor).filter(Boolean);
+export function enabledSkillPrompt(ids: string[], officeOpen = false) {
+  return ids.map((id) => skillPromptFor(id, officeOpen)).filter(Boolean);
+}
+
+export function normalizeEnabledSkills(ids: unknown, migrateOfficeSkills = false) {
+  const known = new Set(KNOWN_AGENT_SKILL_IDS);
+  const seen = new Set<string>();
+  const next: string[] = [];
+  const source = Array.isArray(ids) ? ids : migrateOfficeSkills ? DEFAULT_ENABLED_SKILL_IDS : [];
+  for (const id of source) {
+    if (typeof id !== "string" || !known.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    next.push(id);
+  }
+  if (migrateOfficeSkills) {
+    for (const id of DEFAULT_OFFICE_SKILL_IDS) {
+      if (!seen.has(id)) next.push(id);
+    }
+  }
+  return next;
 }
 
 export function suggestedMarkdownPath(content: string, now = new Date()) {

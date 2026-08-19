@@ -4,6 +4,11 @@ import type { SlideModel, SlideShape } from "./slide";
 import type { OfficeExcerptQuery } from "./office-agent";
 
 export type OfficeKind = "word" | "spreadsheet" | "presentation";
+export const OFFICE_KINDS: OfficeKind[] = ["word", "spreadsheet", "presentation"];
+
+export function isOfficeKind(kind: string): kind is OfficeKind {
+  return OFFICE_KINDS.includes(kind as OfficeKind);
+}
 
 export interface OfficeSource {
   key: string;

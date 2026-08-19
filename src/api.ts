@@ -18,7 +18,7 @@ import type {
   ImportDirectoryResult,
   LoadedDocument,
 } from "./types";
-import { defaultAppSettings, normalizeAgentSettings } from "./settings-defaults";
+import { defaultAppSettings, normalizeAppSettings } from "./settings-defaults";
 
 const browserSettings: AppSettings = defaultAppSettings("浏览器预览");
 const browserAgentTurns = new Map<string, { sessionId: string; label: string; createdMs: number }>();
@@ -213,7 +213,7 @@ export const api = {
   async bootstrap(): Promise<BootstrapPayload> {
     if (isTauri()) {
       const payload = await invoke<BootstrapPayload>("bootstrap");
-      return { ...payload, settings: { ...payload.settings, agent: normalizeAgentSettings(payload.settings.agent) } };
+      return { ...payload, settings: normalizeAppSettings(payload.settings) };
     }
     return {
       settings: browserSettings,
@@ -467,7 +467,7 @@ export const api = {
   async setWorkspace(path: string): Promise<BootstrapPayload> {
     if (isTauri()) {
       const payload = await invoke<BootstrapPayload>("set_workspace", { path });
-      return { ...payload, settings: { ...payload.settings, agent: normalizeAgentSettings(payload.settings.agent) } };
+      return { ...payload, settings: normalizeAppSettings(payload.settings) };
     }
     return {
       settings: { ...browserSettings, workspacePath: path },
@@ -479,7 +479,8 @@ export const api = {
     };
   },
   async saveSettings(settings: AppSettings): Promise<AppSettings> {
-    if (isTauri()) return invoke("save_settings", { settings });
-    return settings;
+    const normalized = normalizeAppSettings(settings);
+    if (isTauri()) return invoke("save_settings", { settings: normalized });
+    return normalized;
   },
 };

@@ -330,7 +330,7 @@ export function parseOfficeMutation(input: unknown): OfficeMutation {
     case "sheetRemove":
       return { op, name: asString(value.name, "name") };
     case "sheetWidth":
-      return { op, name: asString(value.name ?? "", "name") || asString(value.sheet, "sheet"), col: asNumber(value.col, "col"), width: asNumber(value.width, "width") };
+      return { op, name: asString(value.name ?? value.sheet, "name"), col: asNumber(value.col, "col"), width: asNumber(value.width, "width") };
     case "slideText":
       return { op, index: asNumber(value.index, "index"), shapeId: asString(value.shapeId ?? value.shape_id, "shapeId"), text: asString(value.text, "text") };
     case "slideAdd":

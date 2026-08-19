@@ -1,3 +1,5 @@
+import type { DocumentKind } from "./types";
+
 export const ASK_AI_EVENT = "leafmark:ask-ai";
 export const OPEN_AGENT_EVENT = "leafmark:open-agent";
 export const OFFICE_MUTATED_EVENT = "leafmark:office-mutated";
@@ -8,7 +10,15 @@ export interface AskAiSelection {
   text: string;
   path?: string;
   location?: string;
-  kind?: string;
+  kind?: DocumentKind;
+}
+
+export interface AskAiEventDetail {
+  prompt: string;
+}
+
+export interface OfficeMutatedEventDetail {
+  key: string;
 }
 
 export const ASK_AI_INTENTS: Array<{ id: AskAiIntent; label: string; title: string }> = [
@@ -62,10 +72,25 @@ export function selectionInside(root: EventTarget | null) {
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
   const anchor = selection.anchorNode;
   if (!anchor || !root.contains(anchor)) return null;
+  if (anchor instanceof Element && ignoreAskAiTarget(anchor)) return null;
+  if (anchor.parentElement && ignoreAskAiTarget(anchor.parentElement)) return null;
   const text = selection.toString().replace(/\u00a0/g, " ").trim();
   if (text.length < 2) return null;
   const rect = selection.getRangeAt(0).getBoundingClientRect();
   return { text, rect };
+}
+
+export function ignoreAskAiTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest(".ask-ai-toolbar, .agent-panel, .office-ribbon"));
+}
+
+export function askAiToolbarPosition(rect: DOMRect, viewport = { width: window.innerWidth, height: window.innerHeight }) {
+  const width = 280;
+  const height = 40;
+  return {
+    x: Math.max(8, Math.min(rect.left, viewport.width - width - 8)),
+    y: Math.max(8, Math.min(rect.bottom + 6, viewport.height - height - 8)),
+  };
 }
 
 export function dispatchOfficeMutated(key: string) {
