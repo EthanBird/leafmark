@@ -1881,6 +1881,7 @@ fn decode_binary_request_body(
     }
 }
 
+#[cfg(test)]
 fn validate_export_payload_size(size: usize) -> Result<(), String> {
     validate_payload_size(size, MAX_EXPORT_PAYLOAD_BYTES)
 }

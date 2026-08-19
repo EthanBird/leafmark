@@ -11,6 +11,9 @@ describe("code files", () => {
     expect(documentKindFromPath("main.py")).toBe("code");
     expect(documentKindFromPath("Dockerfile")).toBe("code");
     expect(documentKindFromPath(".gitignore")).toBe("code");
+    expect(documentKindFromPath(".env")).toBe("code");
+    expect(documentKindFromPath(".editorconfig")).toBe("code");
+    expect(highlightLanguageFromPath(".gitignore")).toBe("ini");
     expect(documentKindFromPath("notes.md")).toBe("markdown");
     expect(documentKindFromPath("deck.pptx")).toBe("presentation");
     expect(documentKindFromPath("virus.exe")).toBeNull();
