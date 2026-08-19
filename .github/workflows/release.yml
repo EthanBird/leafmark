@@ -129,10 +129,14 @@ jobs:
           releaseBody: |
             - 以 v0.7.2 的 UI、主题、Agent、文档移动、Mermaid 矢量 PDF 与全平台产品树为唯一基线；不包含后续分支的便携版、离线 WebView2 或 Native 改造
             - 0.8 起可在本机编辑 Word、Excel、PowerPoint（以及 RTF / CSV / OpenDocument 电子表格与演示）；OOXML 为原生模型，未修改部件原样写回，Microsoft / WPS / OnlyOffice 可继续打开
+            - 0.8.1：Markdown / 代码 / Word / Excel / PPT 划词问 AI；助手回答可复制或保存为 Markdown。WPS Skills 驱动本地 OOXML，不是安装版 WPS COM
+            - 0.8.1：Markdown 围栏与主流源码/配置文件按需语法高亮；可打开 TypeScript、Python、JSON、YAML 等文本文件。不是完整 IDE
+            - 0.8.1：文档库默认收起，展开层级按文档库路径记住
+            - 0.8.1：Windows / Android 文件关联覆盖 Office 与代码/配置；微信等应用分享时保留原文件名
             - WPS 文字：字体/高亮/缩进/行距/分页、多级列表、表格、查找替换、页眉页脚；WPS 表格：数字格式、合并、冻结、排序筛选、自动求和与常用公式；WPS 演示：版式、文本框、备注、隐藏与放映
             - Office 解析与重算在独立 Worker 中进行，首屏只渲染当前视口；文档 Worker 使用 4 文档 LRU，并限制 OOXML XML 展开量
             - 文档库内的 Office 文件保存时同步更新工作区与保留快照；微信等外部来源仍只写 LeafMark 私有副本。PDF 与旧版 `.doc` / `.ppt` 仍为只读或系统应用回退
-            - Windows、Linux 与 Android 均保留 v0.7.2 发布路线；Windows 安装包注册 Markdown、Office 与 PDF 打开方式，设置中仍可配置 Markdown 默认应用
+            - Windows、Linux 与 Android 均保留 v0.7.2 发布路线；Windows 安装包注册 Markdown、Office、代码/配置与 PDF 打开方式
             - Markdown 完整编辑、导出、Agent 写入和版本回退保持不变；不执行 VBA/宏，不还原 SmartArt、透视图或动画
 
             Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。

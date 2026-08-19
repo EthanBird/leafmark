@@ -143,7 +143,8 @@ src/
   office/                  Word / Excel / PowerPoint OOXML 引擎、公式与 Worker
   components/OfficeEditor.tsx  可写回的 Word、表格与演示编辑器
   components/DocumentViewer.tsx PDF 本地查看
-  rendering.ts            KaTeX / Mermaid 按需增强
+  rendering.ts            KaTeX / Mermaid / highlight.js 按需增强
+  code-files.ts           源码与配置文件类型
   wysiwyg.ts              实时编辑 HTML → Markdown
   components/             文件树、历史收藏、Agent、Dock 与设置页
 src-tauri/src/
