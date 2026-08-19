@@ -48,10 +48,10 @@
     ],
     "category": "Productivity",
     "shortDescription": "LeafMark（一叶），高性能本地文档工作区",
-    "longDescription": "LeafMark（一叶）可快速打开并编辑 Markdown、Word、Excel 与 PowerPoint，查看 PDF，并为历史和收藏保留本地原件副本。",
+    "longDescription": "LeafMark（一叶）可快速打开并编辑 Markdown、源代码、配置文件、Word、Excel 与 PowerPoint，查看 PDF，并为历史和收藏保留本地原件副本。",
     "fileAssociations": [
       {
-        "ext": ["md", "markdown"],
+        "ext": ["md", "markdown", "mdx"],
         "name": "Markdown 文档",
         "description": "Markdown 文档",
         "mimeType": "text/markdown",
@@ -62,26 +62,49 @@
         "ext": ["docx", "doc", "rtf"],
         "name": "Word 文档",
         "description": "Word 文档",
-        "role": "Editor"
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "role": "Editor",
+        "androidIntentActionFilters": ["view", "send", "sendMultiple"]
       },
       {
         "ext": ["xlsx", "xls", "xlsb", "ods", "csv"],
         "name": "电子表格",
         "description": "Excel 与电子表格文档",
-        "role": "Editor"
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "role": "Editor",
+        "androidIntentActionFilters": ["view", "send", "sendMultiple"]
       },
       {
         "ext": ["pptx", "ppt", "odp"],
         "name": "演示文稿",
         "description": "PowerPoint 与演示文稿",
-        "role": "Editor"
+        "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "role": "Editor",
+        "androidIntentActionFilters": ["view", "send", "sendMultiple"]
       },
       {
         "ext": ["pdf"],
         "name": "PDF 文档",
         "description": "PDF 文档",
         "mimeType": "application/pdf",
-        "role": "Viewer"
+        "role": "Viewer",
+        "androidIntentActionFilters": ["view", "send", "sendMultiple"]
+      },
+      {
+        "ext": ["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "rs", "java", "kt", "c", "h", "cpp", "cs", "php", "rb", "swift", "dart", "lua", "vue"],
+        "name": "源代码",
+        "description": "源代码文件",
+        "mimeType": "text/plain",
+        "role": "Editor",
+        "androidIntentActionFilters": ["view", "send", "sendMultiple"]
+      },
+      {
+        "ext": ["json", "jsonc", "yaml", "yml", "toml", "xml", "html", "css", "scss", "ini", "conf", "env", "properties", "gradle", "sql", "sh", "ps1", "txt"],
+        "name": "配置与文本",
+        "description": "配置文件与纯文本",
+        "mimeType": "text/plain",
+        "role": "Editor",
+        "androidIntentActionFilters": ["view", "send", "sendMultiple"]
       }
     ]
   }

@@ -45,7 +45,7 @@ import { api } from "./api";
 import { DocumentLibrary } from "./components/DocumentLibrary";
 import { DocumentViewer, documentKindIcon } from "./components/DocumentViewer";
 import { OfficeEditor, type OfficeEditorHandle } from "./components/OfficeEditor";
-import { AskAiToolbar } from "./components/AskAiToolbar";
+import { AskAiRibbonButton, AskAiToolbar } from "./components/AskAiToolbar";
 import { FileTree } from "./components/FileTree";
 import { SettingsPanel } from "./components/SettingsPanel";
 import {
@@ -107,7 +107,7 @@ import {
   type OpenDocumentTab,
 } from "./document-tabs";
 import type { DockPanelId, DockZone } from "./types";
-import { OPEN_AGENT_EVENT, dispatchOfficeMutated } from "./ask-ai";
+import { OPEN_AGENT_EVENT, dispatchOfficeMutated, selectionInside } from "./ask-ai";
 import {
   excerptOfficeDocument,
   inspectOfficeDocument,
@@ -117,6 +117,14 @@ import {
 } from "./office/office-client";
 import { parseOfficeExcerptQuery, parseOfficeMutation } from "./office/office-agent";
 import { isOfficeKind } from "./office/types";
+import {
+  IMPORT_DOCUMENT_EXTENSIONS,
+  highlightLanguageFromPath,
+  isTextKind,
+  languageLabel,
+  renderCodeHtml,
+} from "./code-files";
+import { loadTreeExpanded, pruneTreeExpanded, saveTreeExpanded } from "./tree-state";
 
 interface EntryDialogState {
   action: "create" | "rename";
@@ -244,6 +252,7 @@ export default function App() {
   const documentKindRef = useRef<DocumentKind>(documentKind);
   const modeRef = useRef<ViewMode>(mode);
   const liveEditorRef = useRef<HTMLElement>(null);
+  const documentHostRef = useRef<HTMLDivElement>(null);
   const officeEditorRef = useRef<OfficeEditorHandle | null>(null);
   const settingsReady = useRef(false);
   const renderRequest = useRef(0);
@@ -493,10 +502,7 @@ export default function App() {
   const refresh = useCallback(async (preferredPath?: string) => {
     const next = await api.listEntries();
     setEntries(next);
-    setExpanded((current) => {
-      if (current.size) return current;
-      return new Set(next.filter((entry) => entry.kind === "directory" && entry.depth < 2).map((entry) => entry.path));
-    });
+    setExpanded((current) => pruneTreeExpanded(current, next));
     const target = preferredPath && next.some((entry) => entry.path === preferredPath && entry.kind === "file")
       ? preferredPath
       : selectedRef.current && next.some((entry) => entry.path === selectedRef.current)
@@ -536,6 +542,9 @@ export default function App() {
     const tab = tabFromLoadedDocument(loaded);
     setOpenTabs((current) => upsertDocumentTab(current, loaded));
     applyTabSnapshot(tab);
+    if (loaded.documentKind === "code") {
+      setMode((current) => (current === "source" ? "source" : "read"));
+    }
     if (isCompactLayout()) setSidebarOpen(false);
   }, [applyTabSnapshot]);
 
@@ -551,7 +560,7 @@ export default function App() {
       content,
       savedContent,
       renderedHtml,
-      size: documentKind === "markdown" ? new Blob([content]).size : tab.size,
+      size: isTextKind(documentKind) ? new Blob([content]).size : tab.size,
       documentKind,
       assetPath: documentAssetPath,
       format: documentFormat,
@@ -708,7 +717,7 @@ export default function App() {
         setArchiveEntries(payload.library);
         settingsReady.current = true;
         setEntries(payload.entries);
-        setExpanded(new Set(payload.entries.filter((entry) => entry.kind === "directory" && entry.depth < 2).map((entry) => entry.path)));
+        setExpanded(new Set(loadTreeExpanded(payload.settings.workspacePath)));
         if (payload.initialDocument) {
           applyLoadedDocument(payload.initialDocument);
           setSidebarView("history");
@@ -750,6 +759,11 @@ export default function App() {
   }, [openExternalDocument]);
 
   useEffect(() => {
+    if (!bootstrapped) return;
+    saveTreeExpanded(settings.workspacePath, expanded);
+  }, [bootstrapped, expanded, settings.workspacePath]);
+
+  useEffect(() => {
     if (!settingsReady.current) return;
     const timer = window.setTimeout(() => {
       void api.saveSettings(settings).catch((error: unknown) => setNotice(`设置保存失败：${String(error)}`));
@@ -787,6 +801,15 @@ export default function App() {
     const timer = window.setTimeout(() => void persistCurrent(true), settings.autosaveDelayMs);
     return () => window.clearTimeout(timer);
   }, [busy, content, dirty, persistCurrent, settings.autosaveDelayMs]);
+
+  useEffect(() => {
+    if (documentKind === "code" && mode !== "read" && mode !== "source") setMode("read");
+  }, [documentKind, mode]);
+
+  useEffect(() => {
+    if (documentKind !== "code" || !selectedPath) return;
+    setRenderedHtml(renderCodeHtml(content, highlightLanguageFromPath(sourcePath || selectedPath)));
+  }, [content, documentKind, selectedPath, sourcePath]);
 
   useEffect(() => {
     if (documentKind !== "markdown" || !selectedPath || mode !== "split" || content === savedContent && renderedHtml) return;
@@ -872,7 +895,17 @@ export default function App() {
   }, [android, deleteEntry, dirty, entryDialog, exportOpen, exporting, importOpen, menu, moveDialog, outlineOpen, persistCurrent, settingsOpen, sidebarOpen]);
 
   const switchMode = async (next: ViewMode) => {
-    if (documentKindRef.current !== "markdown") return;
+    const kind = documentKindRef.current;
+    if (kind === "code") {
+      if (next === "live" || next === "split") return;
+      if (agentTurnActiveRef.current || agentDocumentStreamRef.current?.tabKey === activeTabKeyRef.current) {
+        setNotice("Agent 工作期间文档保持只读；流式写入完成后会恢复原模式");
+        return;
+      }
+      setMode(next);
+      return;
+    }
+    if (kind !== "markdown") return;
     if (agentTurnActiveRef.current || agentDocumentStreamRef.current?.tabKey === activeTabKeyRef.current) {
       setNotice("Agent 工作期间文档保持只读；流式写入完成后会恢复原模式");
       return;
@@ -881,14 +914,16 @@ export default function App() {
       setSettingsOpen(true);
       return;
     }
-    if ((next === "read" || next === "live" || next === "split") && contentRef.current !== savedRef.current) {
-      const request = ++renderRequest.current;
-      setRendering(true);
-      try {
-        const html = await api.render(contentRef.current);
-        if (request === renderRequest.current) setRenderedHtml(html);
-      } finally {
-        if (request === renderRequest.current) setRendering(false);
+    if (next === "read" || next === "live" || next === "split") {
+      if (next === "live" || contentRef.current !== savedRef.current || !renderedHtml) {
+        const request = ++renderRequest.current;
+        setRendering(true);
+        try {
+          const html = await api.render(contentRef.current);
+          if (request === renderRequest.current) setRenderedHtml(html);
+        } finally {
+          if (request === renderRequest.current) setRendering(false);
+        }
       }
     }
     setMode(next);
@@ -1099,7 +1134,7 @@ export default function App() {
       })
       : await open({
         multiple: true,
-        filters: [{ name: "文档", extensions: ["md", "markdown", "docx", "doc", "rtf", "xlsx", "xls", "xlsb", "ods", "csv", "pptx", "ppt", "odp", "pdf"] }],
+        filters: [{ name: "文档", extensions: [...IMPORT_DOCUMENT_EXTENSIONS] }],
         title: "导入本地文档",
       });
     if (!selected) return;
@@ -1277,7 +1312,7 @@ export default function App() {
     setOpenTabs([]);
     tabsRef.current = [];
     setActiveTabKey("");
-    setExpanded(new Set(payload.entries.filter((entry) => entry.kind === "directory" && entry.depth < 2).map((entry) => entry.path)));
+    setExpanded(new Set(loadTreeExpanded(payload.settings.workspacePath)));
     const first = payload.entries.find((entry) => entry.kind === "file");
     if (first) await openDocument(first.path, true);
     else setNotice("新文档库为空，可以创建或导入文档");
@@ -1805,7 +1840,7 @@ export default function App() {
   };
 
   const agentHost: AgentDocumentHost = {
-    current: selectedPath && documentKind === "markdown" ? {
+    current: selectedPath && isTextKind(documentKind) ? {
       path: documentOrigin === "archive" ? nativeFileName(sourcePath || selectedPath) : selectedPath,
       content,
       origin: documentOrigin,
@@ -1821,22 +1856,24 @@ export default function App() {
       }
       const entry = entries.find((item) => item.path === target);
       if (entry?.kind === "file" && entry.documentKind === "pdf") throw new Error("PDF 仍为只读查看");
-      if (entry?.kind === "file" && entry.documentKind !== "markdown" && entry.documentKind !== "directory") {
+      if (entry?.kind === "file" && !isTextKind(entry.documentKind) && entry.documentKind !== "directory") {
         throw new Error("请先在标签中打开该 Office 文档，再使用 inspect_office / read_office");
       }
       if (!path || path === selectedRef.current) return contentRef.current;
       return (await api.readDocument(path)).content;
     },
     replaceCurrentDocument: async (next) => {
-      if (documentKindRef.current !== "markdown") throw new Error("Office 文档请使用 office_execute，不能整篇替换为 Markdown");
+      if (!isTextKind(documentKindRef.current)) throw new Error("Office 文档请使用 office_execute，不能整篇替换为文本");
       if (!selectedRef.current) throw new Error("当前没有打开文档");
       setContent(next);
       contentRef.current = next;
-      setRenderedHtml(await api.render(next));
+      setRenderedHtml(documentKindRef.current === "code"
+        ? renderCodeHtml(next, highlightLanguageFromPath(sourcePath || selectedRef.current))
+        : await api.render(next));
       if (!await persistCurrent(true)) throw new Error("Agent 修改未能安全保存");
     },
     replaceText: async (path, searchText, replacement, all) => {
-      if (documentKindRef.current !== "markdown" && !path) throw new Error("Office 文档请使用 office_execute（例如 wordFindReplace）");
+      if (!isTextKind(documentKindRef.current) && !path) throw new Error("Office 文档请使用 office_execute（例如 wordFindReplace）");
       if (!searchText) throw new Error("search 不能为空");
       const target = path || selectedRef.current;
       if (!target) throw new Error("当前没有打开文档");
@@ -1847,7 +1884,9 @@ export default function App() {
       if (target === selectedRef.current) {
         contentRef.current = next;
         setContent(next);
-        setRenderedHtml(await api.render(next));
+        setRenderedHtml(documentKindRef.current === "code"
+          ? renderCodeHtml(next, highlightLanguageFromPath(sourcePath || target))
+          : await api.render(next));
         if (!await persistCurrent(true)) throw new Error("Agent 替换未能安全保存");
       } else {
         await api.write(target, next);
@@ -1880,7 +1919,7 @@ export default function App() {
       for (const entry of files.slice(0, 120)) {
         if (results.length >= limit) break;
         const nameHit = entry.path.toLocaleLowerCase().includes(needle);
-        if (entry.documentKind !== "markdown") {
+        if (entry.documentKind !== "markdown" && entry.documentKind !== "code") {
           if (nameHit) results.push({ path: entry.path, excerpt: `${entry.documentKind} · 文件名匹配` });
           continue;
         }
@@ -2101,20 +2140,36 @@ export default function App() {
           </div>
 
           <div className="document-actions">
-            {documentKind === "markdown" && mode === "live" && !agentTurnActive && !activeDocumentStreaming && (
-              <div className="format-toolbar" aria-label="格式工具">
-                <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("bold"); }} title="粗体"><Bold size={14} /></button>
-                <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("italic"); }} title="斜体"><Italic size={14} /></button>
-                <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("strikeThrough"); }} title="删除线"><Strikethrough size={14} /></button>
-                <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("insertUnorderedList"); }} title="无序列表"><List size={14} /></button>
-                <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("insertOrderedList"); }} title="有序列表"><ListOrdered size={14} /></button>
+            {isTextKind(documentKind) && !agentTurnActive && !activeDocumentStreaming && (
+              <div className={`format-toolbar${documentKind === "code" || mode !== "live" ? " ask-ai-actions" : ""}`} aria-label={documentKind === "markdown" && mode === "live" ? "格式工具" : "划词问 AI"}>
+                {documentKind === "markdown" && mode === "live" && (
+                  <>
+                    <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("bold"); }} title="粗体"><Bold size={14} /></button>
+                    <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("italic"); }} title="斜体"><Italic size={14} /></button>
+                    <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("strikeThrough"); }} title="删除线"><Strikethrough size={14} /></button>
+                    <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("insertUnorderedList"); }} title="无序列表"><List size={14} /></button>
+                    <button type="button" onMouseDown={(event) => { event.preventDefault(); runFormat("insertOrderedList"); }} title="有序列表"><ListOrdered size={14} /></button>
+                  </>
+                )}
+                <AskAiRibbonButton
+                  compact
+                  getSelection={() => {
+                    const selected = selectionInside(documentHostRef.current);
+                    if (!selected) return null;
+                    return {
+                      text: selected.text,
+                      path: documentOrigin === "archive" ? nativeFileName(sourcePath || selectedPath) : selectedPath,
+                      kind: documentKind,
+                    };
+                  }}
+                />
               </div>
             )}
-            {documentKind === "markdown" ? <div className="mode-switch" aria-label="文档模式">
+            {isTextKind(documentKind) ? <div className="mode-switch" aria-label="文档模式">
               <ModeButton active={mode === "read"} title="阅读" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("read")}><Eye size={15} /></ModeButton>
               <ModeButton active={mode === "source"} title="源码" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("source")}><FileCode2 size={15} /></ModeButton>
-              <ModeButton active={mode === "split"} title="分栏" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("split")}><SplitSquareHorizontal size={15} /></ModeButton>
-              {settings.liveEditing && <ModeButton active={mode === "live"} title="实时编译" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("live")}><PencilLine size={15} /></ModeButton>}
+              {documentKind === "markdown" && <ModeButton active={mode === "split"} title="分栏" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("split")}><SplitSquareHorizontal size={15} /></ModeButton>}
+              {documentKind === "markdown" && settings.liveEditing && <ModeButton active={mode === "live"} title="实时编译" disabled={agentTurnActive || activeDocumentStreaming} onClick={() => void switchMode("live")}><PencilLine size={15} /></ModeButton>}
             </div> : <span className="document-format-badge">{documentFormat}</span>}
             <button
               className={`icon-button${currentArchiveEntry?.favorite ? " active favorite" : ""}`}
@@ -2133,11 +2188,12 @@ export default function App() {
           </div>
         </header>
 
-        <div className={`document-host mode-${documentKind === "markdown" ? mode : documentKind === "pdf" ? "viewer" : "editor"}${settings.showStatusBar ? " with-status" : ""}`}>
+        <div ref={documentHostRef} className={`document-host mode-${isTextKind(documentKind) ? mode : documentKind === "pdf" ? "viewer" : "editor"}${settings.showStatusBar ? " with-status" : ""}`}>
           {selectedPath && documentKind !== "pdf" && documentKind !== "unsupported" && (
             <AskAiToolbar
               path={documentOrigin === "archive" ? nativeFileName(sourcePath || selectedPath) : selectedPath}
               kind={documentKind}
+              rootRef={documentHostRef}
             />
           )}
           {!bootstrapped ? (
@@ -2164,7 +2220,7 @@ export default function App() {
               {(mode === "source" || mode === "split") && (
                 <textarea
                   className="source-editor"
-                  aria-label="Markdown 源码编辑器"
+                  aria-label={documentKind === "code" ? "源代码编辑器" : "Markdown 源码编辑器"}
                   spellCheck={false}
                   value={content}
                   readOnly={agentTurnActive || streamingDocument?.tabKey === activeTabKey}
@@ -2213,7 +2269,7 @@ export default function App() {
         {settings.showStatusBar && (
           <footer className="statusbar">
             <span className={notice.includes("失败") ? "error" : ""}>{notice}</span>
-            {selectedPath && <div>{!sourceExists && <span>LeafMark 副本</span>}{documentKind === "markdown" ? <><span>UTF-8</span><span>Markdown</span><span>{countWords(content).toLocaleString()} 字</span><span>{formatBytes(new Blob([content]).size)}</span></> : <><span>{documentKind === "pdf" ? "本地只读" : "本地编辑"}</span><span>{documentFormat}</span><span>{formatBytes(currentArchiveEntry?.size ?? 0)}</span></>}</div>}
+            {selectedPath && <div>{!sourceExists && <span>LeafMark 副本</span>}{isTextKind(documentKind) ? <><span>UTF-8</span><span>{documentKind === "code" ? languageLabel(highlightLanguageFromPath(sourcePath || selectedPath), sourcePath || selectedPath) : "Markdown"}</span><span>{countWords(content).toLocaleString()} 字</span><span>{formatBytes(new Blob([content]).size)}</span></> : <><span>{documentKind === "pdf" ? "本地只读" : "本地编辑"}</span><span>{documentFormat}</span><span>{formatBytes(currentArchiveEntry?.size ?? 0)}</span></>}</div>}
           </footer>
         )}
         {layoutMenuOpen && <div className="dock-panel-menu" onClick={(event) => event.stopPropagation()}>
@@ -2441,7 +2497,7 @@ function DocumentSurface({ html, live, settings, documentDirectory, editorRef, o
     root.innerHTML = html;
     let cleanup = () => {};
     let active = true;
-    void enhanceDocument(root, settings, documentDirectory).then((result) => {
+    void enhanceDocument(root, settings, documentDirectory, { highlight: !live }).then((result) => {
       if (!active) return result.cleanup();
       cleanup = result.cleanup;
       onOutline(result.outline);
@@ -2455,7 +2511,7 @@ function DocumentSurface({ html, live, settings, documentDirectory, editorRef, o
         localRef.current = node;
         (editorRef as React.MutableRefObject<HTMLElement | null>).current = node;
       }}
-      className={`markdown-body${live ? " live-editor" : ""}`}
+      className={`markdown-body${live ? " live-editor" : ""}${html.includes("code-document") ? " code-document-body" : ""}`}
       contentEditable={live}
       suppressContentEditableWarning
       spellCheck={live}

@@ -17,6 +17,46 @@ fn markdown_extension() -> String {
     "md".into()
 }
 
+fn is_text_archive_kind(kind: &str) -> bool {
+    kind == "markdown" || kind == "code"
+}
+
+fn archive_kind_from_source(source: &Path) -> (String, String) {
+    let file_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(extension.as_str(), "md" | "markdown" | "mdx") {
+        return (
+            markdown_kind(),
+            if extension.is_empty() {
+                markdown_extension()
+            } else {
+                extension
+            },
+        );
+    }
+    let snapshot = if extension.is_empty() {
+        safe_snapshot_extension(&file_name)
+    } else {
+        safe_snapshot_extension(&extension)
+    };
+    (
+        "code".into(),
+        if snapshot == "bin" {
+            "txt".into()
+        } else {
+            snapshot
+        },
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ArchiveEntry {
@@ -137,6 +177,7 @@ impl DocumentArchive {
             .documents
             .iter()
             .position(|entry| path_key(Path::new(&entry.source_path)) == key);
+        let (kind, extension) = archive_kind_from_source(&canonical);
         let position = if let Some(position) = existing {
             position
         } else {
@@ -154,8 +195,8 @@ impl DocumentArchive {
                 source_exists: true,
                 size,
                 modified_ms,
-                document_kind: markdown_kind(),
-                snapshot_extension: markdown_extension(),
+                document_kind: kind.clone(),
+                snapshot_extension: extension.clone(),
             });
             self.index.documents.len() - 1
         };
@@ -170,8 +211,8 @@ impl DocumentArchive {
         entry.source_exists = true;
         entry.size = size;
         entry.modified_ms = modified_ms;
-        entry.document_kind = markdown_kind();
-        entry.snapshot_extension = markdown_extension();
+        entry.document_kind = kind;
+        entry.snapshot_extension = extension;
         if touch {
             entry.last_opened_ms = now_ms();
         }
@@ -201,7 +242,8 @@ impl DocumentArchive {
         let metadata = fs::metadata(&canonical).map_err(error_string)?;
         let bytes = fs::read(&canonical).map_err(error_string)?;
         let content = super::decode_text(&bytes);
-        let duplicate_id = self.index.documents.iter().filter(|entry| entry.document_kind == "markdown").find_map(|entry| {
+        let (incoming_kind, _) = archive_kind_from_source(&canonical);
+        let duplicate_id = self.index.documents.iter().filter(|entry| entry.document_kind == incoming_kind).find_map(|entry| {
             let snapshot = fs::read(self.snapshot_path_for_entry(entry)).ok()?;
             (super::decode_text(&snapshot) == content).then(|| entry.id.clone())
         });
@@ -235,8 +277,8 @@ impl DocumentArchive {
             .position(|entry| entry.id == id)
             .ok_or_else(|| "历史记录不存在".to_string())?;
         let source = PathBuf::from(&self.index.documents[position].source_path);
-        if self.index.documents[position].document_kind != "markdown" {
-            return Err("此保留副本不是 Markdown 文档".into());
+        if !is_text_archive_kind(&self.index.documents[position].document_kind) {
+            return Err("此保留副本不是文本文档".into());
         }
         let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
         let bytes = fs::read(&snapshot_path)
@@ -317,8 +359,8 @@ impl DocumentArchive {
             .iter()
             .position(|entry| entry.id == id)
             .ok_or_else(|| "历史记录不存在".to_string())?;
-        if self.index.documents[position].document_kind == "markdown" {
-            return Err("此保留副本是 Markdown 文档".into());
+        if is_text_archive_kind(&self.index.documents[position].document_kind) {
+            return Err("此保留副本是文本文档".into());
         }
         let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
         let snapshot_size = fs::metadata(&snapshot_path)
@@ -354,7 +396,7 @@ impl DocumentArchive {
             .ok_or_else(|| "历史记录不存在".to_string())?;
         let source = PathBuf::from(&self.index.documents[position].source_path);
         let source_exists = source.is_file();
-        if self.index.documents[position].document_kind != "markdown" {
+        if !is_text_archive_kind(&self.index.documents[position].document_kind) {
             return Err("Office 与 PDF 文档请使用二进制写回".into());
         }
         let snapshot_path = self.snapshot_path_for_entry(&self.index.documents[position]);
@@ -377,7 +419,7 @@ impl DocumentArchive {
             .position(|entry| entry.id == id)
             .ok_or_else(|| "历史记录不存在".to_string())?;
         let kind = self.index.documents[position].document_kind.as_str();
-        if kind == "markdown" || kind == "pdf" {
+        if kind == "markdown" || kind == "code" || kind == "pdf" {
             return Err("此文档类型不支持 Office 二进制写回".into());
         }
         let source = PathBuf::from(&self.index.documents[position].source_path);
@@ -670,6 +712,22 @@ mod tests {
 
         assert_eq!(retained.content, "# retained");
         assert!(!retained.entry.source_exists);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn records_code_files_as_text_snapshots() {
+        let root = test_root("code-archive");
+        let source_dir = root.join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("app.ts");
+        fs::write(&source, "export const n = 1;").unwrap();
+        let mut archive = DocumentArchive::load(root.join("archive")).unwrap();
+
+        let opened = archive.open_source(&source).unwrap();
+        assert_eq!(opened.entry.document_kind, "code");
+        assert_eq!(opened.entry.snapshot_extension, "ts");
+        assert_eq!(opened.content, "export const n = 1;");
         let _ = fs::remove_dir_all(root);
     }
 

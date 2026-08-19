@@ -68,6 +68,8 @@ export function askAiAbout(selection: AskAiSelection, intent: AskAiIntent = "ask
 
 export function selectionInside(root: EventTarget | null) {
   if (!(root instanceof Element)) return null;
+  const fromControl = selectionFromTextControl(root);
+  if (fromControl) return fromControl;
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
   const anchor = selection.anchorNode;
@@ -78,6 +80,18 @@ export function selectionInside(root: EventTarget | null) {
   if (text.length < 2) return null;
   const rect = selection.getRangeAt(0).getBoundingClientRect();
   return { text, rect };
+}
+
+export function selectionFromTextControl(root: Element) {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLTextAreaElement) && !(active instanceof HTMLInputElement)) return null;
+  if (!root.contains(active)) return null;
+  const start = active.selectionStart ?? 0;
+  const end = active.selectionEnd ?? 0;
+  if (end - start < 2) return null;
+  const text = active.value.slice(start, end).replace(/\u00a0/g, " ").trim();
+  if (text.length < 2) return null;
+  return { text, rect: active.getBoundingClientRect() };
 }
 
 export function ignoreAskAiTarget(target: EventTarget | null) {

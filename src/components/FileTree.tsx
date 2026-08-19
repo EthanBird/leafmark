@@ -1,4 +1,4 @@
-import { ChevronRight, FileSpreadsheet, FileText, Folder, FolderOpen, MoreHorizontal, MonitorPlay } from "lucide-react";
+import { ChevronRight, FileCode2, FileSpreadsheet, FileText, Folder, FolderOpen, MoreHorizontal, MonitorPlay } from "lucide-react";
 import type { MouseEvent } from "react";
 import type { TreeNode } from "../types";
 
@@ -17,7 +17,13 @@ export function FileTree({ nodes, selectedPath, expanded, onOpen, onToggle, onMe
       {nodes.map((node) => {
         const directory = node.entry.kind === "directory";
         const open = expanded.has(node.entry.path);
-        const DocumentIcon = node.entry.documentKind === "spreadsheet" ? FileSpreadsheet : node.entry.documentKind === "presentation" ? MonitorPlay : FileText;
+        const DocumentIcon = node.entry.documentKind === "spreadsheet"
+          ? FileSpreadsheet
+          : node.entry.documentKind === "presentation"
+            ? MonitorPlay
+            : node.entry.documentKind === "code"
+              ? FileCode2
+              : FileText;
         return (
           <div key={node.entry.path}>
             <div

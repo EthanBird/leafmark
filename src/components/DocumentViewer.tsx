@@ -1,4 +1,4 @@
-import { FileSpreadsheet, FileText, MonitorPlay } from "lucide-react";
+import { FileCode2, FileSpreadsheet, FileText, MonitorPlay } from "lucide-react";
 import { useMemo } from "react";
 import { officeAssetUrl } from "../office/office-client";
 import type { DocumentKind } from "../types";
@@ -20,5 +20,6 @@ export function DocumentViewer({ assetPath, name }: DocumentViewerProps) {
 export function documentKindIcon(kind: DocumentKind) {
   if (kind === "spreadsheet") return FileSpreadsheet;
   if (kind === "presentation") return MonitorPlay;
+  if (kind === "code") return FileCode2;
   return FileText;
 }

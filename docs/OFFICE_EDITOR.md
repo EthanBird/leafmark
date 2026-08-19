@@ -50,7 +50,7 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 当前打开的 Word / Excel / PPT 可以由内置 Agent 通过 `inspect_office`、`read_office`、`office_execute` 操作，对应仓库 `skills/wps-*/SKILL.md`（ZCode 风格 YAML `name`/`description`）。这些技能描述的是 LeafMark 本地 `OfficeSession`，不是安装版 WPS 的 COM / `wps_office_search`。设置 schema 6 会把上述 WPS skills 并入已有配置，且不会覆盖用户在 schema 6 之后的取消勾选。打开办公文档时才展开完整 skill 正文，避免 Markdown 会话被办公工作流占满上下文。
 
-- 划词后出现「解释 / 改写 / 翻译 / 总结 / 问 AI」；表格功能区也有「问 AI」，把当前选区交给 Agent。
+- 划词后出现「解释 / 改写 / 翻译 / 总结 / 问 AI」；Markdown 实时工具栏、源码选区与表格功能区都有「问 AI」，把当前选区交给 Agent。
 - Agent 回答可复制，或保存为文档库中的 Markdown（`agent-replies/`）。
 - 写入仍受「允许修改文档」开关保护；PDF 只读。主线程不把整份 OOXML 塞进提示词。
 

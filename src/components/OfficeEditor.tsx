@@ -26,7 +26,7 @@ export interface OfficeEditorHandle {
 
 interface OfficeEditorProps {
   documentKey: string;
-  kind: Exclude<DocumentKind, "markdown" | "unsupported">;
+  kind: Exclude<DocumentKind, "markdown" | "code" | "unsupported">;
   format: string;
   assetPath: string;
   name: string;

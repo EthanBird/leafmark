@@ -1,5 +1,6 @@
 mod library;
 mod agent_vcs;
+mod document_kinds;
 mod system_fonts;
 mod system_integration;
 #[cfg(not(target_os = "ios"))]
@@ -39,11 +40,9 @@ const EXPORT_STAGE_DIRECTORY: &str = "export-staging";
 const SHARED_EXPORT_DIRECTORY: &str = "shared-exports";
 const MAX_EXPORT_FILE_NAME_BYTES: usize = 220;
 const MAX_EXPORT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
-const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
-const WORD_EXTENSIONS: [&str; 3] = ["docx", "doc", "rtf"];
-const SPREADSHEET_EXTENSIONS: [&str; 5] = ["xlsx", "xls", "xlsb", "ods", "csv"];
-const PRESENTATION_EXTENSIONS: [&str; 3] = ["pptx", "ppt", "odp"];
-const PDF_EXTENSIONS: [&str; 1] = ["pdf"];
+use document_kinds::{
+    document_kind, highlight_language, is_markdown, is_supported_document, is_text_document,
+};
 const MAX_VIEWER_DOCUMENT_BYTES: u64 = 512 * 1024 * 1024;
 const SETTINGS_SCHEMA_VERSION: u32 = 6;
 const OFFICE_AGENT_SKILLS: [&str; 4] = ["wps-office", "wps-word", "wps-excel", "wps-ppt"];
@@ -461,6 +460,59 @@ fn read_document(
     let modified_ms = modified_ms(&metadata);
     let normalized = path_to_slash(&relative);
 
+    if is_text_document(&target) {
+        let kind = document_kind(&target).unwrap_or("markdown");
+        if let Some(cached) = inner.cache.get(&normalized, size, modified_ms) {
+            let archive = inner
+                .library
+                .record(&target, &cached.content, size, modified_ms, true)?;
+            return Ok(LoadedDocument {
+                path: normalized,
+                origin: "workspace",
+                archive_id: archive.id,
+                source_path: archive.source_path,
+                source_exists: true,
+                content: cached.content,
+                html: cached.html,
+                size,
+                modified_ms,
+                cached: true,
+                document_kind: kind,
+                asset_path: String::new(),
+                format: text_document_format(kind, &target),
+            });
+        }
+
+        let bytes = fs::read(&target).map_err(error_string)?;
+        let content = decode_text(&bytes);
+        let rendered = render_text_document(&content, kind, &target);
+        let archive = inner
+            .library
+            .record(&target, &content, size, modified_ms, true)?;
+        inner.cache.insert(CachedDocument {
+            relative_path: normalized.clone(),
+            content: content.clone(),
+            html: rendered.clone(),
+            size,
+            modified_ms,
+        });
+        return Ok(LoadedDocument {
+            path: normalized,
+            origin: "workspace",
+            archive_id: archive.id,
+            source_path: archive.source_path,
+            source_exists: true,
+            content,
+            html: rendered,
+            size,
+            modified_ms,
+            cached: false,
+            document_kind: kind,
+            asset_path: String::new(),
+            format: text_document_format(kind, &target),
+        });
+    }
+
     if !is_markdown(&target) {
         ensure_viewer_size(size)?;
         let kind = document_kind(&target).ok_or_else(|| "不支持此文档格式".to_string())?;
@@ -473,55 +525,7 @@ fn read_document(
         ));
     }
 
-    if let Some(cached) = inner.cache.get(&normalized, size, modified_ms) {
-        let archive = inner
-            .library
-            .record(&target, &cached.content, size, modified_ms, true)?;
-        return Ok(LoadedDocument {
-            path: normalized,
-            origin: "workspace",
-            archive_id: archive.id,
-            source_path: archive.source_path,
-            source_exists: true,
-            content: cached.content,
-            html: cached.html,
-            size,
-            modified_ms,
-            cached: true,
-            document_kind: "markdown",
-            asset_path: String::new(),
-            format: "MARKDOWN".into(),
-        });
-    }
-
-    let bytes = fs::read(&target).map_err(error_string)?;
-    let content = decode_text(&bytes);
-    let rendered = render_markdown_impl(&content);
-    let archive = inner
-        .library
-        .record(&target, &content, size, modified_ms, true)?;
-    inner.cache.insert(CachedDocument {
-        relative_path: normalized.clone(),
-        content: content.clone(),
-        html: rendered.clone(),
-        size,
-        modified_ms,
-    });
-    Ok(LoadedDocument {
-        path: normalized,
-        origin: "workspace",
-        archive_id: archive.id,
-        source_path: archive.source_path,
-        source_exists: true,
-        content,
-        html: rendered,
-        size,
-        modified_ms,
-        cached: false,
-        document_kind: "markdown",
-        asset_path: String::new(),
-        format: "MARKDOWN".into(),
-    })
+    Err("不支持此文档格式".into())
 }
 
 #[tauri::command]
@@ -539,7 +543,7 @@ fn load_external_document(path: &str, inner: &mut InnerState) -> Result<LoadedDo
         return Err("外部文档必须使用绝对路径".into());
     }
     ensure_supported_extension(&requested)?;
-    if is_markdown(&requested) {
+    if is_text_document(&requested) {
         let archived = inner.library.open_source(&requested)?;
         return Ok(loaded_from_archive(archived));
     }
@@ -562,7 +566,7 @@ fn open_archived_document(
 ) -> Result<LoadedDocument, String> {
     let mut inner = state.0.lock();
     let kind = inner.library.document_kind(&id)?.to_owned();
-    if kind == "markdown" {
+    if kind == "markdown" || kind == "code" {
         return Ok(loaded_from_archive(inner.library.open(&id)?));
     }
     let archived = inner.library.open_binary(&id)?;
@@ -592,7 +596,7 @@ fn save_archived_to_workspace(
 ) -> Result<String, String> {
     let mut inner = state.0.lock();
     let kind = inner.library.document_kind(&id)?.to_owned();
-    if kind != "markdown" {
+    if kind != "markdown" && kind != "code" {
         let archived = inner.library.open_binary(&id)?;
         let source = PathBuf::from(&archived.entry.source_path);
         if let Ok(relative) = source.strip_prefix(&inner.workspace) {
@@ -758,7 +762,7 @@ fn write_document(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let relative = validate_markdown_path(&relative_path)?;
+    let relative = validate_text_document_path(&relative_path)?;
     let mut inner = state.0.lock();
     let target = secure_target_path(&inner.workspace, &relative)?;
     if let Some(parent) = target.parent() {
@@ -1056,7 +1060,16 @@ fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<Ap
 }
 
 fn loaded_from_archive(archived: ArchivedContent) -> LoadedDocument {
-    let html = render_markdown_impl(&archived.content);
+    let kind = if archived.entry.document_kind == "code" {
+        "code"
+    } else {
+        "markdown"
+    };
+    let html = render_text_document(
+        &archived.content,
+        kind,
+        Path::new(&archived.entry.name),
+    );
     LoadedDocument {
         path: archived.entry.source_path.clone(),
         origin: "archive",
@@ -1068,9 +1081,13 @@ fn loaded_from_archive(archived: ArchivedContent) -> LoadedDocument {
         content: archived.content,
         html,
         cached: false,
-        document_kind: "markdown",
+        document_kind: kind,
         asset_path: String::new(),
-        format: "MARKDOWN".into(),
+        format: if kind == "code" {
+            archived.entry.snapshot_extension.to_ascii_uppercase()
+        } else {
+            "MARKDOWN".into()
+        },
     }
 }
 
@@ -1171,6 +1188,34 @@ fn render_markdown_impl(source: &str) -> String {
     let mut output = String::with_capacity(source.len().saturating_mul(2));
     html::push_html(&mut output, events.into_iter());
     output
+}
+
+fn render_text_document(source: &str, kind: &str, path: &Path) -> String {
+    if kind == "code" {
+        render_code_impl(source, highlight_language(path))
+    } else {
+        render_markdown_impl(source)
+    }
+}
+
+fn render_code_impl(source: &str, language: &str) -> String {
+    format!(
+        "<pre class=\"code-document\"><code class=\"language-{}\">{}</code></pre>\n",
+        escape_html(language),
+        escape_html(source)
+    )
+}
+
+fn text_document_format(kind: &str, path: &Path) -> String {
+    if kind == "code" {
+        path.extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_uppercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "TEXT".into())
+    } else {
+        "MARKDOWN".into()
+    }
 }
 
 enum SpecialBlock {
@@ -1464,6 +1509,15 @@ fn validate_markdown_path(value: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn validate_text_document_path(value: &str) -> Result<PathBuf, String> {
+    let path = validate_relative(value)?;
+    if is_text_document(&path) {
+        Ok(path)
+    } else {
+        Err("仅支持 Markdown 与代码/配置文本文件".into())
+    }
+}
+
 fn validate_document_path(value: &str) -> Result<PathBuf, String> {
     let path = validate_relative(value)?;
     ensure_supported_extension(&path)?;
@@ -1474,7 +1528,7 @@ fn ensure_markdown_extension(path: &Path) -> Result<(), String> {
     if is_markdown(path) {
         Ok(())
     } else {
-        Err("仅支持 .md 与 .markdown 文档".into())
+        Err("仅支持 .md、.markdown 与 .mdx 文档".into())
     }
 }
 
@@ -1482,7 +1536,7 @@ fn ensure_supported_extension(path: &Path) -> Result<(), String> {
     if is_supported_document(path) {
         Ok(())
     } else {
-        Err("支持 Markdown、Word、Excel、PowerPoint 与 PDF 文档".into())
+        Err("支持 Markdown、代码/配置、Word、Excel、PowerPoint 与 PDF 文档".into())
     }
 }
 
@@ -1492,35 +1546,6 @@ fn ensure_viewer_size(size: u64) -> Result<(), String> {
     } else {
         Err("文档超过 512 MB；为避免耗尽内存，LeafMark 已停止载入".into())
     }
-}
-
-fn document_kind(path: &Path) -> Option<&'static str> {
-    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    if MARKDOWN_EXTENSIONS.contains(&extension.as_str()) {
-        Some("markdown")
-    } else if WORD_EXTENSIONS.contains(&extension.as_str()) {
-        Some("word")
-    } else if SPREADSHEET_EXTENSIONS.contains(&extension.as_str()) {
-        Some("spreadsheet")
-    } else if PRESENTATION_EXTENSIONS.contains(&extension.as_str()) {
-        Some("presentation")
-    } else if PDF_EXTENSIONS.contains(&extension.as_str()) {
-        Some("pdf")
-    } else {
-        None
-    }
-}
-
-fn is_supported_document(path: &Path) -> bool {
-    document_kind(path).is_some()
-}
-
-fn is_markdown(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| {
-            MARKDOWN_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
-        })
 }
 
 fn secure_existing_path(root: &Path, relative: &Path) -> Result<PathBuf, String> {
@@ -2352,6 +2377,11 @@ mod tests {
         assert!(validate_markdown_path("../secret.md").is_err());
         assert!(validate_markdown_path("guide.txt").is_err());
         assert_eq!(
+            validate_text_document_path("src/app.ts").unwrap(),
+            PathBuf::from("src/app.ts")
+        );
+        assert_eq!(document_kind(Path::new("main.py")), Some("code"));
+        assert_eq!(
             validate_markdown_path("docs/guide.md").unwrap(),
             PathBuf::from("docs/guide.md")
         );
@@ -2509,16 +2539,18 @@ mod tests {
         fs::create_dir_all(&workspace).unwrap();
         fs::write(source.join("README.md"), "# 课程").unwrap();
         fs::write(source.join("第一章/推导.markdown"), "$x^2$").unwrap();
-        fs::write(source.join("第一章/忽略.txt"), "not markdown").unwrap();
+        fs::write(source.join("第一章/忽略.bin"), "not markdown").unwrap();
+        fs::write(source.join("第一章/示例.py"), "print(1)").unwrap();
 
         let result = copy_markdown_directory(&source, &workspace, &workspace).unwrap();
 
         assert_eq!(result.root_path, "课程笔记");
-        assert_eq!(result.files.len(), 2);
+        assert_eq!(result.files.len(), 3);
         assert!(workspace.join("课程笔记/README.md").is_file());
         assert!(workspace.join("课程笔记/第一章/推导.markdown").is_file());
+        assert!(workspace.join("课程笔记/第一章/示例.py").is_file());
         assert!(workspace.join("课程笔记/第一章/空目录").is_dir());
-        assert!(!workspace.join("课程笔记/第一章/忽略.txt").exists());
+        assert!(!workspace.join("课程笔记/第一章/忽略.bin").exists());
         let _ = fs::remove_dir_all(root);
     }
 

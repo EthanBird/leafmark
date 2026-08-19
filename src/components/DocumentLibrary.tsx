@@ -47,7 +47,7 @@ export function DocumentLibrary({
           <button className="archive-open" type="button" onClick={() => onOpen(entry)}>
             <span className="archive-title">
               <strong>{entry.name}</strong>
-              {entry.documentKind !== "markdown" && <i>{entry.snapshotExtension.toUpperCase()}</i>}
+              {entry.documentKind !== "markdown" && <i>{entry.snapshotExtension.toUpperCase() || entry.documentKind}</i>}
               {!entry.sourceExists && <em>保留副本</em>}
             </span>
             <span className="archive-path" title={entry.sourcePath}>{entry.sourcePath}</span>

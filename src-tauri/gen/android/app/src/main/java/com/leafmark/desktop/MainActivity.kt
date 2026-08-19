@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -243,8 +244,21 @@ class MainActivity : TauriActivity() {
       "application/x-markdown",
       "text/plain",
       "text/html",
+      "text/css",
+      "text/xml",
+      "text/javascript",
+      "application/javascript",
+      "application/json",
+      "application/xml",
+      "application/pdf",
       "image/png",
-      "application/pdf" -> normalized
+      "application/msword",
+      "application/rtf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> normalized
       else -> throw SecurityException("不支持分享此文件类型：$mimeType")
     }
   }
@@ -298,19 +312,81 @@ class MainActivity : TauriActivity() {
       intent.action = Intent.ACTION_VIEW
     }
 
-    val streams = sharedStreams(intent)
+    val streams = sharedStreams(intent).map { namedIncomingUri(it) ?: it }.distinct()
     if (streams.isNotEmpty()) {
-      if (intent.clipData == null) {
-        val clip = ClipData.newUri(contentResolver, "Markdown document", streams.first())
-        streams.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
-        intent.clipData = clip
-      }
+      val clip = ClipData.newUri(contentResolver, streams.first().lastPathSegment ?: "document", streams.first())
+      streams.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+      intent.clipData = clip
       intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      // Chat apps often attach a caption in EXTRA_TEXT. Tauri treats a text/plain
-      // caption as a second document, so discard it when a real file is present.
       intent.removeExtra(Intent.EXTRA_TEXT)
+      if (intent.action == Intent.ACTION_SEND) {
+        intent.putExtra(Intent.EXTRA_STREAM, streams.first())
+      } else if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
+        intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(streams))
+      }
+      if (intent.data == null) {
+        intent.data = streams.first()
+      } else {
+        namedIncomingUri(intent.data!!)?.let { intent.data = it }
+      }
+    } else {
+      intent.data?.let { namedIncomingUri(it)?.let { named ->
+        intent.data = named
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      } }
     }
     return intent
+  }
+
+  private fun namedIncomingUri(uri: Uri): Uri? {
+    if (uri.scheme != ContentResolver.SCHEME_CONTENT) return null
+    if (uri.authority == "${BuildConfig.APPLICATION_ID}.fileprovider") return null
+    val displayName = queryDisplayName(uri) ?: uri.lastPathSegment ?: return null
+    val safeName = sanitizeIncomingName(displayName)
+    if (safeName.isBlank()) return null
+    return try {
+      materializeIncoming(uri, safeName)
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun queryDisplayName(uri: Uri): String? {
+    return try {
+      contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (index < 0) null else cursor.getString(index)
+      }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun sanitizeIncomingName(value: String): String {
+    val trimmed = value.substringAfterLast('/').substringAfterLast('\\').trim()
+    return trimmed.filter { character ->
+      !character.isISOControl() && character !in "/\\:*?\"<>|"
+    }.take(120)
+  }
+
+  private fun materializeIncoming(uri: Uri, fileName: String): Uri {
+    val directory = File(cacheDir, "incoming-opens").apply { mkdirs() }
+    val destination = File(directory, fileName)
+    contentResolver.openInputStream(uri)?.use { input ->
+      destination.outputStream().use { output ->
+        val copied = input.copyTo(output, DEFAULT_BUFFER_SIZE)
+        if (copied > 32L * 1024L * 1024L) {
+          destination.delete()
+          throw IOException("Android 文档超过 32 MB，已拒绝导入以保护移动设备内存")
+        }
+      }
+    } ?: throw FileNotFoundException("无法读取分享的文档")
+    return FileProvider.getUriForFile(
+      this,
+      "${BuildConfig.APPLICATION_ID}.fileprovider",
+      destination,
+    )
   }
 
   @Suppress("DEPRECATION")

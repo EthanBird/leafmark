@@ -11,6 +11,8 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - Office/PDF 打开后保存逐字节原件快照；源文件被删除后，历史与收藏仍可继续打开同一份文档
 - 默认进入所见即所得的实时渲染编辑；标题、引用、列表及粗体、斜体、删除线、行内代码和链接标记会立即原位成形
 - GFM：表格、任务列表、删除线、脚注与智能标点
+- Markdown 围栏与独立源代码/配置文件使用 highlight.js 按需高亮（TypeScript、Python、JSON、YAML 等主流语言）；不是完整 IDE
+- 文档库默认收起文件夹，展开层级按文档库路径记住
 - KaTeX：`$…$`、`$$…$$`、`\(...\)`、`\[...\]`、`math` / `tex` / `latex` 围栏
 - Mermaid：完整 Mermaid 运行时，进入可视区域时才按需加载和绘制
 - 文档目录搜索、新建、重命名、删除、导入和本地链接跳转；空文件夹也会完整显示
@@ -23,9 +25,9 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - 本机字体、版心、字号、行高、动效和渲染能力设置
 - 不遮挡正文的停靠式文章大纲
 - Windows / Linux 自绘主题标题栏与本地化应用名称
-- Windows 资源管理器“打开方式”、右键打开与双击 `.md` / `.markdown`
+- Windows 资源管理器“打开方式”、右键打开与双击 `.md` / `.markdown`、Office 文档以及主流代码/配置文件
 - Windows 启动、文件关联检测与默认应用设置全程不创建命令行窗口
-- Android 文件管理器、聊天、网盘等应用通过 `ACTION_VIEW`、`ACTION_EDIT` 或分享 Intent 打开 Markdown
+- Android 文件管理器、聊天、网盘等应用通过 `ACTION_VIEW`、`ACTION_EDIT` 或分享 Intent 打开 Markdown、WPS/Office 与代码文件
 - Android 可把当前 Markdown 或导出的 HTML、PNG、PDF 作为真实文件发送到微信、邮件、网盘等应用
 - Android SAF 导出由原生 `ContentResolver` 提交并校验完整字节数，兼容本机 DocumentsProvider 与云盘 `content://` 目标
 - Android 手机抽屉导航、触控热区、系统安全区与系统字体扫描
@@ -39,14 +41,14 @@ LeafMark，中文名“一叶”，是从 DRPA 知识文档体验中独立出来
 - 内置按需启动的流式文档 Agent；原生支持 ChatGPT/Codex、Claude、Gemini Code Assist 与 GitHub Copilot 订阅 OAuth，并完整提供 jcode 的 OpenAI-compatible provider catalog
 - 订阅模式分别使用 Codex Responses、Anthropic Messages、Gemini Code Assist 与 Copilot 协议，不会把订阅账户错误回退到按量 API Key
 - Agent 支持自动刷新登录、文档读写、并行只读子 Agent、会话检索、长期记忆、Skills、网页读取、Streamable HTTP MCP 和本机终端
-- 可在 Markdown / Word / Excel / PPT 中划词问 AI；助手回答可复制或保存为 Markdown。WPS 系列 Skills（`skills/wps-*`）驱动本地 OOXML 引擎，不是安装版 WPS COM
+- 可在 Markdown / 代码文件 / Word / Excel / PPT 中划词问 AI；助手回答可复制或保存为 Markdown。WPS 系列 Skills（`skills/wps-*`）驱动本地 OOXML 引擎，不是安装版 WPS COM
 - Agent 可用 `create / replace / append` 方式把长篇 Markdown 直接流式写入目标标签；中止时保留已生成部分并可随整轮版本回退
 - Agent 每轮对话都建立不依赖 Git 的本地文件版本；消息、文档工具和 PowerShell 修改可一起回退或重做，重做不会再次执行命令
 - Windows 终端工具固定使用隐藏窗口 PowerShell；版本化回合采用可完整捕获的前台命令，支持超时和破坏性命令 Rust 级拦截，不会弹出黑色命令行
 
 ## 系统打开与文档保留
 
-安装包会把 LeafMark 注册为 Markdown、Word、电子表格、演示文稿与 PDF 的打开方式。Windows 也可以进入“设置 → 系统集成”，注册 LeafMark 并打开 Markdown 默认应用确认页；Android 首次打开 Markdown 时，在系统“打开方式”选择器中选择 LeafMark，并可按需选择“始终”。
+安装包会把 LeafMark 注册为 Markdown、源代码/配置、Word、电子表格、演示文稿与 PDF 的打开方式。Windows 也可以进入“设置 → 系统集成”，注册 LeafMark 并打开 Markdown 默认应用确认页；Android 首次从微信或其他应用打开这些文件时，在系统“打开方式”选择器中选择 LeafMark，并可按需选择“始终”。
 
 文档每次打开或保存时，LeafMark 都会在应用数据目录中更新独立快照。Markdown 与 Office 副本可继续编辑；PDF 保存逐字节原件并以只读模式打开。历史记录不是易失的路径列表：即使源文件已经不存在，保留副本仍然可读、可编辑。清除历史只清理未收藏文档；收藏及其副本不会被批量清除。
 

@@ -66,6 +66,117 @@
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
                 <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
             </intent-filter>
+            <!-- WeChat / file managers often SEND office attachments or mislabel them as octet-stream. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/rtf" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.ms-excel.sheet.binary.macroenabled.12" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/javascript" />
+                <data android:mimeType="text/javascript" />
+                <data android:mimeType="text/css" />
+                <data android:mimeType="text/html" />
+                <data android:mimeType="text/xml" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/x-yaml" />
+                <data android:mimeType="text/yaml" />
+                <data android:mimeType="text/x-python" />
+                <data android:mimeType="text/x-java-source" />
+                <data android:mimeType="text/x-c" />
+                <data android:mimeType="text/x-script.python" />
+                <data android:mimeType="application/sql" />
+                <data android:mimeType="text/x-sql" />
+                <data android:mimeType="application/x-sh" />
+                <data android:mimeType="text/x-sh" />
+                <data android:mimeType="application/toml" />
+                <data android:mimeType="application/x-toml" />
+            </intent-filter>
+            <!-- file:// and some content:// providers include the extension in the path. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.md" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.markdown" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.docx" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.xlsx" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.pptx" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.pdf" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.doc" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.xls" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.ppt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.rtf" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.txt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.json" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.py" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.js" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.ts" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.tsx" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.java" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.kt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.go" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.rs" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.xml" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.yml" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.yaml" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.html" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.css" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.sql" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.sh" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.php" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.rb" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.c" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.cpp" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.h" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.cs" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.vue" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.toml" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.ini" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.swift" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.dart" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.lua" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.ps1" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.md" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.markdown" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.docx" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.xlsx" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.pptx" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.pdf" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.txt" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.json" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.py" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.js" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.ts" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.java" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.go" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.rs" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.xml" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.yml" />
+                <data android:scheme="content" android:mimeType="*/*" android:pathPattern=".*\\.yaml" />
+            </intent-filter>
         </activity>
 
         <service

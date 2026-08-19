@@ -1,3 +1,4 @@
+use crate::document_kinds::is_supported_document;
 use serde::Serialize;
 #[cfg(windows)]
 use std::{
@@ -11,10 +12,6 @@ use std::{
 #[cfg(windows)]
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
-const DOCUMENT_EXTENSIONS: [&str; 14] = [
-    "md", "markdown", "docx", "doc", "rtf", "xlsx", "xls", "xlsb", "ods", "csv", "pptx",
-    "ppt", "odp", "pdf",
-];
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -177,14 +174,6 @@ pub(crate) fn configure_markdown_association() -> Result<AssociationStatus, Stri
     Err("当前平台不支持在应用内配置默认 Markdown 打开方式".into())
 }
 
-fn is_supported_document(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| {
-            DOCUMENT_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
-        })
-}
-
 #[cfg(windows)]
 fn reg_add(key: &str, value_name: Option<&str>, data: &str) -> Result<(), String> {
     let root = RegKey::predef(HKEY_CURRENT_USER);
@@ -238,14 +227,15 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("open.md"), "# open").unwrap();
         fs::write(root.join("deck.pptx"), "test").unwrap();
-        fs::write(root.join("ignore.txt"), "ignore").unwrap();
+        fs::write(root.join("notes.py"), "print(1)").unwrap();
+        fs::write(root.join("ignore.bin"), "ignore").unwrap();
 
         let paths = document_paths_from_args(
-            ["leafmark", "open.md", "deck.pptx", "ignore.txt", "missing.md"],
+            ["leafmark", "open.md", "deck.pptx", "notes.py", "ignore.bin", "missing.md"],
             &root,
         );
 
-        assert_eq!(paths.len(), 2);
+        assert_eq!(paths.len(), 3);
         assert!(paths[0].ends_with("open.md"));
         let _ = fs::remove_dir_all(root);
     }

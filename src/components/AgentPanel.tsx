@@ -952,7 +952,7 @@ export function buildAgentTools(settings: AgentSettings, host: AgentDocumentHost
   });
   const tools: AgentRuntimeTool[] = [
     tool("read_document", "读取当前文档或文档库中的指定 Markdown。", { path: { type: "string", description: "留空读取当前文档" } }, [], async (input) => host.readDocument(stringArg(input.path))),
-    tool("list_documents", "列出文档库中的 Markdown 与 Office 文件。", { limit: { type: "integer", minimum: 1, maximum: 200 } }, [], async (input) => host.documents.filter((entry) => entry.kind === "file").slice(0, numberArg(input.limit, 80)).map((entry) => `${entry.path}${entry.documentKind && entry.documentKind !== "markdown" ? ` [${entry.documentKind}]` : ""}`).join("\n") || "文档库为空"),
+    tool("list_documents", "列出文档库中的 Markdown、代码/配置与 Office 文件。", { limit: { type: "integer", minimum: 1, maximum: 200 } }, [], async (input) => host.documents.filter((entry) => entry.kind === "file").slice(0, numberArg(input.limit, 80)).map((entry) => `${entry.path}${entry.documentKind && entry.documentKind !== "markdown" ? ` [${entry.documentKind}]` : ""}`).join("\n") || "文档库为空"),
     tool("search_documents", "在文档库中搜索内容，返回文件名与命中片段。", { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 30 } }, ["query"], async (input) => JSON.stringify(await host.searchDocuments(stringArg(input.query), numberArg(input.limit, 10)))),
     tool("open_document", "在 LeafMark 中打开指定文档标签。", { path: { type: "string" } }, ["path"], async (input) => { await host.openDocument(stringArg(input.path)); return `已打开 ${stringArg(input.path)}`; }),
     tool("replace_current_document", "用完整 Markdown 替换当前文档。仅在已获得编辑权限时可用。", { content: { type: "string" } }, ["content"], async (input) => {

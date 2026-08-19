@@ -4,6 +4,7 @@ import type { AppSettings } from "./types";
 
 let katexModule: Promise<typeof import("katex")> | null = null;
 let katexStyles: Promise<unknown> | null = null;
+let highlightModule: Promise<typeof import("highlight.js/lib/common")> | null = null;
 
 export interface OutlineItem {
   id: string;
@@ -40,7 +41,7 @@ export async function enhanceDocument(
   root: HTMLElement,
   settings: AppSettings,
   documentDirectory: string,
-  options: { eager?: boolean } = {},
+  options: { eager?: boolean; highlight?: boolean } = {},
 ): Promise<{ outline: OutlineItem[]; cleanup: () => void }> {
   const outline = collectOutline(root);
 
@@ -59,6 +60,7 @@ export async function enhanceDocument(
   }
 
   const observers: IntersectionObserver[] = [];
+  if (options.highlight !== false) await highlightCodeBlocks(root);
   if (settings.mathEnabled) await renderMath(root);
   if (settings.mermaidEnabled) {
     if (options.eager) {
@@ -73,6 +75,62 @@ export async function enhanceDocument(
     outline,
     cleanup: () => observers.forEach((observer) => observer.disconnect()),
   };
+}
+
+async function highlightCodeBlocks(root: HTMLElement) {
+  const nodes = Array.from(root.querySelectorAll<HTMLElement>("pre code")).filter((node) => {
+    if (node.dataset.highlighted === "true" || node.classList.contains("hljs")) return false;
+    return !node.closest("[data-mermaid-source],[data-math-source],.mermaid-block,.diagram-source");
+  });
+  if (!nodes.length) return;
+  highlightModule ??= import("highlight.js/lib/common").then(async (mod) => {
+    await registerExtraHighlightLanguages(mod.default);
+    return mod;
+  });
+  const { default: hljs } = await highlightModule;
+  for (const node of nodes) {
+    try {
+      const language = node.className.match(/language-([\w#.+-]+)/)?.[1];
+      if (language && language !== "plaintext" && hljs.getLanguage(language)) {
+        hljs.highlightElement(node);
+      } else {
+        const result = hljs.highlightAuto(node.textContent ?? "");
+        node.innerHTML = result.value;
+        node.classList.add("hljs");
+      }
+      node.dataset.highlighted = "true";
+    } catch {
+      node.dataset.highlighted = "error";
+    }
+  }
+}
+
+async function registerExtraHighlightLanguages(hljs: (typeof import("highlight.js/lib/common"))["default"]) {
+  const extras = [
+    ["dart", () => import("highlight.js/lib/languages/dart")],
+    ["dockerfile", () => import("highlight.js/lib/languages/dockerfile")],
+    ["graphql", () => import("highlight.js/lib/languages/graphql")],
+    ["powershell", () => import("highlight.js/lib/languages/powershell")],
+    ["protobuf", () => import("highlight.js/lib/languages/protobuf")],
+    ["scala", () => import("highlight.js/lib/languages/scala")],
+    ["elixir", () => import("highlight.js/lib/languages/elixir")],
+    ["haskell", () => import("highlight.js/lib/languages/haskell")],
+    ["cmake", () => import("highlight.js/lib/languages/cmake")],
+    ["groovy", () => import("highlight.js/lib/languages/groovy")],
+    ["nginx", () => import("highlight.js/lib/languages/nginx")],
+    ["vim", () => import("highlight.js/lib/languages/vim")],
+    ["wasm", () => import("highlight.js/lib/languages/wasm")],
+    ["less", () => import("highlight.js/lib/languages/less")],
+    ["objectivec", () => import("highlight.js/lib/languages/objectivec")],
+    ["erlang", () => import("highlight.js/lib/languages/erlang")],
+    ["lisp", () => import("highlight.js/lib/languages/lisp")],
+    ["dos", () => import("highlight.js/lib/languages/dos")],
+  ] as const;
+  await Promise.all(extras.map(async ([name, load]) => {
+    if (hljs.getLanguage(name)) return;
+    const language = await load();
+    hljs.registerLanguage(name, language.default);
+  }));
 }
 
 async function renderMath(root: HTMLElement) {
