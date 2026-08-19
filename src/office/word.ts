@@ -143,14 +143,15 @@ function parseParagraph(
   const after = Number(xmlAttr(/<w:spacing\b[^>]*>/.exec(xml)?.[0] ?? "", "w:after"));
   const line = Number(xmlAttr(/<w:spacing\b[^>]*>/.exec(xml)?.[0] ?? "", "w:line"));
   const pageBreak = /<w:pageBreakBefore\b/.test(xml);
+  const listLevel = Number.isFinite(ilvl) ? ilvl : 0;
   return {
     kind: heading ? "heading" : "paragraph",
     level: heading ? Number(heading[1]) : undefined,
     style: style || undefined,
     align,
     list: numId
-      ? { type: lists.get(numId) ?? (numId === 1 ? "bullet" : "number"), level: Number.isFinite(ilvl) ? ilvl : 0, numId }
-      : undefined,
+      ? { type: lists.get(numId) ?? (numId === 1 ? "bullet" : "number"), level: listLevel, numId }
+      : listFromParagraphStyle(style, listLevel),
     indent: Number.isFinite(left) && left > 0 ? Math.round(left / 720) : undefined,
     spacingBefore: Number.isFinite(before) && before ? before : undefined,
     spacingAfter: Number.isFinite(after) && after ? after : undefined,
@@ -158,6 +159,20 @@ function parseParagraph(
     pageBreak: pageBreak || undefined,
     runs: runs.length ? runs : [{ text: "" }],
     originalXml: xml,
+  };
+}
+
+function listFromParagraphStyle(style: string, level: number): WordList | undefined {
+  const name = style.replace(/[\s_-]+/g, "").toLowerCase();
+  if (!name) return undefined;
+  const numbered = /listnumber|listnumbered|编号列表|^编号$/.test(name);
+  const bulleted = /listbullet|项目符号/.test(name);
+  if (!numbered && !bulleted) return undefined;
+  const suffix = /(\d+)$/.exec(name);
+  return {
+    type: numbered ? "number" : "bullet",
+    level: suffix ? Math.max(0, Number(suffix[1]) - 1) : level,
+    numId: numbered ? 2 : 1,
   };
 }
 

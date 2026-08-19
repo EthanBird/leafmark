@@ -268,9 +268,10 @@ function SlideShapeView({
     height: `${item.height * 100}%`,
   };
   if (item.kind === "image") {
+    const bleed = item.width >= 0.92 && item.height >= 0.92 && item.x <= 0.04 && item.y <= 0.04;
     return (
       <div
-        className={`slide-shape slide-image${active ? " active" : ""}`}
+        className={`slide-shape slide-image${bleed ? " slide-image-bleed" : ""}${active ? " active" : ""}`}
         style={box}
         onMouseDown={onMouseDown}
         onClick={onSelect}
@@ -293,7 +294,9 @@ function SlideShapeView({
           <tbody>
             {item.table.map((row, rowIndex) => (
               <tr key={rowIndex}>
-                {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
+                {row.map((cell, cellIndex) => cell.hidden ? null : (
+                  <td key={cellIndex} colSpan={cell.colSpan} rowSpan={cell.rowSpan}>{cell.text}</td>
+                ))}
               </tr>
             ))}
           </tbody>
@@ -303,7 +306,7 @@ function SlideShapeView({
   }
   return (
     <div
-            className={`slide-shape${active ? " active" : ""}${item.fromLayout ? " slide-layout-ph" : ""}`}
+      className={`slide-shape slide-text${active ? " active" : ""}${item.fromLayout ? " slide-layout-ph" : ""}`}
       contentEditable={!playing && !item.fromLayout}
       suppressContentEditableWarning
       style={{

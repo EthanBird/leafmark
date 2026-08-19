@@ -10,6 +10,13 @@ export interface SlideRun {
   color?: string;
 }
 
+export interface SlideTableCell {
+  text: string;
+  colSpan?: number;
+  rowSpan?: number;
+  hidden?: boolean;
+}
+
 export interface SlideShape {
   id: string;
   x: number;
@@ -25,7 +32,7 @@ export interface SlideShape {
   fill?: string;
   kind?: "text" | "rect" | "image" | "table";
   src?: string;
-  table?: string[][];
+  table?: SlideTableCell[][];
   placeholder?: string;
   fromLayout?: boolean;
   originalXml?: string;
@@ -93,9 +100,7 @@ function parsePptxSlide(xml: string, index: number, path: string, slideWidth: nu
   const imageCount = shapes.filter((shape) => shape.kind === "image").length || [...xml.matchAll(/<(?:p:)?pic\b/g)].length;
   return {
     index,
-    title: shapes.find((shape) => (shape.kind === "text" || !shape.kind) && shape.text.trim())?.text.slice(0, 80)
-      || shapes.find((shape) => shape.text.trim())?.text.slice(0, 80)
-      || `幻灯片 ${index + 1}`,
+    title: slideTitleFromShapes(shapes, `幻灯片 ${index + 1}`),
     background: background.color || "#ffffff",
     backgroundImage: background.image,
     shapes,
@@ -203,16 +208,14 @@ function parseSlideTree(xml: string, index: number, slideWidth: number, slideHei
     const tableXml = /<(?:a:)?tbl\b[\s\S]*?<\/(?:a:)?tbl>/.exec(frame)?.[0];
     if (!tableXml) continue;
     const transform = parseXfrm(frame);
-    const rows = [...tableXml.matchAll(/<(?:a:)?tr\b[\s\S]*?<\/(?:a:)?tr>/g)].map((row) =>
-      [...row[0].matchAll(/<(?:a:)?tc\b[\s\S]*?<\/(?:a:)?tc>/g)].map((cell) => extractSlideText(cell[0])),
-    );
+    const rows = parseSlideTable(tableXml);
     push({
       id: `${index}:${shapes.length + Math.random().toString(36).slice(2, 6)}`,
       x: transform ? transform.x / slideWidth : 0.08,
       y: transform ? transform.y / slideHeight : 0.2,
       width: transform ? transform.cx / slideWidth : 0.84,
       height: transform ? transform.cy / slideHeight : Math.max(0.12, rows.length * 0.08),
-      text: rows.map((row) => row.join(" ")).join("\n"),
+      text: rows.map((row) => row.filter((cell) => !cell.hidden).map((cell) => cell.text).join(" ")).join("\n"),
       fontSize: 14,
       color: "#202124",
       bold: false,
@@ -257,6 +260,49 @@ function extractSlideText(xml: string) {
     .map((match) => decodeXml(match[1]))
     .join("")
     .replace(/\u000b/g, "\n");
+}
+
+function parseSlideTable(tableXml: string): SlideTableCell[][] {
+  const rows = [...tableXml.matchAll(/<(?:a:)?tr\b[\s\S]*?<\/(?:a:)?tr>/g)].map((row) =>
+    [...row[0].matchAll(/<(?:a:)?tc\b[\s\S]*?<\/(?:a:)?tc>/g)].map((cell) => {
+      const open = cell[0].slice(0, cell[0].indexOf(">") + 1);
+      const pr = /<(?:a:)?tcPr\b[\s\S]*?<\/(?:a:)?tcPr>/.exec(cell[0])?.[0] ?? "";
+      const gridSpan = Number(xmlAttr(open, "gridSpan") || xmlAttr(/<(?:a:)?gridSpan\b[^>]*>/.exec(pr)?.[0] ?? "", "val"));
+      const vMergeEl = /<(?:a:)?vMerge\b[^>]*>/.exec(pr)?.[0] ?? "";
+      const vMergeAttr = xmlAttr(open, "vMerge");
+      const vRestart = vMergeAttr === "restart" || xmlAttr(vMergeEl, "val") === "restart";
+      const vContinue = Boolean(vMergeAttr && vMergeAttr !== "restart") || (Boolean(vMergeEl) && !vRestart);
+      const hMerge = xmlAttr(open, "hMerge") === "1" || /<(?:a:)?hMerge\b/.test(pr);
+      return {
+        text: extractSlideText(cell[0]),
+        colSpan: gridSpan > 1 ? gridSpan : undefined,
+        hidden: hMerge || vContinue || undefined,
+        vRestart,
+      };
+    }),
+  );
+  return rows.map((row, rowIndex) => row.map((cell, cellIndex) => {
+    const { vRestart, ...rest } = cell;
+    if (!vRestart) return rest;
+    let rowSpan = 1;
+    for (let next = rowIndex + 1; next < rows.length; next += 1) {
+      if (!rows[next][cellIndex]?.hidden) break;
+      rowSpan += 1;
+    }
+    return rowSpan > 1 ? { ...rest, rowSpan } : rest;
+  }));
+}
+
+export function slideTitleFromShapes(shapes: SlideShape[], fallback: string) {
+  const usable = (shape: SlideShape) => {
+    const text = shape.text.trim();
+    if (!text || shape.kind === "image" || shape.kind === "table") return "";
+    return text.replace(/\s+/g, " ");
+  };
+  const byPlaceholder = shapes.find((shape) => /^(ctrTitle|title|subTitle)\b/.test(shape.placeholder ?? "") && usable(shape));
+  if (byPlaceholder) return usable(byPlaceholder).slice(0, 80);
+  const texts = shapes.filter((shape) => usable(shape)).sort((a, b) => a.y - b.y || b.fontSize - a.fontSize);
+  return (texts[0] ? usable(texts[0]) : "").slice(0, 80) || fallback;
 }
 
 export function openOdp(buffer: ArrayBuffer): PresentationDocument {
@@ -307,7 +353,7 @@ export function updateShapeText(slide: SlideModel, shapeId: string, text: string
   shape.text = text;
   shape.dirty = true;
   slide.dirty = true;
-  slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+  slide.title = slideTitleFromShapes(slide.shapes, `幻灯片 ${slide.index + 1}`);
 }
 
 export function updateShapeStyle(slide: SlideModel, shapeId: string, patch: Partial<Pick<SlideShape, "bold" | "italic" | "fontSize" | "align" | "color" | "text" | "fill">>) {
@@ -317,7 +363,7 @@ export function updateShapeStyle(slide: SlideModel, shapeId: string, patch: Part
   shape.dirty = true;
   shape.originalXml = undefined;
   slide.dirty = true;
-  if (patch.text !== undefined) slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+  if (patch.text !== undefined) slide.title = slideTitleFromShapes(slide.shapes, `幻灯片 ${slide.index + 1}`);
 }
 
 export function deleteShape(slide: SlideModel, shapeId: string) {
@@ -325,7 +371,7 @@ export function deleteShape(slide: SlideModel, shapeId: string) {
   if (index < 0) return undefined;
   const [removed] = slide.shapes.splice(index, 1);
   slide.dirty = true;
-  slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+  slide.title = slideTitleFromShapes(slide.shapes, `幻灯片 ${slide.index + 1}`);
   return removed;
 }
 

@@ -30,6 +30,8 @@ describe("real Office visual fixtures", () => {
       expect(table.rows[2]?.[0]?.hidden).toBe(true);
     }
     expect(document.header).toContain("LeafMark 视觉样张");
+    expect(document.blocks.some((block) => block.kind !== "table" && block.list?.type === "bullet")).toBe(true);
+    expect(document.blocks.some((block) => block.kind !== "table" && block.list?.type === "number")).toBe(true);
   });
 
   it("parses the python-pptx sample: cover picture, table, title layout", () => {
@@ -38,9 +40,13 @@ describe("real Office visual fixtures", () => {
     const cover = presentation.slides[0];
     expect(cover.shapes.some((shape) => shape.kind === "image" && shape.src?.startsWith("data:image/"))).toBe(true);
     expect(cover.shapes.some((shape) => shape.text.includes("一叶演示文稿样张"))).toBe(true);
+    expect(cover.title).toContain("一叶演示文稿样张");
     const content = presentation.slides[1];
+    expect(content.title).toContain("图片与表格应同时可见");
     expect(content.shapes.some((shape) => shape.kind === "image" && shape.src?.startsWith("data:image/"))).toBe(true);
-    expect(content.shapes.some((shape) => shape.kind === "table" && (shape.table?.[0] ?? []).includes("Word"))).toBe(true);
+    const table = content.shapes.find((shape) => shape.kind === "table");
+    expect(table?.table?.some((row) => row.some((cell) => cell.text.includes("Word")))).toBe(true);
+    expect(table?.table?.[0]?.[0]?.colSpan).toBe(3);
     const layout = presentation.slides[2];
     expect(layout.shapes.some((shape) => shape.text.includes("版式占位符标题"))).toBe(true);
     expect(cover.shapes.some((shape) => shape.text.includes("1/27/13") || shape.text.includes("‹#›"))).toBe(false);

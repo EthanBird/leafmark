@@ -71,7 +71,7 @@ function OfficeGallery() {
   };
 
   return (
-    <div className="office-gallery">
+    <div className="office-gallery" data-gallery-ready={word && ppt ? "1" : "0"}>
       <header className="office-gallery-bar">
         <strong>LeafMark 视觉预览</strong>
         <button type="button" className={tab === "word" ? "active" : ""} onClick={() => select("word")}>Word</button>

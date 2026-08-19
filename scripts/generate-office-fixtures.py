@@ -35,9 +35,6 @@ def paint_cover(path: Path) -> None:
         draw.line((0, y, 1280, y), fill=(15, 80 + mix // 4, 90 + mix // 3))
     draw.ellipse((820, -80, 1480, 580), fill="#14b8a6")
     draw.ellipse((70, 420, 420, 860), fill="#042f2e")
-    draw.text((88, 168), "一叶", font=font(92), fill="white")
-    draw.text((92, 290), "LeafMark 视觉样张", font=font(36), fill="#ccfbf1")
-    draw.text((92, 360), "真实 OOXML · 图片 / 表格 / 超链接", font=font(22), fill="#99f6e4")
     image.save(path, "PNG", optimize=True)
 
 
@@ -158,6 +155,9 @@ def write_docx(cover: Path, photo: Path, icon: Path, dest: Path) -> None:
     doc.add_heading("产品要点", level=2)
     for item in ("本地打开 OOXML，不上传", "未改动的 XML 原样写回 Word / WPS", "首屏只渲染可见内容"):
         doc.add_paragraph(item, style="List Bullet")
+    doc.add_heading("检查顺序", level=2)
+    for item in ("先确认浮动图只环绕本段，不漏到标题和表格", "再确认超链接是真实 URL，不是 rId", "最后看合并表格的跨行跨列"):
+        doc.add_paragraph(item, style="List Number")
 
     pic = doc.add_paragraph()
     pic.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -206,10 +206,12 @@ def write_pptx(cover: Path, photo: Path, dest: Path) -> None:
 
     cover_slide = prs.slides.add_slide(blank)
     cover_slide.shapes.add_picture(str(cover), Emu(0), Emu(0), prs.slide_width, prs.slide_height)
-    title_box = cover_slide.shapes.add_textbox(Inches(0.7), Inches(2.2), Inches(8.4), Inches(1.4))
+    title_box = cover_slide.shapes.add_textbox(Inches(0.7), Inches(2.05), Inches(9.6), Inches(1.2))
     set_run(title_box.text_frame.paragraphs[0], "一叶演示文稿样张", 40, True, "F8FAFC")
-    sub = cover_slide.shapes.add_textbox(Inches(0.7), Inches(3.6), Inches(9.2), Inches(1.0))
-    set_run(sub.text_frame.paragraphs[0], "全幅背景图 + 标题。若背景丢失，这一页会变成白底。", 18, False, "CCFBF1")
+    sub = cover_slide.shapes.add_textbox(Inches(0.7), Inches(3.35), Inches(9.6), Inches(0.7))
+    set_run(sub.text_frame.paragraphs[0], "LeafMark 视觉样张 · 全幅背景图 + 标题文本框", 20, False, "CCFBF1")
+    note = cover_slide.shapes.add_textbox(Inches(0.7), Inches(4.15), Inches(10.2), Inches(1.0))
+    set_run(note.text_frame.paragraphs[0], "若背景丢失，这一页会变成白底。标题必须来自文本框，不能只印在 PNG 里。", 16, False, "99F6E4")
 
     content = prs.slides.add_slide(blank)
     fill = content.background.fill
@@ -218,16 +220,15 @@ def write_pptx(cover: Path, photo: Path, dest: Path) -> None:
     heading = content.shapes.add_textbox(Inches(0.6), Inches(0.28), Inches(12), Inches(0.7))
     set_run(heading.text_frame.paragraphs[0], "图片与表格应同时可见", 28, True)
     content.shapes.add_picture(str(photo), Inches(0.6), Inches(1.2), Inches(5.6), Inches(3.7))
-    table_shape = content.shapes.add_table(3, 3, Inches(6.6), Inches(1.4), Inches(6.0), Inches(3.2)).table
-    headers = ("项", "Word", "PPT")
-    row1 = ("图片", "内嵌 + 浮动", "全幅 + 插图")
-    row2 = ("表格", "合并单元格", "本页右侧")
-    for col, value in enumerate(headers):
-        table_shape.cell(0, col).text = value
-    for col, value in enumerate(row1):
+    table_shape = content.shapes.add_table(4, 3, Inches(6.6), Inches(1.25), Inches(6.0), Inches(4.0)).table
+    table_shape.cell(0, 0).merge(table_shape.cell(0, 2))
+    table_shape.cell(0, 0).text = "对照表（跨三列）"
+    for col, value in enumerate(("项", "Word", "PPT")):
         table_shape.cell(1, col).text = value
-    for col, value in enumerate(row2):
+    for col, value in enumerate(("图片", "内嵌 + 浮动", "全幅 + 插图")):
         table_shape.cell(2, col).text = value
+    for col, value in enumerate(("表格", "合并单元格", "本页右侧")):
+        table_shape.cell(3, col).text = value
 
     title_layout = prs.slide_layouts[0]
     layout_slide = prs.slides.add_slide(title_layout)

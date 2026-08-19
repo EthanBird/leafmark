@@ -151,6 +151,17 @@ describe("WordprocessingML editor codec", () => {
     expect(blocks[0].rows[1]?.[2]?.text).toBe("C2");
   });
 
+  it("treats ListBullet / ListNumber paragraph styles as lists without numPr", () => {
+    const { blocks } = parseWordBlocks(`
+      <w:document><w:body>
+        <w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr><w:r><w:t>圆点</w:t></w:r></w:p>
+        <w:p><w:pPr><w:pStyle w:val="ListNumber"/></w:pPr><w:r><w:t>编号</w:t></w:r></w:p>
+      </w:body></w:document>
+    `);
+    expect(blocks[0]).toMatchObject({ list: { type: "bullet", numId: 1 } });
+    expect(blocks[1]).toMatchObject({ list: { type: "number", numId: 2 } });
+  });
+
   it("marks floating drawings as wrap/float images", () => {
     const { blocks } = parseWordBlocks(`
       <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:body>
@@ -241,7 +252,7 @@ describe("PresentationML editor codec", () => {
     const slide = presentation.slides[0];
     expect(slide.shapes.find((shape) => shape.kind !== "image" && shape.kind !== "table")).toMatchObject({ x: 0.1, y: 0.1, width: 0.8, height: 0.2, text: "标题" });
     expect(slide.shapes.find((shape) => shape.kind === "image")?.src?.startsWith("data:image/png")).toBe(true);
-    expect(slide.shapes.find((shape) => shape.kind === "table")?.table).toEqual([["左", "右"]]);
+    expect(slide.shapes.find((shape) => shape.kind === "table")?.table).toEqual([[{ text: "左" }, { text: "右" }]]);
   });
 
   it("reads slide background images and layout placeholders", () => {
@@ -257,5 +268,26 @@ describe("PresentationML editor codec", () => {
     const slide = presentation.slides[0];
     expect(slide.backgroundImage?.startsWith("data:image/png")).toBe(true);
     expect(slide.shapes.some((shape) => shape.fromLayout && shape.text === "版式标题")).toBe(true);
+  });
+
+  it("parses DrawingML table gridSpan / vMerge and prefers text shapes for titles", () => {
+    const bytes = zipSync({
+      "ppt/presentation.xml": strToU8(`<p:presentation><p:sldSz cx="1000" cy="500"/></p:presentation>`),
+      "ppt/slides/slide1.xml": strToU8(`<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree>
+        <p:graphicFrame><p:xfrm><a:off x="100" y="200"/><a:ext cx="800" cy="200"/></p:xfrm><a:tbl>
+          <a:tr><a:tc gridSpan="2"><a:tcPr/><a:txBody><a:p><a:r><a:t>跨列</a:t></a:r></a:p></a:txBody></a:tc><a:tc hMerge="1"><a:tcPr/><a:txBody><a:p/></a:txBody></a:tc></a:tr>
+          <a:tr><a:tc><a:tcPr><a:vMerge val="restart"/></a:tcPr><a:txBody><a:p><a:r><a:t>跨行</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>B2</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+          <a:tr><a:tc><a:tcPr><a:vMerge/></a:tcPr><a:txBody><a:p/></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>B3</a:t></a:r></a:p></a:txBody></a:tc></a:tr>
+        </a:tbl></p:graphicFrame>
+        <p:sp><p:spPr><a:xfrm><a:off x="100" y="40"/><a:ext cx="800" cy="80"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:t>正确标题</a:t></a:r></a:p></p:txBody></p:sp>
+      </p:spTree></p:cSld></p:sld>`),
+    });
+    const slide = openPptx(arrayBuffer(bytes)).slides[0];
+    expect(slide.title).toBe("正确标题");
+    const table = slide.shapes.find((shape) => shape.kind === "table")?.table;
+    expect(table?.[0]?.[0]).toMatchObject({ text: "跨列", colSpan: 2 });
+    expect(table?.[0]?.[1]?.hidden).toBe(true);
+    expect(table?.[1]?.[0]).toMatchObject({ text: "跨行", rowSpan: 2 });
+    expect(table?.[2]?.[0]?.hidden).toBe(true);
   });
 });
