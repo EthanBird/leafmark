@@ -191,7 +191,7 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
               <button type="button" title="居中" disabled={!shape} onClick={() => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { align: "center" } })}><AlignCenter size={14} /></button>
               <button type="button" title="右对齐" disabled={!shape} onClick={() => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { align: "right" } })}><AlignRight size={14} /></button>
               <select aria-label="字号" disabled={!shape} value={shape?.fontSize ?? 18} onChange={(event) => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { fontSize: Number(event.target.value) } })}>
-                {[12, 14, 16, 18, 20, 24, 28, 32, 36, 44, 54, 72].map((size) => <option key={size} value={size}>{size}</option>)}
+                {[12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 54, 72].map((size) => <option key={size} value={size}>{size}</option>)}
               </select>
               <label className="office-color">文字<input type="color" value={shape?.color || "#202124"} onChange={(event) => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { color: event.target.value } })} /></label>
               <label className="office-color">填充<input type="color" value={shape?.fill || "#ffffff"} onChange={(event) => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { fill: event.target.value } })} /></label>

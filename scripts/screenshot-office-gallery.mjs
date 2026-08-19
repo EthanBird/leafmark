@@ -100,7 +100,7 @@ try {
   const insertTab = await page.$(".office-ribbon-tabs button:nth-child(2)");
   await insertTab.click();
   await page.click('button[title="插入表格"]');
-  await page.waitForFunction(() => document.querySelectorAll(".word-table-wrap").length >= 2);
+  await page.waitForFunction(() => document.querySelectorAll(".word-table-wrap").length >= 2, { timeout: 15_000 });
   await shot("leafmark-word-insert-table.png");
 
   await page.goto(`${base}/office-gallery.html#ppt`, { waitUntil: "networkidle0" });
@@ -112,8 +112,8 @@ try {
   const title = await page.$(".slide-canvas [data-shape-kind='text']");
   await title.click({ clickCount: 3 });
   await page.keyboard.type("编辑后的封面标题");
-  await page.click(".office-ribbon");
-  await page.waitForFunction(() => document.querySelector(".slide-canvas [data-shape-kind='text']")?.innerText.includes("编辑后的封面标题"));
+  await page.click(".slide-notes textarea");
+  await page.waitForFunction(() => document.querySelector(".slide-canvas [data-shape-kind='text']")?.innerText.includes("编辑后的封面标题"), { timeout: 15_000 });
   const pptText = await page.$eval(".slide-canvas [data-shape-kind='text']", (el) => el.innerText);
   await assert(pptText.includes("编辑后的封面标题"), "改 PPT 标题后仍能看见新文字");
   await assert(!looksLikeSource(pptText), `改 PPT 标题后不是源代码（实际：${pptText.slice(0, 80)}）`);
@@ -124,7 +124,7 @@ try {
   await page.waitForFunction(() => {
     const node = document.querySelector(".slide-canvas [data-shape-kind='text']");
     return node && (node.style.fontWeight === "700" || Number(node.style.fontWeight) >= 700);
-  });
+  }, { timeout: 15_000 });
   await shot("leafmark-ppt-bold.png");
 
   const slideButtons = await page.$$(".slide-list button");
@@ -133,7 +133,7 @@ try {
   await shot("leafmark-ppt-edit-slide2.png");
 
   await page.click('button[title="文本框"]');
-  await page.waitForFunction(() => [...document.querySelectorAll(".slide-canvas [data-shape-kind='text']")].some((el) => el.innerText.includes("文本框")));
+  await page.waitForFunction(() => [...document.querySelectorAll(".slide-canvas [data-shape-kind='text']")].some((el) => el.innerText.includes("文本框")), { timeout: 15_000 });
   await shot("leafmark-ppt-add-textbox.png");
 
   const engineError = await page.$eval("[data-office-error]", (el) => el.textContent).catch(() => "");
