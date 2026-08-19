@@ -344,7 +344,7 @@ function WordParagraphEditor({
       if (live !== next) return;
     }
     node.innerHTML = html;
-  }, [html]);
+  }, [html, block.kind, block.level]);
   const Tag = (block.kind === "heading" ? `h${Math.max(1, Math.min(6, block.level ?? 2))}` : "p") as "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
   const listClass = block.list ? `word-list word-list-${block.list.type}` : "";
   return (

@@ -84,16 +84,17 @@ try {
   await page.click('button[title="粗体"]');
   await page.waitForFunction(() => {
     const node = document.querySelector("[data-word-index='1']");
-    return Boolean(node?.querySelector("b,strong,[style*='font-weight']"));
-  });
+    const html = node?.innerHTML ?? "";
+    return Boolean(node?.querySelector("b,strong,[style*='font-weight']") || /font-weight:\s*700/.test(html));
+  }, { timeout: 15_000 });
   await shot("leafmark-word-bold.png");
 
   await page.click("[data-word-index='1']");
   await page.click('button[title="标题 2"]');
   await page.waitForFunction(() => {
-    const node = document.querySelector("h2[data-word-index='1']");
-    return Boolean(node?.innerText.includes("这是一份"));
-  });
+    const node = document.querySelector("[data-word-index='1']");
+    return node?.tagName === "H2" && (node.innerText || "").includes("这是一份");
+  }, { timeout: 15_000 });
   await shot("leafmark-word-heading.png");
 
   const insertTab = await page.$(".office-ribbon-tabs button:nth-child(2)");
