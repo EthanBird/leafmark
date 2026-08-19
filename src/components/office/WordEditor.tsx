@@ -273,8 +273,10 @@ function WordBlockEditor({
   onSplit: (offset: number) => void;
 }) {
   if (block.kind === "table") {
-    return <div className="word-table-wrap" data-word-block onFocus={onFocus}><table><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td
+    return <div className="word-table-wrap" data-word-block onFocus={onFocus}><table><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => cell.hidden ? null : <td
       key={cellIndex}
+      colSpan={cell.colSpan}
+      rowSpan={cell.rowSpan}
       contentEditable={editable}
       suppressContentEditableWarning
       onBlur={(event) => {
@@ -335,6 +337,11 @@ function WordParagraphEditor({
         paddingTop: block.spacingBefore ? block.spacingBefore / 20 : undefined,
       }}
       onFocus={onFocus}
+      onClick={(event) => {
+        const anchor = (event.target as HTMLElement).closest("a");
+        if (!anchor) return;
+        if (!event.ctrlKey && !event.metaKey) event.preventDefault();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();

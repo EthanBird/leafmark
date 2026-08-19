@@ -1,6 +1,6 @@
 import { decodeXml, encodeXml, xmlAttr } from "./xml";
 import { clonePackage, findPackagePart, packageText, setPackageText, type OfficePackage, unzipPackage, zipPackage } from "./package";
-import { parseXfrm, relationshipMedia } from "./media";
+import { findRelationshipTarget, parseXfrm, relationshipMedia, resolvePackagePart } from "./media";
 
 export interface SlideRun {
   text: string;
@@ -26,6 +26,8 @@ export interface SlideShape {
   kind?: "text" | "rect" | "image" | "table";
   src?: string;
   table?: string[][];
+  placeholder?: string;
+  fromLayout?: boolean;
   originalXml?: string;
   dirty?: boolean;
 }
@@ -34,6 +36,7 @@ export interface SlideModel {
   index: number;
   title: string;
   background: string;
+  backgroundImage?: string;
   shapes: SlideShape[];
   imageCount: number;
   path: string;
@@ -73,21 +76,69 @@ export function openPptx(buffer: ArrayBuffer): PresentationDocument {
 }
 
 function parsePptxSlide(xml: string, index: number, path: string, slideWidth: number, slideHeight: number, files?: OfficePackage): SlideModel {
-  const background = /<(?:a:)?srgbClr[^>]*val="([0-9A-Fa-f]{6})"/.exec(/<(?:p:)?bg\b[\s\S]*?<\/(?:p:)?bg>/.exec(xml)?.[0] ?? "")?.[1] ?? "ffffff";
   const relsPath = path.replace(/slides\/([^/]+)$/, "slides/_rels/$1.rels");
+  const relsXml = files ? packageText(files, relsPath, false) : "";
   const media = files ? relationshipMedia(files, relsPath, path).media : new Map<string, string>();
+  const layoutTarget = findRelationshipTarget(relsXml, "slideLayout");
+  const layoutPath = files && layoutTarget ? resolvePackagePart(path, layoutTarget) : "";
+  const layoutXml = layoutPath ? packageText(files!, layoutPath, false) : "";
+  const layoutRelsPath = layoutPath ? layoutPath.replace(/slideLayouts\/([^/]+)$/, "slideLayouts/_rels/$1.rels") : "";
+  const layoutMedia = layoutPath && files ? relationshipMedia(files, layoutRelsPath, layoutPath).media : new Map<string, string>();
+  const slideBg = parseSlideBackground(xml, media);
+  const layoutBg = parseSlideBackground(layoutXml, layoutMedia);
+  const background = slideBg.color || slideBg.image ? slideBg : layoutBg;
   const tree = /<(?:p:)?spTree\b[\s\S]*<\/(?:p:)?spTree>/.exec(xml)?.[0] ?? xml;
   const shapes = parseSlideTree(tree, index, slideWidth, slideHeight, media);
+  if (layoutXml) mergeLayoutPlaceholders(shapes, layoutXml, index, slideWidth, slideHeight, layoutMedia);
   const imageCount = shapes.filter((shape) => shape.kind === "image").length || [...xml.matchAll(/<(?:p:)?pic\b/g)].length;
   return {
     index,
     title: shapes.find((shape) => shape.text.trim())?.text.slice(0, 80) || `幻灯片 ${index + 1}`,
-    background: `#${background}`,
+    background: background.color || "#ffffff",
+    backgroundImage: background.image,
     shapes,
     imageCount,
     path,
     originalXml: xml,
   };
+}
+
+function parseSlideBackground(xml: string, media: Map<string, string>) {
+  const bg = /<(?:p:)?bg\b[\s\S]*?<\/(?:p:)?bg>/.exec(xml)?.[0] ?? "";
+  if (!bg) return { color: "", image: undefined as string | undefined };
+  const color = /<(?:a:)?srgbClr[^>]*val="([0-9A-Fa-f]{6})"/.exec(bg)?.[1] ?? "ffffff";
+  const embed = xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(bg)?.[0] ?? "", "r:embed")
+    || xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(bg)?.[0] ?? "", "r:link");
+  return { color: `#${color}`, image: embed ? media.get(embed) : undefined };
+}
+
+function placeholderKey(xml: string) {
+  const ph = /<(?:p:)?ph\b[^>]*>/.exec(xml)?.[0];
+  if (!ph) return "";
+  return `${xmlAttr(ph, "type") || "body"}:${xmlAttr(ph, "idx") || "0"}`;
+}
+
+function mergeLayoutPlaceholders(
+  shapes: SlideShape[],
+  layoutXml: string,
+  index: number,
+  slideWidth: number,
+  slideHeight: number,
+  media: Map<string, string>,
+) {
+  const present = new Set(shapes.map((shape) => shape.placeholder).filter(Boolean));
+  const tree = /<(?:p:)?spTree\b[\s\S]*<\/(?:p:)?spTree>/.exec(layoutXml)?.[0] ?? layoutXml;
+  const extras = parseSlideTree(tree, index, slideWidth, slideHeight, media)
+    .filter((shape) => shape.placeholder && !present.has(shape.placeholder) && (shape.kind === "text" || !shape.kind));
+  extras.forEach((shape, extraIndex) => {
+    shapes.push({
+      ...shape,
+      id: `${index}:layout:${extraIndex}`,
+      fromLayout: true,
+      originalXml: undefined,
+      dirty: false,
+    });
+  });
 }
 
 function parseSlideTree(xml: string, index: number, slideWidth: number, slideHeight: number, media: Map<string, string>, origin?: { x: number; y: number; sx: number; sy: number }): SlideShape[] {
@@ -184,6 +235,7 @@ function parseSlideTree(xml: string, index: number, slideWidth: number, slideHei
       italic: /<(?:a:)?rPr\b[^>]*i="1"/.test(shape),
       align: alignValue === "ctr" ? "center" : alignValue === "r" ? "right" : "left",
       kind: "text",
+      placeholder: placeholderKey(shape) || undefined,
       originalXml: shape,
     });
   }
@@ -444,7 +496,7 @@ function serializeSlideXml(slide: SlideModel, document: PresentationDocument) {
       xml = xml.replace(shape.originalXml, next);
       shape.originalXml = next;
     }
-    const missing = slide.shapes.filter((shape) => !shape.originalXml);
+    const missing = slide.shapes.filter((shape) => !shape.originalXml && !shape.fromLayout);
     if (missing.length) {
       const extra = missing.map((shape) => shapeXml(shape, document)).join("");
       xml = xml.replace(/<\/(?:p:)?spTree>/, `${extra}</p:spTree>`);
@@ -452,7 +504,7 @@ function serializeSlideXml(slide: SlideModel, document: PresentationDocument) {
     return xml;
   }
   if (slide.originalXml && !slide.dirty) return slide.originalXml;
-  const shapes = slide.shapes.map((shape) => shape.originalXml && (shape.kind === "image" || shape.kind === "table")
+  const shapes = slide.shapes.filter((shape) => !shape.fromLayout).map((shape) => shape.originalXml && (shape.kind === "image" || shape.kind === "table")
     ? rewriteShapeXfrm(shape.originalXml, shape, document)
     : shapeXml(shape, document)).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"${slide.hidden ? ` show="0"` : ""}><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${slide.background.replace(/^#/, "")}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${document.width}" cy="${document.height}"/><a:chOff x="0" y="0"/><a:chExt cx="${document.width}" cy="${document.height}"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;

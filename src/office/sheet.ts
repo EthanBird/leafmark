@@ -84,6 +84,14 @@ export interface SheetViewport {
   cells: ViewportCell[];
   freeze?: { row: number; col: number };
   merges?: SheetMerge[];
+  colWidths?: Array<[number, number]>;
+}
+
+export const DEFAULT_COL_PX = 92;
+
+export function colCharsToPx(chars?: number) {
+  if (chars == null || !Number.isFinite(chars) || chars <= 0) return DEFAULT_COL_PX;
+  return Math.max(36, Math.round(chars * 8 + 5));
 }
 
 function cellMap() {
@@ -350,6 +358,15 @@ function openViaSheetJs(buffer: ArrayBuffer, format: string): WorkbookModel {
         cols: item.e.c - item.s.c + 1,
       }));
     }
+    const cols = sheet["!cols"];
+    if (cols?.length) {
+      const widths = new Map<number, number>();
+      cols.forEach((col, index) => {
+        if (col?.wch && Number.isFinite(col.wch)) widths.set(index, col.wch);
+        else if (col?.wpx && Number.isFinite(col.wpx)) widths.set(index, Math.max(1, (col.wpx - 5) / 8));
+      });
+      if (widths.size) model.colWidths = widths;
+    }
     return model;
   });
   const model: WorkbookModel = {
@@ -482,7 +499,17 @@ export function readViewport(workbook: WorkbookModel, sheetName: string, rowStar
       });
     }
   }
-  return { name: sheet.name, rows: sheet.rows, cols: sheet.cols, rowStart, colStart, cells, freeze: sheet.freeze, merges: sheet.merges };
+  return {
+    name: sheet.name,
+    rows: sheet.rows,
+    cols: sheet.cols,
+    rowStart,
+    colStart,
+    cells,
+    freeze: sheet.freeze,
+    merges: sheet.merges,
+    colWidths: sheet.colWidths ? [...sheet.colWidths.entries()] : undefined,
+  };
 }
 
 export function formatCellDisplay(cell: SheetCell) {

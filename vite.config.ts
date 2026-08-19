@@ -22,9 +22,16 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes("node_modules/mermaid")) return "mermaid";
           if (id.includes("node_modules/katex")) return "katex";
+          if (id.includes("node_modules/pdfjs-dist")) return "pdfjs";
           return undefined;
         },
       },
     },
+  },
+  optimizeDeps: {
+    exclude: ["pdfjs-dist"],
+  },
+  worker: {
+    format: "es",
   },
 });

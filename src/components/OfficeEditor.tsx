@@ -1,9 +1,8 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 import { AlertTriangle } from "lucide-react";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   isOfficeEditableFormat,
-  officeAssetUrl,
   officeDocumentStatus,
   openOfficeDocument,
   serializeOfficeDocument,
@@ -13,6 +12,7 @@ import type { PresentationOpenResult, SpreadsheetOpenResult, WordOpenResult } fr
 import type { DocumentKind } from "../types";
 import { PresentationEditor } from "./office/PresentationEditor";
 import { SpreadsheetEditor } from "./office/SpreadsheetEditor";
+import { PdfViewer } from "./office/PdfViewer";
 import { ViewerLoading, ViewerMessage } from "./office/ViewerChrome";
 import { WordEditor } from "./office/WordEditor";
 
@@ -113,11 +113,3 @@ const OfficeDocumentEditor = forwardRef<OfficeEditorHandle, Omit<OfficeEditorPro
   },
 );
 
-function PdfViewer({ assetPath, name }: { assetPath: string; name: string }) {
-  const source = useMemo(() => officeAssetUrl(assetPath), [assetPath]);
-  return (
-    <div className="binary-viewer pdf-viewer">
-      <iframe src={source} title={`PDF：${name}`} />
-    </div>
-  );
-}

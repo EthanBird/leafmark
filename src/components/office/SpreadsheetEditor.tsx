@@ -12,11 +12,12 @@ import {
 } from "../../office/office-client";
 import { a1Range } from "../../office/office-agent";
 import type { CellFormat, SheetMerge, SheetViewport, ViewportCell } from "../../office/sheet";
+import { colCharsToPx, DEFAULT_COL_PX } from "../../office/sheet";
 import type { SpreadsheetOpenResult } from "../../office/types";
 import { AskAiRibbonButton } from "../AskAiToolbar";
 
 const ROW_H = 24;
-const COL_W = 92;
+const COL_W = DEFAULT_COL_PX;
 const HEADER_W = 46;
 const HEADER_H = 24;
 const NUM_FMTS: Array<{ value: CellFormat["numFmt"]; label: string }> = [
@@ -39,8 +40,12 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
   const [cells, setCells] = useState(() => cellMap(initial.active));
   const [merges, setMerges] = useState<SheetMerge[]>(initial.active?.merges ?? []);
   const [freeze, setFreeze] = useState(initial.active?.freeze ?? { row: 0, col: 0 });
+  const [colWidths, setColWidths] = useState(() => new Map<number, number>(initial.active?.colWidths ?? []));
+  const [scroll, setScroll] = useState({ top: 0, left: 0 });
   const [selection, setSelection] = useState({ row: 0, col: 0, row2: 0, col2: 0 });
-  const dragging = useRef(false);
+  const dragMode = useRef<"select" | "fill" | null>(null);
+  const fillOrigin = useRef<{ row: number; col: number; row2: number; col2: number } | null>(null);
+  const selectionRef = useRef(selection);
   const [formula, setFormula] = useState(initial.active?.cells.find((cell) => cell.r === 0 && cell.c === 0)?.formula ?? "");
   const [editing, setEditing] = useState<string | null>(null);
   const [range, setRange] = useState({ rowStart: 0, colStart: 0, rowCount: 80, colCount: 26 });
@@ -53,6 +58,30 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
   const colStartSel = Math.min(selection.col, selection.col2);
   const colEndSel = Math.max(selection.col, selection.col2);
   const selected = cells.get(`${selection.row}:${selection.col}`);
+  selectionRef.current = selection;
+
+  const colStarts: number[] = [];
+  {
+    let acc = 0;
+    for (let col = 0; col <= totalCols; col += 1) {
+      colStarts.push(acc);
+      if (col < totalCols) acc += colCharsToPx(colWidths.get(col));
+    }
+  }
+  const sheetWidth = HEADER_W + (colStarts[totalCols] ?? totalCols * COL_W);
+  const colPx = (col: number) => colCharsToPx(colWidths.get(col));
+  const colAtPx = (x: number) => {
+    let lo = 0;
+    let hi = Math.max(0, totalCols - 1);
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if ((colStarts[mid] ?? 0) <= x) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  const cellLeft = (col: number) => HEADER_W + (colStarts[col] ?? col * COL_W) + (col < freeze.col ? scroll.left : 0);
+  const cellTop = (row: number) => HEADER_H + row * ROW_H + (row < freeze.row ? scroll.top : 0);
 
   const applyViewport = (viewport: SheetViewport) => {
     setUsed({ rows: viewport.rows, cols: viewport.cols });
@@ -60,6 +89,13 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
     if (viewport.merges) setMerges(viewport.merges);
     else setMerges([]);
     if (viewport.freeze) setFreeze(viewport.freeze);
+    else setFreeze({ row: 0, col: 0 });
+    if (viewport.colWidths) {
+      setColWidths((current) => {
+        if (current.size === viewport.colWidths!.length && viewport.colWidths!.every(([col, width]) => current.get(col) === width)) return current;
+        return new Map(viewport.colWidths);
+      });
+    }
     setCells((current) => {
       const next = new Map(current);
       for (const cell of viewport.cells) next.set(`${cell.r}:${cell.c}`, cell);
@@ -85,7 +121,14 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
         const colCount = Math.ceil(node.clientWidth / COL_W) + 6;
         const next = { rowStart, colStart, rowCount, colCount };
         setRange(next);
+        setScroll({ top: node.scrollTop, left: node.scrollLeft });
         void loadSheetViewport(documentKey, sheetName, rowStart, rowCount, colStart, colCount).then(applyViewport);
+        if (freeze.row > 0 && rowStart > 0) {
+          void loadSheetViewport(documentKey, sheetName, 0, freeze.row, colStart, colCount).then(applyViewport);
+        }
+        if (freeze.col > 0 && colStart > 0) {
+          void loadSheetViewport(documentKey, sheetName, rowStart, rowCount, 0, freeze.col).then(applyViewport);
+        }
       });
     };
     node.addEventListener("scroll", onScroll, { passive: true });
@@ -93,7 +136,7 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
       cancelAnimationFrame(frame);
       node.removeEventListener("scroll", onScroll);
     };
-  }, [documentKey, sheetName]);
+  }, [documentKey, sheetName, freeze.row, freeze.col]);
 
   useEffect(() => {
     setFormula(selected?.formula || selected?.display || "");
@@ -208,31 +251,63 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
     const scroller = scrollerRef.current;
     if (!scroller) return null;
     const box = scroller.getBoundingClientRect();
-    const col = Math.max(0, Math.min(totalCols - 1, Math.floor((clientX - box.left + scroller.scrollLeft - HEADER_W) / COL_W)));
+    const col = Math.max(0, Math.min(totalCols - 1, colAtPx(clientX - box.left + scroller.scrollLeft - HEADER_W)));
     const row = Math.max(0, Math.min(totalRows - 1, Math.floor((clientY - box.top + scroller.scrollTop - HEADER_H) / ROW_H)));
     return { row, col };
   };
 
   useEffect(() => {
     const onMove = (event: MouseEvent) => {
-      if (!dragging.current) return;
+      if (!dragMode.current) return;
       const cell = cellFromPoint(event.clientX, event.clientY);
       if (!cell) return;
       event.preventDefault();
       setSelection((current) => current.row2 === cell.row && current.col2 === cell.col ? current : { ...current, row2: cell.row, col2: cell.col });
     };
-    const onUp = () => { dragging.current = false; };
+    const onUp = () => {
+      const mode = dragMode.current;
+      dragMode.current = null;
+      if (mode !== "fill") {
+        fillOrigin.current = null;
+        return;
+      }
+      const origin = fillOrigin.current;
+      fillOrigin.current = null;
+      if (!origin) return;
+      const current = selectionRef.current;
+      const r0 = Math.min(origin.row, origin.row2);
+      const c0 = Math.min(origin.col, origin.col2);
+      const r1 = Math.max(origin.row, origin.row2, current.row, current.row2);
+      const c1 = Math.max(origin.col, origin.col2, current.col, current.col2);
+      const rowCount = r1 - r0 + 1;
+      const colCount = c1 - c0 + 1;
+      const extraRows = r1 - Math.max(origin.row, origin.row2);
+      const extraCols = c1 - Math.max(origin.col, origin.col2);
+      if (rowCount <= 1 && colCount <= 1) return;
+      if (extraRows >= extraCols) {
+        void run({ op: "sheetFill", name: sheetName, row: r0, col: c0, rowCount, colCount });
+      } else {
+        void run({ op: "sheetFillRight", name: sheetName, row: r0, col: c0, rowCount, colCount });
+      }
+    };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [totalRows, totalCols]);
+  }, [totalRows, totalCols, sheetName, documentKey]);
+
   const visibleRows: number[] = [];
   const visibleCols: number[] = [];
-  for (let row = range.rowStart; row < Math.min(totalRows, range.rowStart + range.rowCount); row += 1) visibleRows.push(row);
-  for (let col = range.colStart; col < Math.min(totalCols, range.colStart + range.colCount); col += 1) visibleCols.push(col);
+  for (let row = 0; row < freeze.row; row += 1) visibleRows.push(row);
+  for (let row = Math.max(freeze.row, range.rowStart); row < Math.min(totalRows, range.rowStart + range.rowCount); row += 1) {
+    if (!visibleRows.includes(row)) visibleRows.push(row);
+  }
+  for (let col = 0; col < freeze.col; col += 1) visibleCols.push(col);
+  for (let col = Math.max(freeze.col, range.colStart); col < Math.min(totalCols, range.colStart + range.colCount); col += 1) {
+    if (!visibleCols.includes(col)) visibleCols.push(col);
+  }
 
   const covered = (row: number, col: number) => merges.some((item) => !(item.r === row && item.c === col) && row >= item.r && row < item.r + item.rows && col >= item.c && col < item.c + item.cols);
 
@@ -286,7 +361,7 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
               <button type="button" title="插入列" onClick={() => void run({ op: "sheetInsert", name: sheetName, axis: "col", index: selection.col, count: 1 })}><Columns3 size={14} /></button>
               <button type="button" title="删除行" onClick={() => void run({ op: "sheetDelete", name: sheetName, axis: "row", index: selection.row, count: 1 })}><Trash2 size={14} /></button>
               <button type="button" title="删除列" onClick={() => void run({ op: "sheetDelete", name: sheetName, axis: "col", index: selection.col, count: 1 })}>删列</button>
-              <label className="office-field">列宽 <input type="number" min={4} max={80} defaultValue={10} onBlur={(event) => void run({ op: "sheetWidth", name: sheetName, col: selection.col, width: Number(event.target.value) || 10 })} /></label>
+              <label className="office-field">列宽 <input key={`${sheetName}:${selection.col}:${colWidths.get(selection.col) ?? 10}`} type="number" min={4} max={80} defaultValue={colWidths.get(selection.col) ?? 10} onBlur={(event) => void run({ op: "sheetWidth", name: sheetName, col: selection.col, width: Number(event.target.value) || 10 })} /></label>
             </>
           )}
           {tab === "data" && (
@@ -320,42 +395,70 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
         </div>
       </div>
       <div className="sheet-scroll sheet-virtual" ref={scrollerRef} onMouseDown={(event) => {
-        if (event.button !== 0 || (event.target as HTMLElement).closest(".sheet-cell, .sheet-cell-input")) return;
+        if (event.button !== 0 || (event.target as HTMLElement).closest(".sheet-cell, .sheet-cell-input, .sheet-fill-handle")) return;
         const cell = cellFromPoint(event.clientX, event.clientY);
         if (!cell) return;
-        dragging.current = true;
+        dragMode.current = "select";
         setSelection({ row: cell.row, col: cell.col, row2: cell.row, col2: cell.col });
         setEditing(null);
       }}>
-        <div className="sheet-spacer" style={{ width: HEADER_W + totalCols * COL_W, height: HEADER_H + totalRows * ROW_H }}>
-          <div className="sheet-corner" />
-          {visibleCols.map((col) => <div key={`h${col}`} className="sheet-col-header" style={{ left: HEADER_W + col * COL_W, width: COL_W }}>{colName(col)}</div>)}
-          {visibleRows.map((row) => <div key={`r${row}`} className="sheet-row-header" style={{ top: HEADER_H + row * ROW_H }}>{row + 1}</div>)}
+        <div className="sheet-spacer" style={{ width: sheetWidth, height: HEADER_H + totalRows * ROW_H }}>
+          <div className="sheet-corner" style={{ top: scroll.top, left: scroll.left }} />
+          {visibleCols.map((col) => (
+            <div
+              key={`h${col}`}
+              className={`sheet-col-header${col < freeze.col ? " frozen-col" : ""}`}
+              style={{
+                left: cellLeft(col),
+                top: scroll.top,
+                width: colPx(col),
+                zIndex: col < freeze.col ? 9 : 8,
+              }}
+            >{colName(col)}</div>
+          ))}
+          {visibleRows.map((row) => (
+            <div
+              key={`r${row}`}
+              className={`sheet-row-header${row < freeze.row ? " frozen-row" : ""}`}
+              style={{
+                top: cellTop(row),
+                left: scroll.left,
+                zIndex: row < freeze.row ? 9 : 8,
+              }}
+            >{row + 1}</div>
+          ))}
           {visibleRows.map((row) => visibleCols.map((col) => {
             if (covered(row, col)) return null;
             const cell = cells.get(`${row}:${col}`);
             const merge = merges.find((item) => item.r === row && item.c === col);
             const active = selection.row === row && selection.col === col;
             const inRange = row >= rowStartSel && row <= rowEndSel && col >= colStartSel && col <= colEndSel;
+            const frozenR = row < freeze.row;
+            const frozenC = col < freeze.col;
+            let mergeWidth = colPx(col);
+            if (merge) {
+              mergeWidth = 0;
+              for (let next = col; next < col + merge.cols; next += 1) mergeWidth += colPx(next);
+            }
             return <div
               key={`${row}:${col}`}
-              className={`sheet-cell${active ? " active" : ""}${inRange ? " selected" : ""}${cell?.type === "n" || cell?.type === "f" ? " numeric" : ""}${cell?.wrap ? " wrap" : ""}`}
+              className={`sheet-cell${active ? " active" : ""}${inRange ? " selected" : ""}${cell?.type === "n" || cell?.type === "f" ? " numeric" : ""}${cell?.wrap ? " wrap" : ""}${frozenR ? " frozen-row" : ""}${frozenC ? " frozen-col" : ""}`}
               style={{
-                left: HEADER_W + col * COL_W,
-                top: HEADER_H + row * ROW_H,
-                width: COL_W * (merge?.cols ?? 1),
+                left: cellLeft(col),
+                top: cellTop(row),
+                width: mergeWidth,
                 height: ROW_H * (merge?.rows ?? 1),
                 fontWeight: cell?.bold ? 700 : undefined,
                 color: cell?.color,
                 background: cell?.fill,
                 textAlign: cell?.align as "left" | "center" | "right" | undefined,
                 whiteSpace: cell?.wrap ? "pre-wrap" : undefined,
-                zIndex: merge ? 2 : undefined,
+                zIndex: frozenR && frozenC ? 7 : frozenR || frozenC ? 6 : merge ? 2 : 1,
               }}
               onMouseDown={(event) => {
                 if (event.button !== 0) return;
                 event.preventDefault();
-                dragging.current = true;
+                dragMode.current = "select";
                 if (event.shiftKey) setSelection((current) => ({ ...current, row2: row, col2: col }));
                 else setSelection({ row, col, row2: row, col2: col });
                 setEditing(null);
@@ -367,10 +470,32 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
               onDoubleClick={() => setEditing(cell?.formula || cell?.display || "")}
             >{cell?.display ?? ""}</div>;
           }))}
+          {freeze.row > 0 && <div className="sheet-freeze-h" style={{ top: HEADER_H + freeze.row * ROW_H + scroll.top, left: scroll.left, width: sheetWidth }} />}
+          {freeze.col > 0 && <div className="sheet-freeze-v" style={{ left: HEADER_W + (colStarts[freeze.col] ?? 0) + scroll.left, top: scroll.top, height: HEADER_H + totalRows * ROW_H }} />}
+          <div
+            className="sheet-fill-handle"
+            style={{
+              left: cellLeft(colEndSel) + (merges.find((item) => item.r === rowEndSel && item.c === colEndSel)
+                ? (() => {
+                    let width = 0;
+                    const merge = merges.find((item) => item.r === rowEndSel && item.c === colEndSel)!;
+                    for (let next = colEndSel; next < colEndSel + merge.cols; next += 1) width += colPx(next);
+                    return width;
+                  })()
+                : colPx(colEndSel)) - 5,
+              top: cellTop(rowEndSel) + ROW_H - 5,
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              dragMode.current = "fill";
+              fillOrigin.current = { ...selection };
+            }}
+          />
           {editing != null && (
             <input
               className="sheet-cell-input"
-              style={{ left: HEADER_W + selection.col * COL_W, top: HEADER_H + selection.row * ROW_H, width: COL_W, height: ROW_H }}
+              style={{ left: cellLeft(selection.col), top: cellTop(selection.row), width: colPx(selection.col), height: ROW_H }}
               value={editing}
               autoFocus
               onChange={(event) => setEditing(event.target.value)}

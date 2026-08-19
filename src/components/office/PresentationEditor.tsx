@@ -112,7 +112,12 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
           }
         }}
       >
-        <div className="slide-canvas" style={{ background: slide.background }}>
+        <div className="slide-canvas" style={{
+          backgroundColor: slide.background,
+          backgroundImage: slide.backgroundImage ? `url("${slide.backgroundImage}")` : undefined,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+        }}>
           {slide.shapes.map((item) => (
             <SlideShapeView key={item.id} item={item} active={false} playing />
           ))}
@@ -195,7 +200,12 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
             <div
               className="slide-canvas"
               ref={canvasRef}
-              style={{ background: slide.background }}
+              style={{
+                backgroundColor: slide.background,
+                backgroundImage: slide.backgroundImage ? `url("${slide.backgroundImage}")` : undefined,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+              }}
               onMouseMove={onMove}
               onMouseUp={endDrag}
               onMouseLeave={endDrag}
@@ -288,8 +298,8 @@ function SlideShapeView({
   }
   return (
     <div
-      className={`slide-shape${active ? " active" : ""}`}
-      contentEditable={!playing}
+            className={`slide-shape${active ? " active" : ""}${item.fromLayout ? " slide-layout-ph" : ""}`}
+      contentEditable={!playing && !item.fromLayout}
       suppressContentEditableWarning
       style={{
         ...box,

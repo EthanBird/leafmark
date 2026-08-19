@@ -15,15 +15,48 @@ const MIME_BY_EXT: Record<string, string> = {
   tiff: "image/tiff",
 };
 
-export function parseRelationships(xml: string) {
-  const rels = new Map<string, string>();
-  if (!xml) return rels;
+export interface OfficeRelationship {
+  id: string;
+  target: string;
+  type: string;
+  targetMode: string;
+}
+
+export function parseRelationshipList(xml: string): OfficeRelationship[] {
+  if (!xml) return [];
+  const rels: OfficeRelationship[] = [];
   for (const match of xml.matchAll(/<(?:[\w.-]+:)?Relationship\b[^>]*>/g)) {
     const id = xmlAttr(match[0], "Id");
     const target = xmlAttr(match[0], "Target");
-    if (id && target) rels.set(id, target.replace(/\\/g, "/"));
+    if (!id || !target) continue;
+    rels.push({
+      id,
+      target: target.replace(/\\/g, "/"),
+      type: xmlAttr(match[0], "Type"),
+      targetMode: xmlAttr(match[0], "TargetMode"),
+    });
   }
   return rels;
+}
+
+export function parseRelationships(xml: string) {
+  const rels = new Map<string, string>();
+  for (const rel of parseRelationshipList(xml)) rels.set(rel.id, rel.target);
+  return rels;
+}
+
+export function findRelationshipTarget(xml: string, typeFragment: string) {
+  return parseRelationshipList(xml).find((rel) => rel.type.includes(typeFragment))?.target;
+}
+
+export function relationshipHyperlinks(files: OfficePackage, relsPath: string) {
+  const hrefs = new Map<string, string>();
+  for (const rel of parseRelationshipList(packageText(files, relsPath, false))) {
+    if (/hyperlink/i.test(rel.type) || rel.targetMode === "External" || /^(https?:|mailto:)/i.test(rel.target)) {
+      hrefs.set(rel.id, rel.target);
+    }
+  }
+  return hrefs;
 }
 
 export function resolvePackagePart(baseDir: string, target: string) {

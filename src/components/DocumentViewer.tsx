@@ -1,7 +1,6 @@
 import { FileCode2, FileSpreadsheet, FileText, MonitorPlay } from "lucide-react";
-import { useMemo } from "react";
-import { officeAssetUrl } from "../office/office-client";
 import type { DocumentKind } from "../types";
+import { PdfViewer } from "./office/PdfViewer";
 
 interface DocumentViewerProps {
   assetPath: string;
@@ -9,12 +8,7 @@ interface DocumentViewerProps {
 }
 
 export function DocumentViewer({ assetPath, name }: DocumentViewerProps) {
-  const source = useMemo(() => officeAssetUrl(assetPath), [assetPath]);
-  return (
-    <div className="binary-viewer pdf-viewer">
-      <iframe src={source} title={`PDF：${name}`} />
-    </div>
-  );
+  return <PdfViewer assetPath={assetPath} name={name} />;
 }
 
 export function documentKindIcon(kind: DocumentKind) {

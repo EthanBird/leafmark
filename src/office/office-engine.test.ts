@@ -1,7 +1,7 @@
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { colName, displayFormulaValue, evaluateFormula, FormulaError, parseCellRef } from "./formula";
-import { editCell, openSpreadsheet, serializeWorkbook } from "./sheet";
+import { editCell, openSpreadsheet, readViewport, serializeWorkbook } from "./sheet";
 import { openPptx, serializePresentation, updateShapeText } from "./slide";
 import { htmlToRuns, openDocx, paragraphText, parseWordBlocks, serializeWord } from "./word";
 import { decodeXml, encodeXml } from "./xml";
@@ -113,6 +113,55 @@ describe("WordprocessingML editor codec", () => {
     const savedParagraph = saved.blocks[0];
     if (savedParagraph.kind !== "table") expect(savedParagraph.runs[0]?.image?.src.startsWith("data:image/png")).toBe(true);
   });
+
+  it("resolves hyperlink rIds to real URLs", () => {
+    const bytes = zipSync({
+      "word/document.xml": strToU8(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:hyperlink r:id="rId5"><w:r><w:t>官网</w:t></w:r></w:hyperlink></w:p></w:body></w:document>`),
+      "word/_rels/document.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://leafmark.app" TargetMode="External"/></Relationships>`),
+    });
+    const document = openDocx(arrayBuffer(bytes));
+    const paragraph = document.blocks[0];
+    expect(paragraph.kind).not.toBe("table");
+    if (paragraph.kind === "table") return;
+    expect(paragraph.runs[0]?.hyperlink).toBe("https://leafmark.app");
+  });
+
+  it("parses table gridSpan and vMerge into HTML spans", () => {
+    const { blocks } = parseWordBlocks(`
+      <w:document><w:body>
+        <w:tbl>
+          <w:tr>
+            <w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>左上</w:t></w:r></w:p></w:tc>
+            <w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>跨列</w:t></w:r></w:p></w:tc>
+          </w:tr>
+          <w:tr>
+            <w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p><w:r><w:t></w:t></w:r></w:p></w:tc>
+            <w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc>
+            <w:tc><w:p><w:r><w:t>C2</w:t></w:r></w:p></w:tc>
+          </w:tr>
+        </w:tbl>
+      </w:body></w:document>
+    `);
+    expect(blocks[0]?.kind).toBe("table");
+    if (blocks[0]?.kind !== "table") return;
+    expect(blocks[0].rows[0]?.[0]).toMatchObject({ text: "左上", rowSpan: 2 });
+    expect(blocks[0].rows[0]?.[1]).toMatchObject({ text: "跨列", colSpan: 2 });
+    expect(blocks[0].rows[1]?.[0]?.hidden).toBe(true);
+    expect(blocks[0].rows[1]?.[1]?.text).toBe("B2");
+    expect(blocks[0].rows[1]?.[2]?.text).toBe("C2");
+  });
+
+  it("marks floating drawings as wrap/float images", () => {
+    const { blocks } = parseWordBlocks(`
+      <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:body>
+        <w:p><w:r><w:drawing><wp:anchor><wp:extent cx="914400" cy="914400"/><wp:positionH relativeFrom="column"><wp:align>right</wp:align></wp:positionH><wp:wrapSquare wrapText="bothSides"/><a:graphic><a:graphicData><a:blip r:embed="rId4"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>
+      </w:body></w:document>
+    `, new Map(), new Map([["rId4", "data:image/png;base64,xx"]]));
+    const paragraph = blocks[0];
+    expect(paragraph.kind).not.toBe("table");
+    if (paragraph.kind === "table") return;
+    expect(paragraph.runs[0]?.image).toMatchObject({ wrap: "square", float: "right", src: "data:image/png;base64,xx" });
+  });
 });
 
 describe("SpreadsheetML editor codec", () => {
@@ -143,6 +192,17 @@ describe("SpreadsheetML editor codec", () => {
     });
     const workbook = openSpreadsheet(arrayBuffer(bytes), "xlsx");
     expect(workbook.sheets[0]?.merges).toEqual([{ r: 0, c: 0, rows: 2, cols: 2 }]);
+  });
+
+  it("parses column widths into the viewport", () => {
+    const bytes = zipSync({
+      "xl/workbook.xml": strToU8(`<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="数据" r:id="rId1"/></sheets></workbook>`),
+      "xl/_rels/workbook.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>`),
+      "xl/worksheets/sheet1.xml": strToU8(`<worksheet><cols><col min="1" max="1" width="20" customWidth="1"/></cols><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>`),
+    });
+    const workbook = openSpreadsheet(arrayBuffer(bytes), "xlsx");
+    expect(workbook.sheets[0]?.colWidths?.get(0)).toBe(20);
+    expect(readViewport(workbook, "数据", 0, 8, 0, 8).colWidths).toEqual([[0, 20]]);
   });
 
   it("parses and serializes CSV without going through OOXML", () => {
@@ -182,5 +242,20 @@ describe("PresentationML editor codec", () => {
     expect(slide.shapes.find((shape) => shape.kind !== "image" && shape.kind !== "table")).toMatchObject({ x: 0.1, y: 0.1, width: 0.8, height: 0.2, text: "标题" });
     expect(slide.shapes.find((shape) => shape.kind === "image")?.src?.startsWith("data:image/png")).toBe(true);
     expect(slide.shapes.find((shape) => shape.kind === "table")?.table).toEqual([["左", "右"]]);
+  });
+
+  it("reads slide background images and layout placeholders", () => {
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (char) => char.charCodeAt(0));
+    const bytes = zipSync({
+      "ppt/presentation.xml": strToU8(`<p:presentation><p:sldSz cx="1000" cy="500"/></p:presentation>`),
+      "ppt/slides/slide1.xml": strToU8(`<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:bg><p:bgPr><a:blipFill><a:blip r:embed="rIdBg"/></a:blipFill></p:bgPr></p:bg><p:spTree></p:spTree></p:cSld></p:sld>`),
+      "ppt/slides/_rels/slide1.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdBg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/bg.png"/><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>`),
+      "ppt/media/bg.png": png,
+      "ppt/slideLayouts/slideLayout1.xml": strToU8(`<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="100" y="50"/><a:ext cx="800" cy="100"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:t>版式标题</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sldLayout>`),
+    });
+    const presentation = openPptx(arrayBuffer(bytes));
+    const slide = presentation.slides[0];
+    expect(slide.backgroundImage?.startsWith("data:image/png")).toBe(true);
+    expect(slide.shapes.some((shape) => shape.fromLayout && shape.text === "版式标题")).toBe(true);
   });
 });
