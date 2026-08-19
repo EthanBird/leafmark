@@ -960,10 +960,18 @@ button:disabled { opacity: .42; cursor: default !important; }
 .sheet-toolbar { display: flex; flex-wrap: wrap; }
 .sheet-toolbar input { flex: 1; min-width: 120px; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); color: var(--text); font: 12px/1.4 ui-monospace, "SF Mono", Consolas, monospace; }
 .sheet-cell.wrap { white-space: pre-wrap; line-height: 1.25; }
-.word-list { padding-left: 1.6em; }
-.word-list-bullet, .word-list-number { list-style-position: outside; }
-.word-list-bullet { list-style: disc; display: list-item; }
-.word-list-number { list-style: decimal; display: list-item; }
+.word-list { padding-left: 1.6em; position: relative; }
+.word-page > :not(.word-list-number) { counter-reset: word-ol; }
+.word-list-bullet, .word-list-number { display: block; }
+.word-list-bullet::before, .word-list-number::before {
+  position: absolute;
+  left: 0;
+  width: 1.4em;
+  text-align: right;
+}
+.word-list-bullet::before { content: "•"; }
+.word-list-number { counter-increment: word-ol; }
+.word-list-number::before { content: counter(word-ol) "."; }
 .word-page p:has(img.word-float-left),
 .word-page p:has(img.word-float-right) { overflow: auto; }
 .word-block-active { outline: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent); }
