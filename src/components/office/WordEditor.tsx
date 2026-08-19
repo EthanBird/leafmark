@@ -214,6 +214,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
         {blocks.map((block, index) => (
           <WordBlockEditor
             key={index}
+            index={index}
             block={block}
             editable={editable}
             active={focus === index}
@@ -272,6 +273,7 @@ function splitLocal(block: WordParagraph, offset: number): [WordParagraph, WordP
 
 function WordBlockEditor({
   block,
+  index,
   editable,
   active,
   onFocus,
@@ -279,6 +281,7 @@ function WordBlockEditor({
   onSplit,
 }: {
   block: WordBlock;
+  index: number;
   editable: boolean;
   active: boolean;
   onFocus: () => void;
@@ -286,7 +289,7 @@ function WordBlockEditor({
   onSplit: (offset: number) => void;
 }) {
   if (block.kind === "table") {
-    return <div className="word-table-wrap" data-word-block onFocus={onFocus}><table><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => cell.hidden ? null : <td
+    return <div className="word-table-wrap" data-word-block data-word-index={String(index)} onFocus={onFocus}><table><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => cell.hidden ? null : <td
       key={cellIndex}
       colSpan={cell.colSpan}
       rowSpan={cell.rowSpan}
@@ -303,6 +306,7 @@ function WordBlockEditor({
   return (
     <WordParagraphEditor
       block={block}
+      index={index}
       editable={editable}
       active={active}
       onFocus={onFocus}
@@ -314,6 +318,7 @@ function WordBlockEditor({
 
 function WordParagraphEditor({
   block,
+  index,
   editable,
   active,
   onFocus,
@@ -321,6 +326,7 @@ function WordParagraphEditor({
   onSplit,
 }: {
   block: WordParagraph;
+  index: number;
   editable: boolean;
   active: boolean;
   onFocus: () => void;
@@ -345,6 +351,7 @@ function WordParagraphEditor({
     <Tag
       ref={ref as never}
       data-word-block
+      data-word-index={String(index)}
       className={`${listClass}${active ? " word-block-active" : ""}${block.pageBreak ? " word-page-break" : ""}`}
       contentEditable={editable}
       suppressContentEditableWarning
@@ -367,8 +374,10 @@ function WordParagraphEditor({
         }
       }}
       onBlur={(event) => {
+        if (!event.currentTarget.isConnected) return;
         const runs = restoreImageRuns(htmlToRuns(event.currentTarget.innerHTML), block.runs);
         const next: WordParagraph = { ...block, runs, dirty: true };
+        if (!paragraphText(next) && paragraphText(block)) return;
         if (paragraphText(next) === paragraphText(block)
           && runs.filter((run) => run.image).length === block.runs.filter((run) => run.image).length
           && !event.currentTarget.querySelector("b,i,u,s,strong,em")) return;

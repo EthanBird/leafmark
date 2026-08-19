@@ -79,17 +79,21 @@ try {
   await assert(await page.$eval("[data-dirty]", (el) => el.getAttribute("data-dirty") === "1"), "改标题后标记已修改");
   await shot("leafmark-word-after-type.png");
 
-  const paragraph = await page.$("p[data-word-block]");
+  const paragraph = await page.$("[data-word-index='1']");
   await paragraph.click();
   await page.click('button[title="粗体"]');
   await page.waitForFunction(() => {
-    const node = document.querySelector("p[data-word-block]");
+    const node = document.querySelector("[data-word-index='1']");
     return Boolean(node?.querySelector("b,strong,[style*='font-weight']"));
   });
   await shot("leafmark-word-bold.png");
 
+  await page.click("[data-word-index='1']");
   await page.click('button[title="标题 2"]');
-  await page.waitForFunction(() => document.querySelector("h2[data-word-block]")?.innerText.includes("这是一份"));
+  await page.waitForFunction(() => {
+    const node = document.querySelector("h2[data-word-index='1']");
+    return Boolean(node?.innerText.includes("这是一份"));
+  });
   await shot("leafmark-word-heading.png");
 
   const insertTab = await page.$(".office-ribbon-tabs button:nth-child(2)");
