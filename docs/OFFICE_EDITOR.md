@@ -60,6 +60,6 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 - `npm run typecheck`
 - `npm test`（含 DOCX/XLSX/PPTX 往返、撤销，以及与 Microsoft Excel 语义对照的公式套件）
-- 真实样张：`python3 scripts/generate-office-fixtures.py` 写出 `public/office-fixtures/leafmark-sample.docx` / `.pptx`（python-docx / python-pptx，不是手写残缺 XML）。开发时打开 `http://127.0.0.1:1420/office-gallery.html` 看 Word / PPT 画布；`node scripts/screenshot-office-gallery.mjs` 用无头 Chrome 截全页。
+- 真实样张：`python3 scripts/generate-office-fixtures.py` 写出 `public/office-fixtures/leafmark-sample.docx` / `.pptx`。开发时打开 `http://127.0.0.1:1420/office-gallery.html`，Word / PPT 走同一套可编辑画布（工具栏、改字、插入）。`node scripts/screenshot-office-gallery.mjs` 用无头 Chrome 点选、改字并截编辑后的界面。
 - Windows / Linux `cargo test`
 - 真实语料：冷启动首屏、编辑后用 Microsoft Office 打开、源文件删除后从保留副本继续编辑

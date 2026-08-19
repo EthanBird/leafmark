@@ -1118,22 +1118,15 @@ button:disabled { opacity: .42; cursor: default !important; }
 .office-gallery-bar button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 650; }
 .office-gallery-bar small { color: var(--text-tertiary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .office-gallery-error { padding: 24px; color: var(--danger); }
+.office-engine-error {
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface));
+  color: var(--danger);
+  font-size: 11px;
+}
 .office-gallery-pane { height: calc(100vh - 44px); min-height: 0; }
-.office-gallery-pane .word-viewer { height: 100%; }
-.office-gallery-pane[data-gallery="word"] {
-  height: auto;
-  min-height: calc(100vh - 44px);
-}
-.office-gallery-pane[data-gallery="word"] .word-viewer.office-editor {
-  display: block;
-  height: auto;
-  overflow: visible;
-}
-.office-gallery-pane[data-gallery="word"] .word-viewer.office-editor .word-page {
-  overflow: visible;
-  min-height: 1122px;
-  margin: 18px auto 48px;
-}
+.office-gallery-pane .word-viewer,
+.office-gallery-pane .presentation-viewer { height: 100%; }
 .office-gallery-ppt { overflow: auto; padding: 18px 24px 64px; display: grid; gap: 28px; height: auto; min-height: calc(100vh - 44px); }
 .office-gallery-slide h2 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--text-secondary); }
 .office-gallery-stage { width: min(100%, 1080px); }

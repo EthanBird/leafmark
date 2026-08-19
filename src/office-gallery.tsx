@@ -1,10 +1,9 @@
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { SlideStage } from "./components/office/PresentationEditor";
+import { PresentationEditor } from "./components/office/PresentationEditor";
 import { WordEditor } from "./components/office/WordEditor";
-import { openPptx, type PresentationDocument } from "./office/slide";
-import type { WordOpenResult } from "./office/types";
-import { openDocx } from "./office/word";
+import { openOfficeFromBuffer } from "./office/office-client";
+import type { PresentationOpenResult, WordOpenResult } from "./office/types";
 import "./styles.css";
 
 type GalleryTab = "word" | "ppt";
@@ -16,8 +15,9 @@ function tabFromHash(): GalleryTab {
 function OfficeGallery() {
   const [tab, setTab] = useState<GalleryTab>(tabFromHash);
   const [word, setWord] = useState<WordOpenResult | null>(null);
-  const [ppt, setPpt] = useState<PresentationDocument | null>(null);
+  const [ppt, setPpt] = useState<PresentationOpenResult | null>(null);
   const [error, setError] = useState("");
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     const onHash = () => setTab(tabFromHash());
@@ -34,19 +34,13 @@ function OfficeGallery() {
           fetch("/office-fixtures/leafmark-sample.pptx"),
         ]);
         if (!wordRes.ok || !pptRes.ok) throw new Error("无法读取视觉样张");
-        const wordDoc = openDocx(await wordRes.arrayBuffer());
-        const pptDoc = openPptx(await pptRes.arrayBuffer());
+        const wordSnap = await openOfficeFromBuffer({ key: "gallery-word", kind: "word", format: "docx" }, await wordRes.arrayBuffer());
+        const pptSnap = await openOfficeFromBuffer({ key: "gallery-ppt", kind: "presentation", format: "pptx" }, await pptRes.arrayBuffer());
         if (!active) return;
-        setWord({
-          type: "word",
-          editable: true,
-          blocks: wordDoc.blocks.slice(0, 160),
-          totalBlocks: wordDoc.blocks.length,
-          firstPaintMs: 0,
-          header: wordDoc.header,
-          footer: wordDoc.footer,
-        });
-        setPpt(pptDoc);
+        if (wordSnap.type !== "word") throw new Error("Word 样张未能打开为可编辑文档");
+        if (pptSnap.type !== "presentation") throw new Error("PPT 样张未能打开为可编辑文档");
+        setWord(wordSnap);
+        setPpt(pptSnap);
       } catch (reason) {
         if (active) setError(reason instanceof Error ? reason.message : String(reason));
       }
@@ -70,30 +64,28 @@ function OfficeGallery() {
     setTab(next);
   };
 
+  const markDirty = () => setDirty(true);
+
   return (
-    <div className="office-gallery" data-gallery-ready={word && ppt ? "1" : "0"}>
+    <div className="office-gallery" data-gallery-ready={word && ppt ? "1" : "0"} data-dirty={dirty ? "1" : "0"}>
       <header className="office-gallery-bar">
         <strong>LeafMark 视觉预览</strong>
         <button type="button" className={tab === "word" ? "active" : ""} onClick={() => select("word")}>Word</button>
         <button type="button" className={tab === "ppt" ? "active" : ""} onClick={() => select("ppt")}>PowerPoint</button>
-        <small>{tab === "word" ? wordNote : ppt ? `${ppt.slides.length} 页 · ${ppt.slides.map((slide) => slide.title).join(" / ")}` : ""}</small>
+        <small>
+          {dirty ? "已修改 · " : ""}
+          {tab === "word" ? wordNote : ppt ? `${ppt.slides.length} 页 · ${ppt.slides.map((slide) => slide.title).join(" / ")}` : ""}
+        </small>
       </header>
-      {error && <p className="office-gallery-error">{error}</p>}
+      {error && <p className="office-gallery-error" data-gallery-error>{error}</p>}
       {tab === "word" && word && (
         <div className="office-gallery-pane" data-gallery="word">
-          <WordEditor documentKey="gallery-word" initial={word} editable onDirty={() => undefined} />
+          <WordEditor documentKey="gallery-word" initial={word} editable onDirty={markDirty} />
         </div>
       )}
       {tab === "ppt" && ppt && (
-        <div className="office-gallery-pane office-gallery-ppt" data-gallery="ppt">
-          {ppt.slides.map((slide) => (
-            <section key={slide.index} className="office-gallery-slide" data-slide={slide.index}>
-              <h2>第 {slide.index + 1} 页 · {slide.title}</h2>
-              <div className="office-gallery-stage">
-                <SlideStage slide={slide} />
-              </div>
-            </section>
-          ))}
+        <div className="office-gallery-pane" data-gallery="ppt">
+          <PresentationEditor documentKey="gallery-ppt" initial={ppt} onDirty={markDirty} />
         </div>
       )}
     </div>

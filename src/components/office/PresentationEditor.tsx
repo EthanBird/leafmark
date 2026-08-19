@@ -36,9 +36,14 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
   const [slides, setSlides] = useState(initial.slides);
   const [slide, setSlide] = useState<SlideModel | null>(initial.active);
   const [loading, setLoading] = useState(false);
-  const [activeShape, setActiveShape] = useState<string | null>(initial.active?.shapes[0]?.id ?? null);
+  const [activeShape, setActiveShape] = useState<string | null>(
+    initial.active?.shapes.find((item) => item.kind === "text" || !item.kind)?.id
+      ?? initial.active?.shapes[0]?.id
+      ?? null,
+  );
   const [tab, setTab] = useState<"home" | "show">("home");
   const [playing, setPlaying] = useState(false);
+  const [engineError, setEngineError] = useState("");
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ id: string; dx: number; dy: number } | null>(null);
 
@@ -56,19 +61,29 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
   const editShape = async (shapeId: string, text: string) => {
     if (!slide) return;
     onDirty();
-    const next = await updatePresentationShape(documentKey, slide.index, shapeId, text);
-    setSlide(next);
-    setSlides((current) => current.map((item) => item.index === next?.index ? { index: next.index, title: next.title, hidden: next.hidden } : item));
+    try {
+      const next = await updatePresentationShape(documentKey, slide.index, shapeId, text);
+      setSlide(next);
+      setSlides((current) => current.map((item) => item.index === next?.index ? { index: next.index, title: next.title, hidden: next.hidden } : item));
+      setEngineError("");
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const run = async (mutation: Parameters<typeof mutateOffice>[1]) => {
     onDirty();
-    const result = await mutateOffice(documentKey, mutation) as { slides?: Array<{ index: number; title: string; hidden?: boolean }>; slide?: SlideModel | null };
-    if (result.slides) setSlides(result.slides);
-    if (result.slide) {
-      setSlide(result.slide);
-      setActiveShape(result.slide.shapes.find((item) => item.id === activeShape)?.id ?? result.slide.shapes[0]?.id ?? null);
-    } else if (slide) await openSlide(Math.min(slide.index, (result.slides?.length ?? 1) - 1));
+    try {
+      const result = await mutateOffice(documentKey, mutation) as { slides?: Array<{ index: number; title: string; hidden?: boolean }>; slide?: SlideModel | null };
+      if (result.slides) setSlides(result.slides);
+      if (result.slide) {
+        setSlide(result.slide);
+        setActiveShape(result.slide.shapes.find((item) => item.id === activeShape)?.id ?? result.slide.shapes[0]?.id ?? null);
+      } else if (slide) await openSlide(Math.min(slide.index, (result.slides?.length ?? 1) - 1));
+      setEngineError("");
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const history = async (direction: "undo" | "redo") => {
@@ -85,6 +100,11 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
 
   const startDrag = (event: MouseEvent, item: SlideShape) => {
     if (event.button !== 0 || event.detail > 1) return;
+    const target = event.target as HTMLElement;
+    if (!event.altKey && target.isContentEditable) {
+      setActiveShape(item.id);
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
     const box = canvas.getBoundingClientRect();
@@ -138,7 +158,7 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
   }
 
   return (
-    <div className="binary-viewer presentation-viewer office-editor">
+    <div className="binary-viewer presentation-viewer office-editor" data-office="ppt">
       <div className="office-ribbon-wrap" style={{ gridColumn: "1 / -1" }}>
         <div className="office-ribbon-tabs" role="tablist">
           <button type="button" className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}>开始</button>
@@ -185,6 +205,7 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
             </>
           )}
         </div>
+        {engineError && <div className="office-engine-error" data-office-error>{engineError}</div>}
       </div>
       <nav className="slide-list" aria-label="幻灯片">
         {slides.map((item) => (
@@ -272,6 +293,8 @@ function SlideShapeView({
     return (
       <div
         className={`slide-shape slide-image${bleed ? " slide-image-bleed" : ""}${active ? " active" : ""}`}
+        data-shape-kind="image"
+        data-shape-id={item.id}
         style={box}
         onMouseDown={onMouseDown}
         onClick={onSelect}
@@ -286,6 +309,8 @@ function SlideShapeView({
     return (
       <div
         className={`slide-shape slide-table${active ? " active" : ""}`}
+        data-shape-kind="table"
+        data-shape-id={item.id}
         style={{ ...box, fontSize: `${item.fontSize}px`, color: item.color }}
         onMouseDown={onMouseDown}
         onClick={onSelect}
@@ -307,6 +332,8 @@ function SlideShapeView({
   return (
     <div
       className={`slide-shape slide-text${active ? " active" : ""}${item.fromLayout ? " slide-layout-ph" : ""}`}
+      data-shape-kind="text"
+      data-shape-id={item.id}
       contentEditable={!playing && !item.fromLayout}
       suppressContentEditableWarning
       style={{

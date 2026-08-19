@@ -14,6 +14,7 @@ const HIGHLIGHTS = ["yellow", "green", "cyan", "magenta", "blue", "red", "darkYe
 export function WordEditor({ documentKey, initial, editable, onDirty }: { documentKey: string; initial: WordOpenResult; editable: boolean; onDirty: () => void }) {
   const [blocks, setBlocks] = useState(initial.blocks);
   const [loading, setLoading] = useState(false);
+  const [engineError, setEngineError] = useState("");
   const [focus, setFocus] = useState(0);
   const [tab, setTab] = useState<"home" | "insert">("home");
   const [query, setQuery] = useState("");
@@ -29,7 +30,12 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
   const persist = async (index: number, block: WordBlock) => {
     setBlocks((current) => current.map((item, itemIndex) => itemIndex === index ? block : item));
     onDirty();
-    await replaceWordBlock(documentKey, index, block);
+    try {
+      await replaceWordBlock(documentKey, index, block);
+      setEngineError("");
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const loadMore = async () => {
@@ -44,14 +50,20 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
 
   const applyMutation = async (mutation: OfficeMutation, nextBlocks?: WordBlock[]) => {
     onDirty();
-    const result = await mutateOffice(documentKey, mutation) as { blocks?: WordBlock[]; block?: WordBlock; header?: string; footer?: string; totalBlocks?: number };
-    if (result.blocks) setBlocks(result.blocks);
-    else if (nextBlocks) setBlocks(nextBlocks);
-    else if (result.block && "index" in mutation) {
-      setBlocks((current) => current.map((item, index) => index === mutation.index ? result.block as WordBlock : item));
+    try {
+      const result = await mutateOffice(documentKey, mutation) as { blocks?: WordBlock[]; block?: WordBlock; header?: string; footer?: string; totalBlocks?: number };
+      if (result.blocks) setBlocks(result.blocks);
+      else if (nextBlocks) setBlocks(nextBlocks);
+      else if (result.block && "index" in mutation) {
+        setBlocks((current) => current.map((item, index) => index === mutation.index ? result.block as WordBlock : item));
+      }
+      if (result.header !== undefined) setHeader(result.header ?? "");
+      if (result.footer !== undefined) setFooter(result.footer ?? "");
+      setEngineError("");
+    } catch (reason) {
+      if (nextBlocks) setBlocks(nextBlocks);
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
     }
-    if (result.header !== undefined) setHeader(result.header ?? "");
-    if (result.footer !== undefined) setFooter(result.footer ?? "");
   };
 
   const applyStyle = async (patch: NonNullable<Extract<OfficeMutation, { op: "wordStyle" }>["patch"]>) => {
@@ -98,7 +110,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
   };
 
   return (
-    <div className="binary-viewer word-viewer office-editor">
+    <div className="binary-viewer word-viewer office-editor" data-office="word">
       {editable && (
         <div className="office-ribbon-wrap">
           <div className="office-ribbon-tabs" role="tablist">
@@ -194,6 +206,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
             )}
             <small>{counts.words.toLocaleString()} 词 · {counts.characters.toLocaleString()} 字 · {initial.totalBlocks.toLocaleString()} 段</small>
           </div>
+          {engineError && <div className="office-engine-error" data-office-error>{engineError}</div>}
         </div>
       )}
       <article className="word-page" ref={articleRef}>
@@ -318,8 +331,13 @@ function WordParagraphEditor({
   const html = runsToHtml(block.runs);
   useLayoutEffect(() => {
     const node = ref.current;
-    if (!node || document.activeElement === node) return;
-    if (node.innerHTML !== html) node.innerHTML = html;
+    if (!node || node.innerHTML === html) return;
+    if (document.activeElement === node) {
+      const live = htmlToRuns(node.innerHTML).map((run) => run.text).join("");
+      const next = htmlToRuns(html).map((run) => run.text).join("");
+      if (live !== next) return;
+    }
+    node.innerHTML = html;
   }, [html]);
   const Tag = (block.kind === "heading" ? `h${Math.max(1, Math.min(6, block.level ?? 2))}` : "p") as "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
   const listClass = block.list ? `word-list word-list-${block.list.type}` : "";
