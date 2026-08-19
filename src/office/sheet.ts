@@ -341,6 +341,15 @@ function openViaSheetJs(buffer: ArrayBuffer, format: string): WorkbookModel {
         });
       });
     }
+    const merges = sheet["!merges"];
+    if (merges?.length) {
+      model.merges = merges.map((item) => ({
+        r: item.s.r,
+        c: item.s.c,
+        rows: item.e.r - item.s.r + 1,
+        cols: item.e.c - item.s.c + 1,
+      }));
+    }
     return model;
   });
   const model: WorkbookModel = {

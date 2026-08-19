@@ -40,6 +40,7 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
   const [merges, setMerges] = useState<SheetMerge[]>(initial.active?.merges ?? []);
   const [freeze, setFreeze] = useState(initial.active?.freeze ?? { row: 0, col: 0 });
   const [selection, setSelection] = useState({ row: 0, col: 0, row2: 0, col2: 0 });
+  const dragging = useRef(false);
   const [formula, setFormula] = useState(initial.active?.cells.find((cell) => cell.r === 0 && cell.c === 0)?.formula ?? "");
   const [editing, setEditing] = useState<string | null>(null);
   const [range, setRange] = useState({ rowStart: 0, colStart: 0, rowCount: 80, colCount: 26 });
@@ -57,6 +58,7 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
     setUsed({ rows: viewport.rows, cols: viewport.cols });
     setSheetName(viewport.name);
     if (viewport.merges) setMerges(viewport.merges);
+    else setMerges([]);
     if (viewport.freeze) setFreeze(viewport.freeze);
     setCells((current) => {
       const next = new Map(current);
@@ -202,6 +204,31 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
     return () => node.removeEventListener("keydown", onKey);
   }, [editing, selection, selected, sheetName, documentKey]);
 
+  const cellFromPoint = (clientX: number, clientY: number) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return null;
+    const box = scroller.getBoundingClientRect();
+    const col = Math.max(0, Math.min(totalCols - 1, Math.floor((clientX - box.left + scroller.scrollLeft - HEADER_W) / COL_W)));
+    const row = Math.max(0, Math.min(totalRows - 1, Math.floor((clientY - box.top + scroller.scrollTop - HEADER_H) / ROW_H)));
+    return { row, col };
+  };
+
+  useEffect(() => {
+    const onMove = (event: MouseEvent) => {
+      if (!dragging.current) return;
+      const cell = cellFromPoint(event.clientX, event.clientY);
+      if (!cell) return;
+      event.preventDefault();
+      setSelection((current) => current.row2 === cell.row && current.col2 === cell.col ? current : { ...current, row2: cell.row, col2: cell.col });
+    };
+    const onUp = () => { dragging.current = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [totalRows, totalCols]);
   const visibleRows: number[] = [];
   const visibleCols: number[] = [];
   for (let row = range.rowStart; row < Math.min(totalRows, range.rowStart + range.rowCount); row += 1) visibleRows.push(row);
@@ -292,7 +319,14 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
           <small>{used.rows.toLocaleString()} × {used.cols.toLocaleString()}{freeze.row || freeze.col ? ` · 冻结 ${freeze.row},${freeze.col}` : ""}</small>
         </div>
       </div>
-      <div className="sheet-scroll sheet-virtual" ref={scrollerRef}>
+      <div className="sheet-scroll sheet-virtual" ref={scrollerRef} onMouseDown={(event) => {
+        if (event.button !== 0 || (event.target as HTMLElement).closest(".sheet-cell, .sheet-cell-input")) return;
+        const cell = cellFromPoint(event.clientX, event.clientY);
+        if (!cell) return;
+        dragging.current = true;
+        setSelection({ row: cell.row, col: cell.col, row2: cell.row, col2: cell.col });
+        setEditing(null);
+      }}>
         <div className="sheet-spacer" style={{ width: HEADER_W + totalCols * COL_W, height: HEADER_H + totalRows * ROW_H }}>
           <div className="sheet-corner" />
           {visibleCols.map((col) => <div key={`h${col}`} className="sheet-col-header" style={{ left: HEADER_W + col * COL_W, width: COL_W }}>{colName(col)}</div>)}
@@ -318,10 +352,17 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
                 whiteSpace: cell?.wrap ? "pre-wrap" : undefined,
                 zIndex: merge ? 2 : undefined,
               }}
-              onClick={(event) => {
+              onMouseDown={(event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
+                dragging.current = true;
                 if (event.shiftKey) setSelection((current) => ({ ...current, row2: row, col2: col }));
                 else setSelection({ row, col, row2: row, col2: col });
                 setEditing(null);
+                rootRef.current?.focus();
+              }}
+              onClick={(event) => {
+                if (event.shiftKey) setSelection((current) => ({ ...current, row2: row, col2: col }));
               }}
               onDoubleClick={() => setEditing(cell?.formula || cell?.display || "")}
             >{cell?.display ?? ""}</div>;

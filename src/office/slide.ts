@@ -1,5 +1,6 @@
 import { decodeXml, encodeXml, xmlAttr } from "./xml";
 import { clonePackage, findPackagePart, packageText, setPackageText, type OfficePackage, unzipPackage, zipPackage } from "./package";
+import { parseXfrm, relationshipMedia } from "./media";
 
 export interface SlideRun {
   text: string;
@@ -22,7 +23,9 @@ export interface SlideShape {
   align: "left" | "center" | "right";
   text: string;
   fill?: string;
-  kind?: "text" | "rect";
+  kind?: "text" | "rect" | "image" | "table";
+  src?: string;
+  table?: string[][];
   originalXml?: string;
   dirty?: boolean;
 }
@@ -60,7 +63,7 @@ export function openPptx(buffer: ArrayBuffer): PresentationDocument {
   const height = Number(sizeMatch?.[2] ?? 6_858_000);
   const names = findPackagePart(files, /^ppt\/slides\/slide\d+\.xml$/);
   const slides = names.map((path, index) => {
-    const model = parsePptxSlide(packageText(files, path), index, path, width, height);
+    const model = parsePptxSlide(packageText(files, path), index, path, width, height, files);
     const notesXml = packageText(files, `ppt/notesSlides/notesSlide${index + 1}.xml`, false);
     if (notesXml) model.notes = extractSlideText(notesXml);
     if (/show="0"/.test(packageText(files, path))) model.hidden = true;
@@ -69,41 +72,122 @@ export function openPptx(buffer: ArrayBuffer): PresentationDocument {
   return { type: "presentation", format: "pptx", slides, files, width, height, editable: true };
 }
 
-function parsePptxSlide(xml: string, index: number, path: string, slideWidth: number, slideHeight: number): SlideModel {
+function parsePptxSlide(xml: string, index: number, path: string, slideWidth: number, slideHeight: number, files?: OfficePackage): SlideModel {
   const background = /<(?:a:)?srgbClr[^>]*val="([0-9A-Fa-f]{6})"/.exec(/<(?:p:)?bg\b[\s\S]*?<\/(?:p:)?bg>/.exec(xml)?.[0] ?? "")?.[1] ?? "ffffff";
-  const shapes: SlideShape[] = [];
-  for (const match of xml.matchAll(/<(?:p:)?sp\b[\s\S]*?<\/(?:p:)?sp>/g)) {
-    const shape = match[0];
-    const text = extractSlideText(shape);
-    const transform = /<(?:a:)?off\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"[\s\S]*?<(?:a:)?ext\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/.exec(shape);
-    const fontSize = Number(xmlAttr(/<(?:a:)?rPr\b[^>]*>/.exec(shape)?.[0] ?? /<(?:a:)?defRPr\b[^>]*>/.exec(shape)?.[0] ?? "", "sz") || 1800) / 100;
-    const color = xmlAttr(/<(?:a:)?srgbClr\b[^>]*>/.exec(shape)?.[0] ?? "", "val") || "202124";
-    const alignValue = xmlAttr(/<(?:a:)?pPr\b[^>]*>/.exec(shape)?.[0] ?? "", "algn");
-    shapes.push({
-      id: `${index}:${shapes.length}`,
-      x: transform ? Number(transform[1]) / slideWidth : 0.08,
-      y: transform ? Number(transform[2]) / slideHeight : 0.08 + shapes.length * 0.1,
-      width: transform ? Number(transform[3]) / slideWidth : 0.84,
-      height: transform ? Number(transform[4]) / slideHeight : 0.12,
-      text,
-      fontSize: Math.max(10, Math.min(72, fontSize || 18)),
-      color: `#${color}`,
-      bold: /<(?:a:)?rPr\b[^>]*b="1"/.test(shape),
-      italic: /<(?:a:)?rPr\b[^>]*i="1"/.test(shape),
-      align: alignValue === "ctr" ? "center" : alignValue === "r" ? "right" : "left",
-      originalXml: shape,
-    });
-  }
-  const imageCount = [...xml.matchAll(/<(?:p:)?pic\b/g)].length;
+  const relsPath = path.replace(/slides\/([^/]+)$/, "slides/_rels/$1.rels");
+  const media = files ? relationshipMedia(files, relsPath, path).media : new Map<string, string>();
+  const tree = /<(?:p:)?spTree\b[\s\S]*<\/(?:p:)?spTree>/.exec(xml)?.[0] ?? xml;
+  const shapes = parseSlideTree(tree, index, slideWidth, slideHeight, media);
+  const imageCount = shapes.filter((shape) => shape.kind === "image").length || [...xml.matchAll(/<(?:p:)?pic\b/g)].length;
   return {
     index,
-    title: shapes[0]?.text.slice(0, 80) || `幻灯片 ${index + 1}`,
+    title: shapes.find((shape) => shape.text.trim())?.text.slice(0, 80) || `幻灯片 ${index + 1}`,
     background: `#${background}`,
     shapes,
     imageCount,
     path,
     originalXml: xml,
   };
+}
+
+function parseSlideTree(xml: string, index: number, slideWidth: number, slideHeight: number, media: Map<string, string>, origin?: { x: number; y: number; sx: number; sy: number }): SlideShape[] {
+  const shapes: SlideShape[] = [];
+  const ox = origin?.x ?? 0;
+  const oy = origin?.y ?? 0;
+  const sx = origin?.sx ?? 1;
+  const sy = origin?.sy ?? 1;
+  const push = (shape: SlideShape) => {
+    shape.x = ox + shape.x * sx;
+    shape.y = oy + shape.y * sy;
+    shape.width *= sx;
+    shape.height *= sy;
+    shapes.push(shape);
+  };
+  for (const match of xml.matchAll(/<(?:p:)?grpSp\b[\s\S]*?<\/(?:p:)?grpSp>/g)) {
+    const group = match[0];
+    const inner = group.replace(/^<(?:p:)?grpSp\b[^>]*>/, "").replace(/<\/(?:p:)?grpSp>$/, "");
+    const xfrm = parseXfrm(/<(?:p:)?grpSpPr\b[\s\S]*?<\/(?:p:)?grpSpPr>/.exec(group)?.[0] ?? group);
+    const chExt = /<(?:a:)?chExt\b[^>]*\/?>/.exec(group)?.[0] ?? "";
+    const childOrigin = xfrm
+      ? {
+          x: ox + (xfrm.x / slideWidth) * sx,
+          y: oy + (xfrm.y / slideHeight) * sy,
+          sx: sx * ((xfrm.cx || 1) / (Number(xmlAttr(chExt, "cx")) || xfrm.cx || 1)),
+          sy: sy * ((xfrm.cy || 1) / (Number(xmlAttr(chExt, "cy")) || xfrm.cy || 1)),
+        }
+        : origin;
+    shapes.push(...parseSlideTree(inner, index, slideWidth, slideHeight, media, childOrigin));
+  }
+  const withoutGroups = xml.replace(/<(?:p:)?grpSp\b[\s\S]*?<\/(?:p:)?grpSp>/g, "");
+  for (const match of withoutGroups.matchAll(/<(?:p:)?pic\b[\s\S]*?<\/(?:p:)?pic>/g)) {
+    const pic = match[0];
+    const transform = parseXfrm(pic);
+    const embed = xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(pic)?.[0] ?? "", "r:embed")
+      || xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(pic)?.[0] ?? "", "r:link");
+    push({
+      id: `${index}:${shapes.length + Math.random().toString(36).slice(2, 6)}`,
+      x: transform ? transform.x / slideWidth : 0.08,
+      y: transform ? transform.y / slideHeight : 0.08,
+      width: transform ? transform.cx / slideWidth : 0.4,
+      height: transform ? transform.cy / slideHeight : 0.3,
+      text: "",
+      fontSize: 12,
+      color: "#202124",
+      bold: false,
+      align: "left",
+      kind: "image",
+      src: embed ? media.get(embed) : undefined,
+      originalXml: pic,
+    });
+  }
+  for (const match of withoutGroups.matchAll(/<(?:p:)?graphicFrame\b[\s\S]*?<\/(?:p:)?graphicFrame>/g)) {
+    const frame = match[0];
+    const tableXml = /<(?:a:)?tbl\b[\s\S]*?<\/(?:a:)?tbl>/.exec(frame)?.[0];
+    if (!tableXml) continue;
+    const transform = parseXfrm(frame);
+    const rows = [...tableXml.matchAll(/<(?:a:)?tr\b[\s\S]*?<\/(?:a:)?tr>/g)].map((row) =>
+      [...row[0].matchAll(/<(?:a:)?tc\b[\s\S]*?<\/(?:a:)?tc>/g)].map((cell) => extractSlideText(cell[0])),
+    );
+    push({
+      id: `${index}:${shapes.length + Math.random().toString(36).slice(2, 6)}`,
+      x: transform ? transform.x / slideWidth : 0.08,
+      y: transform ? transform.y / slideHeight : 0.2,
+      width: transform ? transform.cx / slideWidth : 0.84,
+      height: transform ? transform.cy / slideHeight : Math.max(0.12, rows.length * 0.08),
+      text: rows.map((row) => row.join(" ")).join("\n"),
+      fontSize: 14,
+      color: "#202124",
+      bold: false,
+      align: "left",
+      kind: "table",
+      table: rows,
+      originalXml: frame,
+    });
+  }
+  for (const match of withoutGroups.matchAll(/<(?:p:)?sp\b[\s\S]*?<\/(?:p:)?sp>/g)) {
+    const shape = match[0];
+    const text = extractSlideText(shape);
+    const transform = parseXfrm(shape);
+    const fontSize = Number(xmlAttr(/<(?:a:)?rPr\b[^>]*>/.exec(shape)?.[0] ?? /<(?:a:)?defRPr\b[^>]*>/.exec(shape)?.[0] ?? "", "sz") || 1800) / 100;
+    const color = xmlAttr(/<(?:a:)?srgbClr\b[^>]*>/.exec(shape)?.[0] ?? "", "val") || "202124";
+    const alignValue = xmlAttr(/<(?:a:)?pPr\b[^>]*>/.exec(shape)?.[0] ?? "", "algn");
+    push({
+      id: `${index}:${shapes.length}`,
+      x: transform ? transform.x / slideWidth : 0.08,
+      y: transform ? transform.y / slideHeight : 0.08 + shapes.length * 0.1,
+      width: transform ? transform.cx / slideWidth : 0.84,
+      height: transform ? transform.cy / slideHeight : 0.12,
+      text,
+      fontSize: Math.max(10, Math.min(72, fontSize || 18)),
+      color: `#${color}`,
+      bold: /<(?:a:)?rPr\b[^>]*b="1"/.test(shape),
+      italic: /<(?:a:)?rPr\b[^>]*i="1"/.test(shape),
+      align: alignValue === "ctr" ? "center" : alignValue === "r" ? "right" : "left",
+      kind: "text",
+      originalXml: shape,
+    });
+  }
+  return shapes.map((shape, shapeIndex) => ({ ...shape, id: `${index}:${shapeIndex}` }));
 }
 
 function extractSlideText(xml: string) {
@@ -291,7 +375,6 @@ export function moveShape(slide: SlideModel, shapeId: string, x: number, y: numb
   if (width != null) shape.width = width;
   if (height != null) shape.height = height;
   shape.dirty = true;
-  shape.originalXml = undefined;
   slide.dirty = true;
 }
 
@@ -354,7 +437,12 @@ function serializeSlideXml(slide: SlideModel, document: PresentationDocument) {
     let xml = slide.originalXml;
     for (const shape of slide.shapes) {
       if (!shape.originalXml) continue;
-      xml = xml.replace(shape.originalXml, rewriteShapeText(shape.originalXml, shape.text));
+      let next = shape.kind === "image" || shape.kind === "table"
+        ? shape.originalXml
+        : rewriteShapeText(shape.originalXml, shape.text);
+      next = rewriteShapeXfrm(next, shape, document);
+      xml = xml.replace(shape.originalXml, next);
+      shape.originalXml = next;
     }
     const missing = slide.shapes.filter((shape) => !shape.originalXml);
     if (missing.length) {
@@ -364,8 +452,20 @@ function serializeSlideXml(slide: SlideModel, document: PresentationDocument) {
     return xml;
   }
   if (slide.originalXml && !slide.dirty) return slide.originalXml;
-  const shapes = slide.shapes.map((shape) => shapeXml(shape, document)).join("");
+  const shapes = slide.shapes.map((shape) => shape.originalXml && (shape.kind === "image" || shape.kind === "table")
+    ? rewriteShapeXfrm(shape.originalXml, shape, document)
+    : shapeXml(shape, document)).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"${slide.hidden ? ` show="0"` : ""}><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${slide.background.replace(/^#/, "")}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${document.width}" cy="${document.height}"/><a:chOff x="0" y="0"/><a:chExt cx="${document.width}" cy="${document.height}"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
+}
+
+function rewriteShapeXfrm(xml: string, shape: SlideShape, document: PresentationDocument) {
+  const x = Math.round(shape.x * document.width);
+  const y = Math.round(shape.y * document.height);
+  const cx = Math.round(shape.width * document.width);
+  const cy = Math.round(shape.height * document.height);
+  let next = xml.replace(/<(?:a:)?off\b[^>]*\/?>/, `<a:off x="${x}" y="${y}"/>`);
+  next = next.replace(/<(?:a:)?ext\b[^>]*\/?>/, `<a:ext cx="${cx}" cy="${cy}"/>`);
+  return next;
 }
 
 function rewriteShapeText(xml: string, text: string) {

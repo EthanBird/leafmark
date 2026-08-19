@@ -1,5 +1,14 @@
 import { encodedTextNode, encodeXml, decodeXml, xmlAttr } from "./xml";
 import { clonePackage, packageText, setPackageText, type OfficePackage, unzipPackage, zipPackage } from "./package";
+import { emuToPx, relationshipMedia } from "./media";
+
+export interface WordImage {
+  src: string;
+  rId?: string;
+  width?: number;
+  height?: number;
+  originalXml?: string;
+}
 
 export interface WordRun {
   text: string;
@@ -13,6 +22,7 @@ export interface WordRun {
   highlight?: string;
   vertAlign?: "subscript" | "superscript";
   hyperlink?: string;
+  image?: WordImage;
 }
 
 export interface WordList {
@@ -64,7 +74,7 @@ export interface WordDocument {
 
 const DEFAULT_SECT_PR = "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr>";
 
-export function parseWordBlocks(xml: string, lists = new Map<number, "bullet" | "number">()): { blocks: WordBlock[]; sectPr: string } {
+export function parseWordBlocks(xml: string, lists = new Map<number, "bullet" | "number">(), media = new Map<string, string>()): { blocks: WordBlock[]; sectPr: string } {
   const sectPr = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/.exec(xml)?.[0] ?? DEFAULT_SECT_PR;
   const body = xml.replace(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/, "");
   const blocks: WordBlock[] = [];
@@ -75,7 +85,7 @@ export function parseWordBlocks(xml: string, lists = new Map<number, "bullet" | 
       blocks.push(parseTable(token));
       continue;
     }
-    blocks.push(parseParagraph(token, lists));
+    blocks.push(parseParagraph(token, lists, media));
   }
   return { blocks, sectPr };
 }
@@ -96,14 +106,14 @@ function parseNumbering(xml: string) {
   return lists;
 }
 
-function parseParagraph(xml: string, lists = new Map<number, "bullet" | "number">()): WordParagraph {
+function parseParagraph(xml: string, lists = new Map<number, "bullet" | "number">(), media = new Map<string, string>()): WordParagraph {
   const style = xmlAttr(/<w:pStyle\b[^>]*>/.exec(xml)?.[0] ?? "", "w:val");
   const alignRaw = xmlAttr(/<w:jc\b[^>]*>/.exec(xml)?.[0] ?? "", "w:val");
   const heading = /(?:heading|标题)\s*([1-6])/i.exec(style);
   const numPr = /<w:numPr\b[\s\S]*?<\/w:numPr>/.exec(xml)?.[0] ?? "";
   const numId = Number(xmlAttr(/<w:numId\b[^>]*>/.exec(numPr)?.[0] ?? "", "w:val"));
   const ilvl = Number(xmlAttr(/<w:ilvl\b[^>]*>/.exec(numPr)?.[0] ?? "", "w:val"));
-  const runs = parseRuns(xml);
+  const runs = parseRuns(xml, media);
   const align = alignRaw === "center" || alignRaw === "ctr"
     ? "center"
     : alignRaw === "right" || alignRaw === "end"
@@ -136,7 +146,7 @@ function parseParagraph(xml: string, lists = new Map<number, "bullet" | "number"
   };
 }
 
-function parseRuns(xml: string): WordRun[] {
+function parseRuns(xml: string, media = new Map<string, string>()): WordRun[] {
   const runs: WordRun[] = [];
   const pattern = /<w:hyperlink\b[\s\S]*?<\/w:hyperlink>|<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g;
   for (const token of xml.matchAll(pattern)) {
@@ -144,25 +154,27 @@ function parseRuns(xml: string): WordRun[] {
     if (raw.startsWith("<w:hyperlink")) {
       const open = raw.slice(0, raw.indexOf(">") + 1);
       const href = xmlAttr(open, "w:anchor") || xmlAttr(open, "w:tooltip") || xmlAttr(open, "r:id");
-      for (const run of parsePlainRuns(raw)) runs.push({ ...run, hyperlink: href || run.hyperlink });
+      for (const run of parsePlainRuns(raw, media)) runs.push({ ...run, hyperlink: href || run.hyperlink });
       continue;
     }
-    const run = parsePlainRun(raw);
+    const run = parsePlainRun(raw, media);
     if (run) runs.push(run);
   }
   return runs;
 }
 
-function parsePlainRuns(xml: string): WordRun[] {
+function parsePlainRuns(xml: string, media = new Map<string, string>()): WordRun[] {
   const runs: WordRun[] = [];
   for (const token of xml.matchAll(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g)) {
-    const run = parsePlainRun(token[0]);
+    const run = parsePlainRun(token[0], media);
     if (run) runs.push(run);
   }
   return runs;
 }
 
-function parsePlainRun(run: string): WordRun | undefined {
+function parsePlainRun(run: string, media = new Map<string, string>()): WordRun | undefined {
+  const image = parseDrawingRun(run, media);
+  if (image) return { text: "", image };
   const rPr = /<w:rPr\b[\s\S]*?<\/w:rPr>/.exec(run)?.[0] ?? "";
   const text = extractRunText(run);
   if (!text && !/<w:br\b|<w:tab\b|<w:t\b/.test(run)) return undefined;
@@ -187,6 +199,27 @@ function parsePlainRun(run: string): WordRun | undefined {
   };
 }
 
+function parseDrawingRun(run: string, media: Map<string, string>): WordImage | undefined {
+  const drawing = /<w:drawing\b[\s\S]*?<\/w:drawing>|<w:pict\b[\s\S]*?<\/w:pict>/.exec(run)?.[0];
+  if (!drawing) return undefined;
+  const embed = xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(drawing)?.[0] ?? "", "r:embed")
+    || xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(drawing)?.[0] ?? "", "r:link")
+    || xmlAttr(/<(?:v:)?imagedata\b[^>]*>/.exec(drawing)?.[0] ?? "", "r:id");
+  if (!embed) return undefined;
+  const src = media.get(embed);
+  if (!src) return { src: "", rId: embed, originalXml: drawing };
+  const extent = /<(?:wp:)?extent\b[^>]*>/.exec(drawing)?.[0]
+    || /<(?:a:)?ext\b[^>]*>/.exec(drawing)?.[0]
+    || "";
+  return {
+    src,
+    rId: embed,
+    width: emuToPx(Number(xmlAttr(extent, "cx"))),
+    height: emuToPx(Number(xmlAttr(extent, "cy"))),
+    originalXml: drawing,
+  };
+}
+
 function extractRunText(run: string) {
   const withBreaks = run
     .replace(/<w:tab\b[^>]*\/?>/g, "\t")
@@ -208,14 +241,15 @@ function parseTable(xml: string): WordTable {
 }
 
 export function paragraphText(block: WordParagraph) {
-  return block.runs.map((run) => run.text).join("");
+  return block.runs.map((run) => run.image ? "" : run.text).join("");
 }
 
 export function openDocx(buffer: ArrayBuffer): WordDocument {
   const files = unzipPackage(buffer);
   const xml = packageText(files, "word/document.xml");
   const lists = parseNumbering(packageText(files, "word/numbering.xml", false));
-  const parsed = parseWordBlocks(xml, lists);
+  const { media } = relationshipMedia(files, "word/_rels/document.xml.rels", "word/document.xml");
+  const parsed = parseWordBlocks(xml, lists, media);
   return {
     type: "word",
     format: "docx",
@@ -299,6 +333,8 @@ function serializeBlock(block: WordBlock) {
 }
 
 function serializeRun(run: WordRun) {
+  if (run.image?.originalXml) return run.image.originalXml;
+  if (run.image) return "";
   const props: string[] = [];
   if (run.bold) props.push("<w:b/>");
   if (run.italic) props.push("<w:i/>");
@@ -356,12 +392,148 @@ function minimalDocxParts(): OfficePackage {
 }
 
 export function htmlToRuns(html: string): WordRun[] {
-  const source = html.replace(/&nbsp;/g, " ").replace(/<div>/gi, "").replace(/<\/div>/gi, "\n").replace(/<p>/gi, "").replace(/<\/p>/gi, "\n");
+  const source = html
+    .replace(/&nbsp;/gi, " ")
+    .replace(/<div[^>]*>/gi, "")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<p[^>]*>/gi, "")
+    .replace(/<\/p>/gi, "\n");
+  if (typeof DOMParser !== "undefined") {
+    try {
+      const doc = new DOMParser().parseFromString(`<div>${source}</div>`, "text/html");
+      const runs = walkHtmlNode(doc.body, emptyStyle());
+      return mergeRuns(runs.length ? runs : [{ text: "" }]);
+    } catch {
+      /* fall through to the tokenizer */
+    }
+  }
+  return htmlToRunsFallback(source);
+}
+
+export function runsToHtml(runs: WordRun[]) {
+  return runs.map((run) => {
+    if (run.image) {
+      const width = run.image.width ? ` width="${run.image.width}"` : "";
+      const height = run.image.height ? ` height="${run.image.height}"` : "";
+      const rid = run.image.rId ? ` data-rid="${encodeXml(run.image.rId)}"` : "";
+      return `<img src="${encodeXml(run.image.src)}"${rid}${width}${height} alt="" contenteditable="false" />`;
+    }
+    let html = encodeXml(run.text).replace(/\n/g, "<br>");
+    if (run.hyperlink) html = `<a href="${encodeXml(run.hyperlink)}">${html}</a>`;
+    const css: string[] = [];
+    if (run.bold) css.push("font-weight:700");
+    if (run.italic) css.push("font-style:italic");
+    const deco = [run.underline ? "underline" : "", run.strike ? "line-through" : ""].filter(Boolean).join(" ");
+    if (deco) css.push(`text-decoration:${deco}`);
+    if (run.color) css.push(`color:${run.color}`);
+    if (run.fontSize) css.push(`font-size:${run.fontSize}pt`);
+    if (run.font) css.push(`font-family:${run.font}`);
+    if (run.highlight) css.push(`background:${/^#|[0-9A-Fa-f]{6}/.test(run.highlight) ? `#${run.highlight.replace(/^#/, "")}` : run.highlight}`);
+    if (run.vertAlign === "subscript") css.push("vertical-align:sub");
+    if (run.vertAlign === "superscript") css.push("vertical-align:super");
+    const tags: string[] = [];
+    if (run.bold) tags.push("b");
+    if (run.italic) tags.push("i");
+    if (run.underline) tags.push("u");
+    if (run.strike) tags.push("s");
+    let wrapped = html;
+    for (const tag of tags) wrapped = `<${tag}>${wrapped}</${tag}>`;
+    if (css.length) wrapped = `<span style="${css.join(";")}">${wrapped}</span>`;
+    return wrapped;
+  }).join("");
+}
+
+export function restoreImageRuns(next: WordRun[], previous: WordRun[]) {
+  const originals = previous.filter((run) => run.image);
+  if (!originals.length) return next;
+  let index = 0;
+  return next.map((run) => {
+    if (!run.image) return run;
+    const match = originals.find((item) => item.image && (
+      (run.image?.rId && item.image.rId === run.image.rId)
+      || (run.image?.src && item.image.src === run.image.src)
+    )) ?? originals[index++];
+    if (!match?.image) return run;
+    return { ...run, image: { ...match.image, ...run.image, originalXml: match.image.originalXml || run.image.originalXml } };
+  });
+}
+
+interface HtmlStyle {
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  strike: boolean;
+}
+
+function emptyStyle(): HtmlStyle {
+  return { bold: false, italic: false, underline: false, strike: false };
+}
+
+function walkHtmlNode(node: Node, style: HtmlStyle): WordRun[] {
   const runs: WordRun[] = [];
-  const style = { bold: false, italic: false, underline: false, strike: false };
-  const pattern = /<\/?(b|strong|i|em|u|s|strike|br)(?:\s[^>]*)?>|[^<]+/gi;
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === 3) {
+      pushRun(runs, styledRun(child.textContent ?? "", style));
+      return;
+    }
+    if (!(child instanceof Element)) return;
+    const tag = child.tagName.toLowerCase();
+    if (tag === "br") {
+      pushRun(runs, styledRun("\n", style));
+      return;
+    }
+    if (tag === "img") {
+      const src = child.getAttribute("src") || "";
+      if (src) {
+        runs.push({
+          text: "",
+          image: {
+            src,
+            rId: child.getAttribute("data-rid") || undefined,
+            width: Number(child.getAttribute("width")) || undefined,
+            height: Number(child.getAttribute("height")) || undefined,
+          },
+        });
+      }
+      return;
+    }
+    if (tag === "script" || tag === "style") return;
+    const next = { ...style };
+    if (tag === "b" || tag === "strong") next.bold = true;
+    if (tag === "i" || tag === "em") next.italic = true;
+    if (tag === "u") next.underline = true;
+    if (tag === "s" || tag === "strike" || tag === "del") next.strike = true;
+    const css = `${child.getAttribute("style") ?? ""} ${child instanceof HTMLElement ? `${child.style.fontWeight} ${child.style.fontStyle} ${child.style.textDecoration}` : ""}`;
+    if (/font-weight\s*:\s*(bold|[7-9]00)|\b(bold|[7-9]00)\b/i.test(css)) next.bold = true;
+    if (/font-style\s*:\s*italic|\bitalic\b/i.test(css)) next.italic = true;
+    if (/underline/i.test(css)) next.underline = true;
+    if (/line-through/i.test(css)) next.strike = true;
+    runs.push(...walkHtmlNode(child, next));
+  });
+  return runs;
+}
+
+function styledRun(text: string, style: HtmlStyle): WordRun {
+  const run: WordRun = { text };
+  if (style.bold) run.bold = true;
+  if (style.italic) run.italic = true;
+  if (style.underline) run.underline = true;
+  if (style.strike) run.strike = true;
+  return run;
+}
+
+function htmlToRunsFallback(source: string): WordRun[] {
+  const runs: WordRun[] = [];
+  const style = emptyStyle();
+  const pattern = /<img\b[^>]*>|<\/?[a-zA-Z][^>]*>|[^<]+/gi;
   for (const match of source.matchAll(pattern)) {
     const token = match[0];
+    if (/^<img\b/i.test(token)) {
+      const src = /src="([^"]*)"/i.exec(token)?.[1] || "";
+      const rid = /data-rid="([^"]*)"/i.exec(token)?.[1];
+      if (src) runs.push({ text: "", image: { src, rId: rid } });
+      continue;
+    }
     const tag = /^<\/?([a-z]+)/i.exec(token)?.[1]?.toLowerCase();
     if (tag === "br") {
       pushRun(runs, { ...style, text: "\n" });
@@ -379,11 +551,27 @@ export function htmlToRuns(html: string): WordRun[] {
       style.underline = !token.startsWith("</");
       continue;
     }
-    if (tag === "s" || tag === "strike") {
+    if (tag === "s" || tag === "strike" || tag === "del") {
       style.strike = !token.startsWith("</");
       continue;
     }
-    if (token.startsWith("<")) continue;
+    if (token.startsWith("<")) {
+      const opening = /^<([a-z]+)([^>]*)>/i.exec(token);
+      if (opening && !token.startsWith("</")) {
+        if (/font-weight\s*:\s*(bold|[7-9]00)/i.test(opening[2])) style.bold = true;
+        if (/font-style\s*:\s*italic/i.test(opening[2])) style.italic = true;
+        if (/text-decoration[^"';]*underline/i.test(opening[2])) style.underline = true;
+        if (/text-decoration[^"';]*line-through/i.test(opening[2])) style.strike = true;
+      } else if (opening?.[1] === "span" || token.startsWith("</span")) {
+        if (token.startsWith("</span")) {
+          style.bold = false;
+          style.italic = false;
+          style.underline = false;
+          style.strike = false;
+        }
+      }
+      continue;
+    }
     const run: WordRun = { text: decodeXml(token) };
     if (style.bold) run.bold = true;
     if (style.italic) run.italic = true;
@@ -395,6 +583,10 @@ export function htmlToRuns(html: string): WordRun[] {
 }
 
 function pushRun(runs: WordRun[], run: WordRun) {
+  if (run.image) {
+    runs.push(run);
+    return;
+  }
   if (!run.text) return;
   const previous = runs[runs.length - 1];
   if (previous
@@ -414,6 +606,7 @@ function mergeRuns(runs: WordRun[]) {
   for (const run of runs) {
     const previous = merged[merged.length - 1];
     if (previous
+      && !previous.image && !run.image
       && previous.bold === run.bold
       && previous.italic === run.italic
       && previous.underline === run.underline

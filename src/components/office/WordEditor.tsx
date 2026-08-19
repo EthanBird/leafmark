@@ -1,9 +1,9 @@
 import { AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, ChevronDown, Heading1, Heading2, Heading3, IndentDecrease, IndentIncrease, Italic, Link, List, ListOrdered, Redo2, Replace, Search, Strikethrough, Subscript, Superscript, Table, Underline, Undo2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { loadWordChunk, mutateOffice, redoOffice, replaceWordBlock, undoOffice } from "../../office/office-client";
 import type { OfficeMutation, WordOpenResult } from "../../office/types";
 import type { WordBlock, WordParagraph, WordRun } from "../../office/word";
-import { htmlToRuns, paragraphText, wordCount } from "../../office/word";
+import { htmlToRuns, paragraphText, restoreImageRuns, runsToHtml, wordCount } from "../../office/word";
 import { AskAiRibbonButton } from "../AskAiToolbar";
 
 const WORD_CHUNK = 160;
@@ -285,43 +285,72 @@ function WordBlockEditor({
       }}
     >{cell.text}</td>)}</tr>)}</tbody></table></div>;
   }
+  return (
+    <WordParagraphEditor
+      block={block}
+      editable={editable}
+      active={active}
+      onFocus={onFocus}
+      onChange={onChange}
+      onSplit={onSplit}
+    />
+  );
+}
+
+function WordParagraphEditor({
+  block,
+  editable,
+  active,
+  onFocus,
+  onChange,
+  onSplit,
+}: {
+  block: WordParagraph;
+  editable: boolean;
+  active: boolean;
+  onFocus: () => void;
+  onChange: (block: WordBlock) => void;
+  onSplit: (offset: number) => void;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  const html = runsToHtml(block.runs);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || document.activeElement === node) return;
+    if (node.innerHTML !== html) node.innerHTML = html;
+  }, [html]);
   const Tag = (block.kind === "heading" ? `h${Math.max(1, Math.min(6, block.level ?? 2))}` : "p") as "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
   const listClass = block.list ? `word-list word-list-${block.list.type}` : "";
-  return <Tag
-    data-word-block
-    className={`${listClass}${active ? " word-block-active" : ""}${block.pageBreak ? " word-page-break" : ""}`}
-    contentEditable={editable}
-    suppressContentEditableWarning
-    style={{
-      textAlign: block.align,
-      marginLeft: block.indent ? `${block.indent * 1.4}em` : undefined,
-      lineHeight: block.lineSpacing,
-      paddingTop: block.spacingBefore ? block.spacingBefore / 20 : undefined,
-    }}
-    onFocus={onFocus}
-    onKeyDown={(event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        onSplit(caretOffset(event.currentTarget));
-      }
-    }}
-    onBlur={(event) => {
-      const runs = htmlToRuns(event.currentTarget.innerHTML);
-      const next: WordParagraph = { ...block, runs, dirty: true };
-      if (paragraphText(next) === paragraphText(block) && !event.currentTarget.querySelector("b,i,u,s,strong,em")) return;
-      onChange(next);
-    }}
-  >{block.runs.map((run, index) => <span key={index} style={{
-    color: run.color,
-    fontSize: run.fontSize ? `${run.fontSize}pt` : undefined,
-    fontFamily: run.font,
-    fontWeight: run.bold ? 700 : undefined,
-    fontStyle: run.italic ? "italic" : undefined,
-    textDecoration: [run.underline ? "underline" : "", run.strike ? "line-through" : ""].filter(Boolean).join(" ") || undefined,
-    background: run.highlight && !/^#|[0-9A-Fa-f]{6}/.test(run.highlight) ? run.highlight : run.highlight ? `#${run.highlight.replace(/^#/, "")}` : undefined,
-    verticalAlign: run.vertAlign === "subscript" ? "sub" : run.vertAlign === "superscript" ? "super" : undefined,
-    whiteSpace: "pre-wrap",
-  }}>{run.hyperlink ? <a href={run.hyperlink} onClick={(event) => event.preventDefault()}>{run.text}</a> : run.text}</span>)}</Tag>;
+  return (
+    <Tag
+      ref={ref as never}
+      data-word-block
+      className={`${listClass}${active ? " word-block-active" : ""}${block.pageBreak ? " word-page-break" : ""}`}
+      contentEditable={editable}
+      suppressContentEditableWarning
+      style={{
+        textAlign: block.align,
+        marginLeft: block.indent ? `${block.indent * 1.4}em` : undefined,
+        lineHeight: block.lineSpacing,
+        paddingTop: block.spacingBefore ? block.spacingBefore / 20 : undefined,
+      }}
+      onFocus={onFocus}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          onSplit(caretOffset(event.currentTarget));
+        }
+      }}
+      onBlur={(event) => {
+        const runs = restoreImageRuns(htmlToRuns(event.currentTarget.innerHTML), block.runs);
+        const next: WordParagraph = { ...block, runs, dirty: true };
+        if (paragraphText(next) === paragraphText(block)
+          && runs.filter((run) => run.image).length === block.runs.filter((run) => run.image).length
+          && !event.currentTarget.querySelector("b,i,u,s,strong,em")) return;
+        onChange(next);
+      }}
+    />
+  );
 }
 
 function caretOffset(node: HTMLElement) {
