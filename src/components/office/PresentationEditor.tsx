@@ -1,5 +1,5 @@
 import { AlignCenter, AlignLeft, AlignRight, Bold, Copy, EyeOff, Italic, Plus, Presentation, Redo2, Trash2, Type, Undo2 } from "lucide-react";
-import { useRef, useState, type MouseEvent } from "react";
+import { useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { addPresentationSlide, loadPresentationSlide, mutateOffice, redoOffice, undoOffice, updatePresentationShape } from "../../office/office-client";
 import type { PresentationOpenResult } from "../../office/types";
 import type { SlideModel, SlideShape } from "../../office/slide";
@@ -12,6 +12,25 @@ const LAYOUTS: Array<{ value: NonNullable<SlideModel["layout"]>; label: string }
   { value: "twoContent", label: "两栏内容" },
   { value: "blank", label: "空白" },
 ];
+
+export function slideSurfaceStyle(slide: Pick<SlideModel, "background" | "backgroundImage">): CSSProperties {
+  return {
+    backgroundColor: slide.background,
+    backgroundImage: slide.backgroundImage ? `url("${slide.backgroundImage}")` : undefined,
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+  };
+}
+
+export function SlideStage({ slide }: { slide: SlideModel }) {
+  return (
+    <div className="slide-canvas" style={slideSurfaceStyle(slide)}>
+      {slide.shapes.map((item) => (
+        <SlideShapeView key={item.id} item={item} active={false} playing />
+      ))}
+    </div>
+  );
+}
 
 export function PresentationEditor({ documentKey, initial, onDirty }: { documentKey: string; initial: PresentationOpenResult; onDirty: () => void }) {
   const [slides, setSlides] = useState(initial.slides);
@@ -112,16 +131,7 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
           }
         }}
       >
-        <div className="slide-canvas" style={{
-          backgroundColor: slide.background,
-          backgroundImage: slide.backgroundImage ? `url("${slide.backgroundImage}")` : undefined,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-        }}>
-          {slide.shapes.map((item) => (
-            <SlideShapeView key={item.id} item={item} active={false} playing />
-          ))}
-        </div>
+        <SlideStage slide={slide} />
         <small>{playIndex + 1} / {visibleSlides.length} · Esc 退出</small>
       </div>
     );
@@ -200,12 +210,7 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
             <div
               className="slide-canvas"
               ref={canvasRef}
-              style={{
-                backgroundColor: slide.background,
-                backgroundImage: slide.backgroundImage ? `url("${slide.backgroundImage}")` : undefined,
-                backgroundSize: "cover",
-                backgroundPosition: "center",
-              }}
+              style={slideSurfaceStyle(slide)}
               onMouseMove={onMove}
               onMouseUp={endDrag}
               onMouseLeave={endDrag}

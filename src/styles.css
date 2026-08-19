@@ -1073,6 +1073,35 @@ button:disabled { opacity: .42; cursor: default !important; }
 .slide-media-note { position: absolute; right: 8px; bottom: 7px; padding: 3px 5px; border-radius: 4px; background: rgba(0, 0, 0, .52); color: #fff; font-size: 7px; }
 .slide-layout-ph { opacity: .62; }
 
+.office-gallery { min-height: 100vh; background: var(--canvas); color: var(--text); }
+.office-gallery-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.office-gallery-bar button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.office-gallery-bar button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 650; }
+.office-gallery-bar small { color: var(--text-tertiary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-gallery-error { padding: 24px; color: var(--danger); }
+.office-gallery-pane { height: calc(100vh - 44px); min-height: 0; }
+.office-gallery-pane .word-viewer { height: 100%; }
+.office-gallery-ppt { overflow: auto; padding: 18px 24px 64px; display: grid; gap: 28px; height: auto; min-height: calc(100vh - 44px); }
+.office-gallery-slide h2 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--text-secondary); }
+.office-gallery-stage { width: min(100%, 1080px); }
+.office-gallery-stage .slide-canvas { width: 100%; height: auto; }
+
 @media (max-width: 720px) {
   .word-viewer { padding: 10px 6px 76px; }
   .word-page { padding: 36px 22px 70px; border: 0; box-shadow: none; }

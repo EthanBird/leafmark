@@ -93,7 +93,9 @@ function parsePptxSlide(xml: string, index: number, path: string, slideWidth: nu
   const imageCount = shapes.filter((shape) => shape.kind === "image").length || [...xml.matchAll(/<(?:p:)?pic\b/g)].length;
   return {
     index,
-    title: shapes.find((shape) => shape.text.trim())?.text.slice(0, 80) || `幻灯片 ${index + 1}`,
+    title: shapes.find((shape) => (shape.kind === "text" || !shape.kind) && shape.text.trim())?.text.slice(0, 80)
+      || shapes.find((shape) => shape.text.trim())?.text.slice(0, 80)
+      || `幻灯片 ${index + 1}`,
     background: background.color || "#ffffff",
     backgroundImage: background.image,
     shapes,
@@ -126,10 +128,15 @@ function mergeLayoutPlaceholders(
   slideHeight: number,
   media: Map<string, string>,
 ) {
+  const chrome = new Set(["dt", "ftr", "sldNum", "hdr"]);
   const present = new Set(shapes.map((shape) => shape.placeholder).filter(Boolean));
   const tree = /<(?:p:)?spTree\b[\s\S]*<\/(?:p:)?spTree>/.exec(layoutXml)?.[0] ?? layoutXml;
   const extras = parseSlideTree(tree, index, slideWidth, slideHeight, media)
-    .filter((shape) => shape.placeholder && !present.has(shape.placeholder) && (shape.kind === "text" || !shape.kind));
+    .filter((shape) => {
+      const type = (shape.placeholder ?? "").split(":")[0];
+      if (!shape.placeholder || present.has(shape.placeholder) || chrome.has(type)) return false;
+      return shape.kind === "text" || !shape.kind;
+    });
   extras.forEach((shape, extraIndex) => {
     shapes.push({
       ...shape,
@@ -217,6 +224,9 @@ function parseSlideTree(xml: string, index: number, slideWidth: number, slideHei
   }
   for (const match of withoutGroups.matchAll(/<(?:p:)?sp\b[\s\S]*?<\/(?:p:)?sp>/g)) {
     const shape = match[0];
+    const ph = placeholderKey(shape);
+    const phType = ph.split(":")[0];
+    if (phType === "dt" || phType === "ftr" || phType === "sldNum" || phType === "hdr") continue;
     const text = extractSlideText(shape);
     const transform = parseXfrm(shape);
     const fontSize = Number(xmlAttr(/<(?:a:)?rPr\b[^>]*>/.exec(shape)?.[0] ?? /<(?:a:)?defRPr\b[^>]*>/.exec(shape)?.[0] ?? "", "sz") || 1800) / 100;
