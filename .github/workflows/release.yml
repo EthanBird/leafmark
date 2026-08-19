@@ -1,19 +1,11 @@
 name: Publish Windows, Linux and Android release
 
+# Automatic GitHub Actions publishing is disabled.
+# Linux AppImage packaging repeatedly hit the 50-minute job timeout and cancelled
+# the whole release after Windows/Android were already uploaded. Builds are now
+# produced locally and attached to GitHub Releases by hand.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/release.yml
-      - index.html
-      - package.json
-      - src/**
-      - src-tauri/Cargo.lock
-      - src-tauri/Cargo.toml
-      - src-tauri/gen/android/**
-      - src-tauri/src/**
-      - src-tauri/tauri.conf.json
+  workflow_dispatch:
 
 permissions:
   contents: write
