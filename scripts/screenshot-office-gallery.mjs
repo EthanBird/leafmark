@@ -170,12 +170,17 @@ try {
   await shot("leafmark-excel-drag-select.png");
 
   await page.click("[data-cell='2:1']");
-  const formula = await page.$('input[aria-label="公式栏"]');
-  await formula.click({ clickCount: 3 });
-  await page.keyboard.type("9");
+  await page.waitForFunction(() => document.querySelector("[data-office='excel']")?.getAttribute("data-selection")?.startsWith("2:1:"));
+  await page.focus('input[aria-label="公式栏"]');
+  await page.$eval('input[aria-label="公式栏"]', (el) => {
+    el.focus();
+    const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+    descriptor.set.call(el, "9");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   await page.keyboard.press("Enter");
-  await page.waitForFunction(() => document.querySelector("[data-cell='2:1']")?.textContent === "9");
-  await page.waitForFunction(() => document.querySelector("[data-cell='2:3']")?.textContent === "360");
+  await page.waitForFunction(() => document.querySelector("[data-cell='2:1']")?.textContent === "9", { timeout: 15_000 });
+  await page.waitForFunction(() => document.querySelector("[data-cell='2:3']")?.textContent === "360", { timeout: 15_000 });
   await assert(await page.$eval("[data-dirty]", (el) => el.getAttribute("data-dirty") === "1"), "改单元格后标记已修改");
   await shot("leafmark-excel-after-edit.png");
 
