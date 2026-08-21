@@ -50,6 +50,7 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
   const [editing, setEditing] = useState<string | null>(null);
   const [range, setRange] = useState({ rowStart: 0, colStart: 0, rowCount: 80, colCount: 26 });
   const [tab, setTab] = useState<"home" | "data">("home");
+  const [engineError, setEngineError] = useState("");
 
   const totalRows = Math.max(used.rows + 24, 80);
   const totalCols = Math.max(used.cols + 8, 26);
@@ -144,19 +145,29 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
 
   const commit = async (row: number, col: number, input: string) => {
     onDirty();
-    const viewport = await editSheetCell(documentKey, sheetName, row, col, input);
-    applyViewport(viewport);
-    setEditing(null);
-    await loadRange();
+    try {
+      const viewport = await editSheetCell(documentKey, sheetName, row, col, input);
+      applyViewport(viewport);
+      setEditing(null);
+      setEngineError("");
+      await loadRange();
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const run = async (mutation: Parameters<typeof mutateOffice>[1]) => {
     onDirty();
-    const result = await mutateOffice(documentKey, mutation) as { sheets?: Array<{ name: string; rows: number; cols: number }>; name?: string };
-    if (result.sheets) setSheets(result.sheets);
-    if (result.name) setSheetName(result.name);
-    setCells(new Map());
-    await loadRange();
+    try {
+      const result = await mutateOffice(documentKey, mutation) as { sheets?: Array<{ name: string; rows: number; cols: number }>; name?: string };
+      if (result.sheets) setSheets(result.sheets);
+      if (result.name) setSheetName(result.name);
+      setCells(new Map());
+      setEngineError("");
+      await loadRange();
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const switchSheet = async (name: string) => {
@@ -312,7 +323,14 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
   const covered = (row: number, col: number) => merges.some((item) => !(item.r === row && item.c === col) && row >= item.r && row < item.r + item.rows && col >= item.c && col < item.c + item.cols);
 
   return (
-    <div className="binary-viewer spreadsheet-viewer office-editor" ref={rootRef} tabIndex={0}>
+    <div
+      className="binary-viewer spreadsheet-viewer office-editor"
+      ref={rootRef}
+      tabIndex={0}
+      data-office="excel"
+      data-selection={`${rowStartSel}:${colStartSel}:${rowEndSel}:${colEndSel}`}
+      data-freeze={`${freeze.row}:${freeze.col}`}
+    >
       <div className="office-ribbon-wrap">
         <div className="office-ribbon-tabs" role="tablist">
           <button type="button" className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}>开始</button>
@@ -393,6 +411,7 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
           />
           <small>{used.rows.toLocaleString()} × {used.cols.toLocaleString()}{freeze.row || freeze.col ? ` · 冻结 ${freeze.row},${freeze.col}` : ""}</small>
         </div>
+        {engineError && <div className="office-engine-error" data-office-error>{engineError}</div>}
       </div>
       <div className="sheet-scroll sheet-virtual" ref={scrollerRef} onMouseDown={(event) => {
         if (event.button !== 0 || (event.target as HTMLElement).closest(".sheet-cell, .sheet-cell-input, .sheet-fill-handle")) return;
@@ -442,6 +461,8 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
             }
             return <div
               key={`${row}:${col}`}
+              data-cell={`${row}:${col}`}
+              data-merged={merge ? `${merge.rows}:${merge.cols}` : undefined}
               className={`sheet-cell${active ? " active" : ""}${inRange ? " selected" : ""}${cell?.type === "n" || cell?.type === "f" ? " numeric" : ""}${cell?.wrap ? " wrap" : ""}${frozenR ? " frozen-row" : ""}${frozenC ? " frozen-col" : ""}`}
               style={{
                 left: cellLeft(col),

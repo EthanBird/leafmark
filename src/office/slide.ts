@@ -256,10 +256,19 @@ function parseSlideTree(xml: string, index: number, slideWidth: number, slideHei
 }
 
 function extractSlideText(xml: string) {
-  return [...xml.matchAll(/<(?:a:)?t\b(?:\s[^>]*)?>([\s\S]*?)<\/(?:a:)?t>/g)]
+  const bodies = [...xml.matchAll(/<(?:(?:a|p):)?txBody\b[\s\S]*?<\/(?:(?:a|p):)?txBody>/g)];
+  const source = bodies.length ? bodies.map((item) => item[0]).join("\n") : xml;
+  const paragraphs = [...source.matchAll(/<(?:a:)?p\b[\s\S]*?<\/(?:a:)?p>/g)].map((item) =>
+    [...item[0].matchAll(/<(?:a:)?t\b(?:\s[^>]*)?>([\s\S]*?)<\/(?:a:)?t>/g)]
+      .map((match) => decodeXml(match[1]))
+      .join("")
+      .replace(/\u000b/g, "\n"),
+  );
+  const text = (paragraphs.length ? paragraphs.join("\n") : [...source.matchAll(/<(?:a:)?t\b(?:\s[^>]*)?>([\s\S]*?)<\/(?:a:)?t>/g)]
     .map((match) => decodeXml(match[1]))
-    .join("")
+    .join(""))
     .replace(/\u000b/g, "\n");
+  return text.replace(/^\n+|\n+$/g, "");
 }
 
 function parseSlideTable(tableXml: string): SlideTableCell[][] {
@@ -454,7 +463,37 @@ export function addBlankSlide(document: PresentationDocument) {
   return slide;
 }
 
+function shapeBox(shape: Pick<SlideShape, "x" | "y" | "width" | "height">) {
+  return { x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+}
+
+function boxesOverlap(a: ReturnType<typeof shapeBox>, b: ReturnType<typeof shapeBox>, pad = 0.01) {
+  return a.x < b.x + b.width - pad && a.x + a.width > b.x + pad && a.y < b.y + b.height - pad && a.y + a.height > b.y + pad;
+}
+
+function occupiesCanvas(shape: SlideShape) {
+  if (shape.kind === "image" && shape.width >= 0.92 && shape.height >= 0.92 && shape.x <= 0.04 && shape.y <= 0.04) return false;
+  return true;
+}
+
+export function findTextBoxSlot(slide: SlideModel, width = 0.76, height = 0.18) {
+  const blockers = slide.shapes.filter(occupiesCanvas).map(shapeBox);
+  const candidates = [
+    { x: 0.08, y: 0.74, width, height },
+    { x: 0.08, y: 0.04, width, height },
+    { x: 0.54, y: 0.72, width: Math.min(width, 0.4), height },
+    { x: 0.08, y: 0.72, width: Math.min(width, 0.4), height },
+    { x: 0.54, y: 0.22, width: Math.min(width, 0.4), height },
+    { x: 0.08, y: 0.22, width: Math.min(width, 0.4), height },
+  ];
+  const free = candidates.find((slot) => !blockers.some((item) => boxesOverlap(slot, item)));
+  if (free) return free;
+  const lowest = blockers.reduce((max, item) => Math.max(max, item.y + item.height), 0);
+  return { x: 0.12, y: Math.min(0.78, lowest + 0.02), width, height };
+}
+
 export function addTextBox(slide: SlideModel, patch?: Partial<SlideShape>) {
+  const placed = patch && (patch.x != null || patch.y != null) ? null : findTextBoxSlot(slide);
   const shape: SlideShape = {
     id: `${slide.index}:${slide.shapes.length}`,
     x: 0.12,
@@ -468,6 +507,7 @@ export function addTextBox(slide: SlideModel, patch?: Partial<SlideShape>) {
     align: "left",
     kind: "text",
     dirty: true,
+    ...placed,
     ...patch,
   };
   slide.shapes.push(shape);
@@ -576,7 +616,39 @@ function rewriteShapeXfrm(xml: string, shape: SlideShape, document: Presentation
   return next;
 }
 
+function rewriteTxBody(body: string, lines: string[]) {
+  const encoded = lines.map(encodeXml);
+  let index = 0;
+  let next = body.replace(/<(?:a:)?p\b[\s\S]*?<\/(?:a:)?p>/g, (para) => {
+    if (index >= lines.length) return "";
+    const line = encoded[index];
+    index += 1;
+    if (/<(?:a:)?t\b/.test(para)) {
+      let replaced = false;
+      return para.replace(/<(?:a:)?t\b(?:\s[^>]*)?>[\s\S]*?<\/(?:a:)?t>/g, (match) => {
+        if (replaced) return match.replace(/>[\s\S]*</, "><");
+        replaced = true;
+        return match.replace(/>[\s\S]*</, ` xml:space="preserve">${line}<`);
+      });
+    }
+    return para.replace(/<\/(?:a:)?p>/, `<a:r><a:t xml:space="preserve">${line}</a:t></a:r></a:p>`);
+  });
+  if (!index && encoded.length) {
+    const extra = encoded.map((line) => `<a:p><a:r><a:t xml:space="preserve">${line}</a:t></a:r></a:p>`).join("");
+    return next.replace(/<(?:a:)?lstStyle\s*\/>/, `$&${extra}`);
+  }
+  if (index < encoded.length) {
+    const extra = encoded.slice(index).map((line) => `<a:p><a:r><a:t xml:space="preserve">${line}</a:t></a:r></a:p>`).join("");
+    next = next.replace(/(<\/(?:(?:a|p):)?txBody>)/, `${extra}$1`);
+  }
+  return next;
+}
+
 function rewriteShapeText(xml: string, text: string) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (/<(?:(?:a|p):)?txBody\b/.test(xml)) {
+    return xml.replace(/<(?:(?:a|p):)?txBody\b[\s\S]*?<\/(?:(?:a|p):)?txBody>/, (body) => rewriteTxBody(body, lines));
+  }
   const encoded = encodeXml(text);
   if (/<(?:a:)?t\b/.test(xml)) {
     let replaced = false;
@@ -596,7 +668,11 @@ function shapeXml(shape: SlideShape, document: PresentationDocument) {
   const cy = Math.round(shape.height * document.height);
   const align = shape.align === "center" ? "ctr" : shape.align === "right" ? "r" : "l";
   const fill = shape.fill ? `<a:solidFill><a:srgbClr val="${shape.fill.replace(/^#/, "")}"/></a:solidFill>` : "";
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${Number(shape.id.split(":")[1] ?? 2) + 2}" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${fill}</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/><a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="zh-CN" sz="${Math.round(shape.fontSize * 100)}" b="${shape.bold ? 1 : 0}" i="${shape.italic ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${shape.color.replace(/^#/, "")}"/></a:solidFill></a:rPr><a:t>${encodeXml(shape.text)}</a:t></a:r></a:p></p:txBody></p:sp>`;
+  const runPr = `<a:rPr lang="zh-CN" sz="${Math.round(shape.fontSize * 100)}" b="${shape.bold ? 1 : 0}" i="${shape.italic ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${shape.color.replace(/^#/, "")}"/></a:solidFill></a:rPr>`;
+  const paragraphs = shape.text.replace(/\r\n/g, "\n").split("\n").map((line) =>
+    `<a:p><a:pPr algn="${align}"/><a:r>${runPr}<a:t xml:space="preserve">${encodeXml(line)}</a:t></a:r></a:p>`,
+  ).join("");
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${Number(shape.id.split(":")[1] ?? 2) + 2}" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${fill}</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>${paragraphs}</p:txBody></p:sp>`;
 }
 
 function serializeOdp(document: PresentationDocument) {

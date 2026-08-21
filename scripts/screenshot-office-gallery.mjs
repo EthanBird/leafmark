@@ -99,8 +99,10 @@ try {
 
   const insertTab = await page.$(".office-ribbon-tabs button:nth-child(2)");
   await insertTab.click();
+  const beforeBlocks = await page.$eval("[data-word-total]", (el) => Number(el.getAttribute("data-word-total")));
   await page.click('button[title="插入表格"]');
   await page.waitForFunction(() => document.querySelectorAll(".word-table-wrap").length >= 2, { timeout: 15_000 });
+  await page.waitForFunction((before) => Number(document.querySelector("[data-word-total]")?.getAttribute("data-word-total")) === before + 1, {}, beforeBlocks);
   await shot("leafmark-word-insert-table.png");
 
   await page.goto(`${base}/office-gallery.html#ppt`, { waitUntil: "networkidle0" });
@@ -134,7 +136,48 @@ try {
 
   await page.click('button[title="文本框"]');
   await page.waitForFunction(() => [...document.querySelectorAll(".slide-canvas [data-shape-kind='text']")].some((el) => el.innerText.includes("文本框")), { timeout: 15_000 });
+  const overlapPhoto = await page.$eval(".slide-canvas", (canvas) => {
+    const image = canvas.querySelector("[data-shape-kind='image']")?.getBoundingClientRect();
+    const boxes = [...canvas.querySelectorAll("[data-shape-kind='text']")].filter((el) => el.innerText.includes("文本框"));
+    const box = boxes.at(-1)?.getBoundingClientRect();
+    if (!image || !box) return true;
+    return box.left < image.right && box.right > image.left && box.top < image.bottom && box.bottom > image.top;
+  });
+  await assert(!overlapPhoto, "新增文本框不压在插图上");
   await shot("leafmark-ppt-add-textbox.png");
+
+  await page.goto(`${base}/office-gallery.html#excel`, { waitUntil: "networkidle0" });
+  await page.waitForSelector("[data-gallery-ready='1'] [data-office='excel']");
+  await page.waitForSelector("[data-cell='0:0'][data-merged='1:4']");
+  await assert(!(await page.$("[data-office-error]")), "Excel 打开后没有引擎错误条");
+  const freeze = await page.$eval("[data-office='excel']", (el) => el.getAttribute("data-freeze"));
+  await assert(freeze === "1:0", `Excel 冻结首行（实际：${freeze}）`);
+  const header = await page.$eval("[data-cell='0:0']", (el) => ({ text: el.textContent, width: el.getBoundingClientRect().width }));
+  await assert(header.text.includes("一叶表格视觉样张"), "合并表头可见");
+  await assert(header.width > 200, `合并表头跨多列绘制（宽度 ${header.width}）`);
+  await shot("leafmark-excel-edit-idle.png");
+
+  const start = await page.$("[data-cell='1:0']");
+  const end = await page.$("[data-cell='3:2']");
+  const startBox = await start.boundingBox();
+  const endBox = await end.boundingBox();
+  await assert(Boolean(startBox && endBox), "能定位到用于拖选的单元格");
+  await page.mouse.move(startBox.x + 10, startBox.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(endBox.x + 10, endBox.y + 10, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForFunction(() => document.querySelector("[data-office='excel']")?.getAttribute("data-selection") === "1:0:3:2");
+  await shot("leafmark-excel-drag-select.png");
+
+  await page.click("[data-cell='2:1']", { clickCount: 2 });
+  await page.waitForSelector(".sheet-cell-input");
+  await page.click(".sheet-cell-input", { clickCount: 3 });
+  await page.keyboard.type("9");
+  await page.click(".sheet-tabs");
+  await page.waitForFunction(() => document.querySelector("[data-cell='2:1']")?.textContent === "9");
+  await page.waitForFunction(() => document.querySelector("[data-cell='2:3']")?.textContent === "360");
+  await assert(await page.$eval("[data-dirty]", (el) => el.getAttribute("data-dirty") === "1"), "改单元格后标记已修改");
+  await shot("leafmark-excel-after-edit.png");
 
   const engineError = await page.$eval("[data-office-error]", (el) => el.textContent).catch(() => "");
   await assert(!engineError, `编辑过程中没有引擎错误条（实际：${engineError}）`);

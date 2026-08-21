@@ -22,6 +22,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
   const [findOpen, setFindOpen] = useState(false);
   const [header, setHeader] = useState(initial.header ?? "");
   const [footer, setFooter] = useState(initial.footer ?? "");
+  const [totalBlocks, setTotalBlocks] = useState(initial.totalBlocks);
   const articleRef = useRef<HTMLElement | null>(null);
   const counts = useMemo(() => wordCount(blocks), [blocks]);
   const focused = blocks[focus];
@@ -59,6 +60,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
       }
       if (result.header !== undefined) setHeader(result.header ?? "");
       if (result.footer !== undefined) setFooter(result.footer ?? "");
+      if (result.totalBlocks != null) setTotalBlocks(result.totalBlocks);
       setEngineError("");
     } catch (reason) {
       if (nextBlocks) setBlocks(nextBlocks);
@@ -204,7 +206,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
                 <label className="office-field">页脚 <input value={footer} onChange={(event) => setFooter(event.target.value)} onBlur={() => void applyMutation({ op: "wordHeaderFooter", header, footer })} /></label>
               </>
             )}
-            <small>{counts.words.toLocaleString()} 词 · {counts.characters.toLocaleString()} 字 · {initial.totalBlocks.toLocaleString()} 段</small>
+            <small data-word-total={totalBlocks}>{counts.words.toLocaleString()} 词 · {counts.characters.toLocaleString()} 字 · {totalBlocks.toLocaleString()} 段</small>
           </div>
           {engineError && <div className="office-engine-error" data-office-error>{engineError}</div>}
         </div>
@@ -223,23 +225,19 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
             onSplit={(offset) => {
               const current = blocks[index];
               if (current.kind === "table") return;
-              onDirty();
               const [left, right] = splitLocal(current, offset);
-              setBlocks((items) => {
-                const copy = [...items];
-                copy[index] = left;
-                copy.splice(index + 1, 0, right);
-                return copy;
-              });
+              const next = [...blocks];
+              next[index] = left;
+              next.splice(index + 1, 0, right);
               setFocus(index + 1);
-              void mutateOffice(documentKey, { op: "wordSplit", index, offset });
+              void applyMutation({ op: "wordSplit", index, offset }, next);
             }}
           />
         ))}
         {!blocks.length && <p className="viewer-empty">开始输入文字。此文档会以 Microsoft Word / WPS 文字 OOXML 写回。</p>}
-        {blocks.length < initial.totalBlocks && (
+        {blocks.length < totalBlocks && (
           <button className="load-document-chunk" type="button" disabled={loading} onClick={() => void loadMore()}>
-            <ChevronDown size={15} /> {loading ? "正在载入…" : `继续载入（剩余 ${(initial.totalBlocks - blocks.length).toLocaleString()} 段）`}
+            <ChevronDown size={15} /> {loading ? "正在载入…" : `继续载入（剩余 ${(totalBlocks - blocks.length).toLocaleString()} 段）`}
           </button>
         )}
         {footer && <div className="word-footer-band">{footer}</div>}

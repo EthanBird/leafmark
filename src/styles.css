@@ -1126,7 +1126,8 @@ button:disabled { opacity: .42; cursor: default !important; }
 }
 .office-gallery-pane { height: calc(100vh - 44px); min-height: 0; }
 .office-gallery-pane .word-viewer,
-.office-gallery-pane .presentation-viewer { height: 100%; }
+.office-gallery-pane .presentation-viewer,
+.office-gallery-pane .spreadsheet-viewer { height: 100%; }
 .office-gallery-ppt { overflow: auto; padding: 18px 24px 64px; display: grid; gap: 28px; height: auto; min-height: calc(100vh - 44px); }
 .office-gallery-slide h2 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--text-secondary); }
 .office-gallery-stage { width: min(100%, 1080px); }

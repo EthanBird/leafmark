@@ -33,7 +33,7 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 - **Word / WPS 文字**：Run 级字体、字号、颜色、高亮、上标/下标、超链接（把 `r:id` 解析成真实 URL）；段落对齐、缩进、行距、分页符、多级列表。内嵌与浮动图片从 `word/media` 解析为可见图片，未改动的 drawing XML 原样写回。表格读取 `gridSpan` / `vMerge`。可插入/增删表格行列、查找替换、页眉页脚、字数统计。编辑时按 HTML 语义提取文本，不再把 `contentEditable` 的 `<span>` 标签写进正文。
 - **Excel / WPS 表格**：原生 SpreadsheetML。数字格式、字体对齐换行填充、合并单元格、列宽（打开时按 `cols` 绘制）、冻结窗格（表头与冻结行列钉在视口）、排序、自动筛选、填充柄拖拽、向右填充、自动求和、重命名/删除工作表。可用鼠标拖选区域。公式用函数注册表重算后再写 `<f>` / `<v>`。
-- **PowerPoint / WPS 演示**：改文本时只替换对应 `a:t`；解析 `a:xfrm`、组合形状、图片、表格、幻灯片/版式背景图，以及版式占位符（会忽略日期/页脚/页码母版零件）。可新增文本框、移动形状、改填充、备注、隐藏幻灯片、版式、重排。写回时更新 `sldIdLst`、关系部件与 notesSlide。
+- **PowerPoint / WPS 演示**：改文本时按段落写回全部 `a:t`；解析 `a:xfrm`、组合形状、图片、表格、幻灯片/版式背景图，以及版式占位符（会忽略日期/页脚/页码母版零件）。可新增文本框（避开已有图片/表格）、移动形状、改填充、备注、隐藏幻灯片、版式、重排。写回时更新 `sldIdLst`、关系部件与 notesSlide。
 - **外部来源**（微信、邮件、临时 `content://`）：仍然只写 LeafMark 保留副本，绝不回写来源路径。文档库内的文件保存时同步更新工作区文件与快照。
 
 公式引擎对齐 Microsoft Excel / WPS / OnlyOffice 常见语义：四则与比较、`A1` / `$A$1` / `Sheet1!B2`、区域、`IFERROR` 捕获参数错误，以及 `SUM AVERAGE MIN MAX COUNT COUNTA COUNTBLANK COUNTIF COUNTIFS SUMIF SUMIFS AVERAGEIF AVERAGEIFS MAXIFS MINIFS PRODUCT ABS ROUND ROUNDUP ROUNDDOWN INT TRUNC CEILING FLOOR MOD POWER SQRT LN LOG LOG10 EXP PI SIGN RAND RANDBETWEEN IF IFS SWITCH IFNA AND OR XOR NOT TRUE FALSE ISBLANK ISNUMBER ISTEXT ISERROR ISNA ISEVEN ISODD N LEN LEFT RIGHT MID TRIM UPPER LOWER PROPER CONCAT CONCATENATE TEXTJOIN VALUE FIND SEARCH SUBSTITUTE REPLACE REPT EXACT CHAR CODE FIXED DOLLAR T HYPERLINK NOW TODAY DATE YEAR MONTH DAY WEEKDAY HOUR MINUTE SECOND TIME EDATE EOMONTH DAYS DATEDIF NETWORKDAYS TEXT NA CHOOSE COLUMN ROW COLUMNS ROWS LARGE SMALL MEDIAN SUMPRODUCT VLOOKUP HLOOKUP LOOKUP XLOOKUP INDEX MATCH INDIRECT RANK RANK.EQ STDEV STDEV.S STDEVP STDEV.P VAR VAR.S VARP VAR.P PMT FV PV NPV NPER SIN COS TAN ASIN ACOS ATAN DEGREES RADIANS FACT GCD LCM EVEN ODD COMBIN QUOTIENT UNIQUE`。循环引用返回 `#CYCLE!`。对照用例见 `src/office/office-compat.test.ts` 与 `src/office/office-wps.test.ts`。
@@ -60,6 +60,6 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 - `npm run typecheck`
 - `npm test`（含 DOCX/XLSX/PPTX 往返、撤销，以及与 Microsoft Excel 语义对照的公式套件）
-- 真实样张：`python3 scripts/generate-office-fixtures.py` 写出 `public/office-fixtures/leafmark-sample.docx` / `.pptx`。开发时打开 `http://127.0.0.1:1420/office-gallery.html`，Word / PPT 走同一套可编辑画布（工具栏、改字、插入）。`node scripts/screenshot-office-gallery.mjs` 用无头 Chrome 点选、改字并截编辑后的界面。
+- 真实样张：`python3 scripts/generate-office-fixtures.py` 写出 `public/office-fixtures/leafmark-sample.docx` / `.pptx` / `.xlsx`。开发时打开 `http://127.0.0.1:1420/office-gallery.html`，Word / PPT / Excel 走同一套可编辑画布（工具栏、改字、插入、拖选）。`node scripts/screenshot-office-gallery.mjs` 用无头 Chrome 点选、改字并截编辑后的界面。
 - Windows / Linux `cargo test`
 - 真实语料：冷启动首屏、编辑后用 Microsoft Office 打开、源文件删除后从保留副本继续编辑

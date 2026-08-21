@@ -2,7 +2,7 @@ import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { colName, displayFormulaValue, evaluateFormula, FormulaError, parseCellRef } from "./formula";
 import { editCell, openSpreadsheet, readViewport, serializeWorkbook } from "./sheet";
-import { openPptx, serializePresentation, updateShapeText } from "./slide";
+import { addTextBox, openPptx, serializePresentation, updateShapeText } from "./slide";
 import { htmlToRuns, openDocx, paragraphText, parseWordBlocks, serializeWord } from "./word";
 import { decodeXml, encodeXml } from "./xml";
 
@@ -289,5 +289,41 @@ describe("PresentationML editor codec", () => {
     expect(table?.[0]?.[1]?.hidden).toBe(true);
     expect(table?.[1]?.[0]).toMatchObject({ text: "跨行", rowSpan: 2 });
     expect(table?.[2]?.[0]?.hidden).toBe(true);
+  });
+
+  it("rewrites every paragraph in a text shape, not only the first a:t", () => {
+    const bytes = zipSync({
+      "ppt/presentation.xml": strToU8(`<p:presentation><p:sldSz cx="1000" cy="500"/></p:presentation>`),
+      "ppt/slides/slide1.xml": strToU8(`<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree>
+        <p:sp><p:spPr><a:xfrm><a:off x="100" y="40"/><a:ext cx="800" cy="160"/></a:xfrm></p:spPr><p:txBody>
+          <a:p><a:r><a:t>第一行</a:t></a:r><a:r><a:t>仍是第一段</a:t></a:r></a:p>
+          <a:p><a:r><a:t>第二行</a:t></a:r></a:p>
+        </p:txBody></p:sp>
+      </p:spTree></p:cSld></p:sld>`),
+    });
+    const presentation = openPptx(arrayBuffer(bytes));
+    expect(presentation.slides[0]?.shapes[0]?.text).toBe("第一行仍是第一段\n第二行");
+    updateShapeText(presentation.slides[0], presentation.slides[0].shapes[0].id, "改后的一行\n改后的二行\n第三行");
+    const saved = openPptx(arrayBuffer(serializePresentation(presentation)));
+    expect(saved.slides[0]?.shapes[0]?.text).toBe("改后的一行\n改后的二行\n第三行");
+  });
+
+  it("places a new text box in a gap instead of stacking on pictures", () => {
+    const bytes = zipSync({
+      "ppt/presentation.xml": strToU8(`<p:presentation><p:sldSz cx="1000" cy="500"/></p:presentation>`),
+      "ppt/slides/slide1.xml": strToU8(`<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree>
+        <p:pic><p:spPr><a:xfrm><a:off x="50" y="80"/><a:ext cx="420" cy="280"/></a:xfrm></p:spPr><a:blip r:embed="rId2"/></p:pic>
+        <p:graphicFrame><p:xfrm><a:off x="500" y="80"/><a:ext cx="450" cy="280"/></p:xfrm><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>表</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></p:graphicFrame>
+      </p:spTree></p:cSld></p:sld>`),
+      "ppt/slides/_rels/slide1.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>`),
+      "ppt/media/image1.png": Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (char) => char.charCodeAt(0)),
+    });
+    const presentation = openPptx(arrayBuffer(bytes));
+    const slide = presentation.slides[0];
+    const photo = slide.shapes.find((shape) => shape.kind === "image");
+    const box = addTextBox(slide);
+    expect(photo).toBeTruthy();
+    expect(box.y).toBeGreaterThan((photo?.y ?? 0) + (photo?.height ?? 0) - 0.08);
+    expect(box.y + box.height).toBeLessThanOrEqual(1.02);
   });
 });

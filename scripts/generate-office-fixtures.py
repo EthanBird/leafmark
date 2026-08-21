@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from xml.sax.saxutils import escape
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image, ImageDraw, ImageFont
 from docx import Document
@@ -240,6 +242,97 @@ def write_pptx(cover: Path, photo: Path, dest: Path) -> None:
     prs.save(dest)
 
 
+def write_xlsx(dest: Path) -> None:
+    strings = ["一叶表格视觉样张", "产品", "数量", "单价", "金额", "编辑器", "演示", "合计"]
+    sst = "".join(f"<si><t>{escape(item)}</t></si>" for item in strings)
+    shared = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{len(strings)}" uniqueCount="{len(strings)}">{sst}</sst>'
+    )
+    sheet = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <dimension ref="A1:D6"/>
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane xSplit="0" ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>
+    </sheetView>
+  </sheetViews>
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>
+    <col min="1" max="1" width="18" customWidth="1"/>
+    <col min="2" max="2" width="12" customWidth="1"/>
+    <col min="3" max="3" width="12" customWidth="1"/>
+    <col min="4" max="4" width="14" customWidth="1"/>
+  </cols>
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>0</v></c></row>
+    <row r="2">
+      <c r="A2" t="s"><v>1</v></c>
+      <c r="B2" t="s"><v>2</v></c>
+      <c r="C2" t="s"><v>3</v></c>
+      <c r="D2" t="s"><v>4</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="s"><v>5</v></c>
+      <c r="B3"><v>2</v></c>
+      <c r="C3"><v>40</v></c>
+      <c r="D3"><f>B3*C3</f><v>80</v></c>
+    </row>
+    <row r="4">
+      <c r="A4" t="s"><v>6</v></c>
+      <c r="B4"><v>3</v></c>
+      <c r="C4"><v>25</v></c>
+      <c r="D4"><f>B4*C4</f><v>75</v></c>
+    </row>
+    <row r="5">
+      <c r="A5" t="s"><v>5</v></c>
+      <c r="B5"><v>1</v></c>
+      <c r="C5"><v>60</v></c>
+      <c r="D5"><f>B5*C5</f><v>60</v></c>
+    </row>
+    <row r="6">
+      <c r="A6" t="s"><v>7</v></c>
+      <c r="D6"><f>SUM(D3:D5)</f><v>215</v></c>
+    </row>
+  </sheetData>
+  <mergeCells count="1"><mergeCell ref="A1:D1"/></mergeCells>
+</worksheet>
+"""
+    workbook = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="数据" sheetId="1" r:id="rId1"/></sheets>
+</workbook>
+"""
+    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>
+"""
+    workbook_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>
+"""
+    types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>
+"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(dest, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", sheet)
+        zf.writestr("xl/sharedStrings.xml", shared)
+
+
 def main() -> None:
     ASSETS.mkdir(parents=True, exist_ok=True)
     cover = ASSETS / "cover.png"
@@ -250,8 +343,10 @@ def main() -> None:
     paint_icon(icon)
     write_docx(cover, photo, icon, OUT / "leafmark-sample.docx")
     write_pptx(cover, photo, OUT / "leafmark-sample.pptx")
+    write_xlsx(OUT / "leafmark-sample.xlsx")
     print(f"wrote {OUT / 'leafmark-sample.docx'} ({(OUT / 'leafmark-sample.docx').stat().st_size} bytes)")
     print(f"wrote {OUT / 'leafmark-sample.pptx'} ({(OUT / 'leafmark-sample.pptx').stat().st_size} bytes)")
+    print(f"wrote {OUT / 'leafmark-sample.xlsx'} ({(OUT / 'leafmark-sample.xlsx').stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDocx, paragraphText } from "./word";
 import { openPptx } from "./slide";
+import { openSpreadsheet } from "./sheet";
 
 function load(name: string) {
   const bytes = readFileSync(resolve("public/office-fixtures", name));
@@ -51,5 +52,18 @@ describe("real Office visual fixtures", () => {
     expect(layout.shapes.some((shape) => shape.text.includes("版式占位符标题"))).toBe(true);
     expect(cover.shapes.some((shape) => shape.text.includes("1/27/13") || shape.text.includes("‹#›"))).toBe(false);
     expect(content.shapes.some((shape) => shape.text.includes("1/27/13") || shape.text.includes("‹#›"))).toBe(false);
+  });
+
+  it("parses the spreadsheet sample: merged header, freeze, column widths, formulas", () => {
+    const workbook = openSpreadsheet(load("leafmark-sample.xlsx"), "xlsx");
+    const sheet = workbook.sheets[0];
+    expect(sheet?.name).toBe("数据");
+    expect(sheet?.merges).toEqual([{ r: 0, c: 0, rows: 1, cols: 4 }]);
+    expect(sheet?.freeze).toEqual({ row: 1, col: 0 });
+    expect(sheet?.colWidths?.get(0)).toBe(18);
+    expect(sheet?.cells.get(0)?.get(0)?.value).toBe("一叶表格视觉样张");
+    expect(sheet?.cells.get(2)?.get(3)?.formula).toBe("B3*C3");
+    expect(sheet?.cells.get(2)?.get(3)?.value).toBe(80);
+    expect(sheet?.cells.get(5)?.get(3)?.value).toBe(215);
   });
 });
