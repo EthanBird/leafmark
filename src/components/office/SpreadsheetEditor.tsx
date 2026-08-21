@@ -478,6 +478,10 @@ export function SpreadsheetEditor({ documentKey, initial, onDirty }: { documentK
               }}
               onMouseDown={(event) => {
                 if (event.button !== 0) return;
+                if (event.detail >= 2) {
+                  setEditing(cell?.formula || cell?.display || "");
+                  return;
+                }
                 event.preventDefault();
                 dragMode.current = "select";
                 if (event.shiftKey) setSelection((current) => ({ ...current, row2: row, col2: col }));

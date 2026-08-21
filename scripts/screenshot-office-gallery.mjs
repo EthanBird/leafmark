@@ -169,11 +169,11 @@ try {
   await page.waitForFunction(() => document.querySelector("[data-office='excel']")?.getAttribute("data-selection") === "1:0:3:2");
   await shot("leafmark-excel-drag-select.png");
 
-  await page.click("[data-cell='2:1']", { clickCount: 2 });
-  await page.waitForSelector(".sheet-cell-input");
-  await page.click(".sheet-cell-input", { clickCount: 3 });
+  await page.click("[data-cell='2:1']");
+  const formula = await page.$('input[aria-label="公式栏"]');
+  await formula.click({ clickCount: 3 });
   await page.keyboard.type("9");
-  await page.click(".sheet-tabs");
+  await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector("[data-cell='2:1']")?.textContent === "9");
   await page.waitForFunction(() => document.querySelector("[data-cell='2:3']")?.textContent === "360");
   await assert(await page.$eval("[data-dirty]", (el) => el.getAttribute("data-dirty") === "1"), "改单元格后标记已修改");
