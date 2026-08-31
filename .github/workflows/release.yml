@@ -86,7 +86,7 @@ jobs:
 
           mapfile -t releases < <(
             gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"$tag\") | [.id, .draft, .target_commitish] | @tsv"
+              --jq ".[] | select(.tag_name == \"$tag\" or (.draft == true and .name == \"LeafMark v$version\")) | [.id, .draft, .target_commitish] | @tsv"
           )
           if [[ "${#releases[@]}" -gt 1 ]]; then
             printf 'Found multiple releases for %s; refusing to guess.\n' "$tag"
@@ -99,11 +99,21 @@ jobs:
               printf '%s is already published; refusing to replace it.\n' "$tag"
               exit 1
             fi
-            gh api --method PATCH \
-              "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-              -f target_commitish="$GITHUB_SHA" \
-              -F draft=true \
-              -F prerelease=false >/dev/null
+            updated_release="$(
+              gh api --method PATCH \
+                "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+                -f tag_name="$tag" \
+                -f target_commitish="$GITHUB_SHA" \
+                -f name="LeafMark v$version" \
+                -F draft=true \
+                -F prerelease=false
+            )"
+            if [[ "$(jq -r .tag_name <<< "$updated_release")" != "$tag" || \
+                  "$(jq -r .target_commitish <<< "$updated_release")" != "$GITHUB_SHA" || \
+                  "$(jq -r .draft <<< "$updated_release")" != "true" ]]; then
+              echo 'GitHub did not preserve the requested draft tag, target, and state.'
+              exit 1
+            fi
             printf 'Reused draft %s and moved target from %s to %s.\n' \
               "$release_id" "$old_target" "$GITHUB_SHA"
           else
