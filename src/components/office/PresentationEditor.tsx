@@ -1,5 +1,5 @@
 import { AlignCenter, AlignLeft, AlignRight, Bold, Copy, EyeOff, Italic, Plus, Presentation, Redo2, Trash2, Type, Undo2 } from "lucide-react";
-import { useRef, useState, type MouseEvent } from "react";
+import { useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { addPresentationSlide, loadPresentationSlide, mutateOffice, redoOffice, undoOffice, updatePresentationShape } from "../../office/office-client";
 import type { PresentationOpenResult } from "../../office/types";
 import type { SlideModel, SlideShape } from "../../office/slide";
@@ -13,13 +13,37 @@ const LAYOUTS: Array<{ value: NonNullable<SlideModel["layout"]>; label: string }
   { value: "blank", label: "空白" },
 ];
 
+export function slideSurfaceStyle(slide: Pick<SlideModel, "background" | "backgroundImage">): CSSProperties {
+  return {
+    backgroundColor: slide.background,
+    backgroundImage: slide.backgroundImage ? `url("${slide.backgroundImage}")` : undefined,
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+  };
+}
+
+export function SlideStage({ slide }: { slide: SlideModel }) {
+  return (
+    <div className="slide-canvas" style={slideSurfaceStyle(slide)}>
+      {slide.shapes.map((item) => (
+        <SlideShapeView key={item.id} item={item} active={false} playing />
+      ))}
+    </div>
+  );
+}
+
 export function PresentationEditor({ documentKey, initial, onDirty }: { documentKey: string; initial: PresentationOpenResult; onDirty: () => void }) {
   const [slides, setSlides] = useState(initial.slides);
   const [slide, setSlide] = useState<SlideModel | null>(initial.active);
   const [loading, setLoading] = useState(false);
-  const [activeShape, setActiveShape] = useState<string | null>(initial.active?.shapes[0]?.id ?? null);
+  const [activeShape, setActiveShape] = useState<string | null>(
+    initial.active?.shapes.find((item) => item.kind === "text" || !item.kind)?.id
+      ?? initial.active?.shapes[0]?.id
+      ?? null,
+  );
   const [tab, setTab] = useState<"home" | "show">("home");
   const [playing, setPlaying] = useState(false);
+  const [engineError, setEngineError] = useState("");
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ id: string; dx: number; dy: number } | null>(null);
 
@@ -37,19 +61,29 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
   const editShape = async (shapeId: string, text: string) => {
     if (!slide) return;
     onDirty();
-    const next = await updatePresentationShape(documentKey, slide.index, shapeId, text);
-    setSlide(next);
-    setSlides((current) => current.map((item) => item.index === next?.index ? { index: next.index, title: next.title, hidden: next.hidden } : item));
+    try {
+      const next = await updatePresentationShape(documentKey, slide.index, shapeId, text);
+      setSlide(next);
+      setSlides((current) => current.map((item) => item.index === next?.index ? { index: next.index, title: next.title, hidden: next.hidden } : item));
+      setEngineError("");
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const run = async (mutation: Parameters<typeof mutateOffice>[1]) => {
     onDirty();
-    const result = await mutateOffice(documentKey, mutation) as { slides?: Array<{ index: number; title: string; hidden?: boolean }>; slide?: SlideModel | null };
-    if (result.slides) setSlides(result.slides);
-    if (result.slide) {
-      setSlide(result.slide);
-      setActiveShape(result.slide.shapes.find((item) => item.id === activeShape)?.id ?? result.slide.shapes[0]?.id ?? null);
-    } else if (slide) await openSlide(Math.min(slide.index, (result.slides?.length ?? 1) - 1));
+    try {
+      const result = await mutateOffice(documentKey, mutation) as { slides?: Array<{ index: number; title: string; hidden?: boolean }>; slide?: SlideModel | null };
+      if (result.slides) setSlides(result.slides);
+      if (result.slide) {
+        setSlide(result.slide);
+        setActiveShape(result.slide.shapes.find((item) => item.id === activeShape)?.id ?? result.slide.shapes[0]?.id ?? null);
+      } else if (slide) await openSlide(Math.min(slide.index, (result.slides?.length ?? 1) - 1));
+      setEngineError("");
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const history = async (direction: "undo" | "redo") => {
@@ -66,6 +100,11 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
 
   const startDrag = (event: MouseEvent, item: SlideShape) => {
     if (event.button !== 0 || event.detail > 1) return;
+    const target = event.target as HTMLElement;
+    if (!event.altKey && target.isContentEditable) {
+      setActiveShape(item.id);
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
     const box = canvas.getBoundingClientRect();
@@ -112,29 +151,14 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
           }
         }}
       >
-        <div className="slide-canvas" style={{ background: slide.background }}>
-          {slide.shapes.map((item) => (
-            <div key={item.id} className="slide-shape" style={{
-              left: `${item.x * 100}%`,
-              top: `${item.y * 100}%`,
-              width: `${item.width * 100}%`,
-              height: `${item.height * 100}%`,
-              fontSize: `${item.fontSize}px`,
-              color: item.color,
-              fontWeight: item.bold ? 700 : 400,
-              fontStyle: item.italic ? "italic" : "normal",
-              textAlign: item.align,
-              background: item.fill,
-            }}>{item.text}</div>
-          ))}
-        </div>
+        <SlideStage slide={slide} />
         <small>{playIndex + 1} / {visibleSlides.length} · Esc 退出</small>
       </div>
     );
   }
 
   return (
-    <div className="binary-viewer presentation-viewer office-editor">
+    <div className="binary-viewer presentation-viewer office-editor" data-office="ppt">
       <div className="office-ribbon-wrap" style={{ gridColumn: "1 / -1" }}>
         <div className="office-ribbon-tabs" role="tablist">
           <button type="button" className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}>开始</button>
@@ -167,7 +191,7 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
               <button type="button" title="居中" disabled={!shape} onClick={() => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { align: "center" } })}><AlignCenter size={14} /></button>
               <button type="button" title="右对齐" disabled={!shape} onClick={() => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { align: "right" } })}><AlignRight size={14} /></button>
               <select aria-label="字号" disabled={!shape} value={shape?.fontSize ?? 18} onChange={(event) => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { fontSize: Number(event.target.value) } })}>
-                {[12, 14, 16, 18, 20, 24, 28, 32, 36, 44, 54, 72].map((size) => <option key={size} value={size}>{size}</option>)}
+                {[12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 54, 72].map((size) => <option key={size} value={size}>{size}</option>)}
               </select>
               <label className="office-color">文字<input type="color" value={shape?.color || "#202124"} onChange={(event) => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { color: event.target.value } })} /></label>
               <label className="office-color">填充<input type="color" value={shape?.fill || "#ffffff"} onChange={(event) => slide && shape && void run({ op: "slideShape", index: slide.index, shapeId: shape.id, patch: { fill: event.target.value } })} /></label>
@@ -181,6 +205,7 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
             </>
           )}
         </div>
+        {engineError && <div className="office-engine-error" data-office-error>{engineError}</div>}
       </div>
       <nav className="slide-list" aria-label="幻灯片">
         {slides.map((item) => (
@@ -206,37 +231,25 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
             <div
               className="slide-canvas"
               ref={canvasRef}
-              style={{ background: slide.background }}
+              style={slideSurfaceStyle(slide)}
               onMouseMove={onMove}
               onMouseUp={endDrag}
               onMouseLeave={endDrag}
             >
               {slide.shapes.map((item) => (
-                <div
+                <SlideShapeView
                   key={item.id}
-                  className={`slide-shape${activeShape === item.id ? " active" : ""}`}
-                  contentEditable
-                  suppressContentEditableWarning
-                  style={{
-                    left: `${item.x * 100}%`,
-                    top: `${item.y * 100}%`,
-                    width: `${item.width * 100}%`,
-                    height: `${item.height * 100}%`,
-                    fontSize: `${item.fontSize}px`,
-                    color: item.color,
-                    fontWeight: item.bold ? 700 : 400,
-                    fontStyle: item.italic ? "italic" : "normal",
-                    textAlign: item.align,
-                    background: item.fill,
-                  }}
+                  item={item}
+                  active={activeShape === item.id}
+                  playing={false}
                   onMouseDown={(event) => startDrag(event, item)}
-                  onBlur={(event) => {
-                    const text = event.currentTarget.innerText.replace(/\n$/, "");
-                    if (text !== item.text) void editShape(item.id, text);
-                  }}
-                >{item.text}</div>
+                  onSelect={() => setActiveShape(item.id)}
+                  onText={(text) => { if (text !== item.text) void editShape(item.id, text); }}
+                />
               ))}
-              {slide.imageCount > 0 && <span className="slide-media-note">此页包含 {slide.imageCount} 张图片；原件媒体随 OOXML 包无损保留</span>}
+              {slide.imageCount > 0 && !slide.shapes.some((item) => item.kind === "image" && item.src) && (
+                <span className="slide-media-note">此页包含 {slide.imageCount} 张图片，但未能解析媒体部件</span>
+              )}
             </div>
           )}
         </div>
@@ -251,5 +264,93 @@ export function PresentationEditor({ documentKey, initial, onDirty }: { document
         </label>
       </div>
     </div>
+  );
+}
+
+function SlideShapeView({
+  item,
+  active,
+  playing,
+  onMouseDown,
+  onSelect,
+  onText,
+}: {
+  item: SlideShape;
+  active: boolean;
+  playing?: boolean;
+  onMouseDown?: (event: MouseEvent) => void;
+  onSelect?: () => void;
+  onText?: (text: string) => void;
+}) {
+  const box = {
+    left: `${item.x * 100}%`,
+    top: `${item.y * 100}%`,
+    width: `${item.width * 100}%`,
+    height: `${item.height * 100}%`,
+  };
+  if (item.kind === "image") {
+    const bleed = item.width >= 0.92 && item.height >= 0.92 && item.x <= 0.04 && item.y <= 0.04;
+    return (
+      <div
+        className={`slide-shape slide-image${bleed ? " slide-image-bleed" : ""}${active ? " active" : ""}`}
+        data-shape-kind="image"
+        data-shape-id={item.id}
+        style={box}
+        onMouseDown={onMouseDown}
+        onClick={onSelect}
+      >
+        {item.src
+          ? <img src={item.src} alt="" draggable={false} />
+          : <span className="slide-image-fallback">图片</span>}
+      </div>
+    );
+  }
+  if (item.kind === "table" && item.table) {
+    return (
+      <div
+        className={`slide-shape slide-table${active ? " active" : ""}`}
+        data-shape-kind="table"
+        data-shape-id={item.id}
+        style={{ ...box, fontSize: `${item.fontSize}px`, color: item.color }}
+        onMouseDown={onMouseDown}
+        onClick={onSelect}
+      >
+        <table>
+          <tbody>
+            {item.table.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {row.map((cell, cellIndex) => cell.hidden ? null : (
+                  <td key={cellIndex} colSpan={cell.colSpan} rowSpan={cell.rowSpan}>{cell.text}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  return (
+    <div
+      className={`slide-shape slide-text${active ? " active" : ""}${item.fromLayout ? " slide-layout-ph" : ""}`}
+      data-shape-kind="text"
+      data-shape-id={item.id}
+      contentEditable={!playing && !item.fromLayout}
+      suppressContentEditableWarning
+      style={{
+        ...box,
+        fontSize: `${item.fontSize}px`,
+        color: item.color,
+        fontWeight: item.bold ? 700 : 400,
+        fontStyle: item.italic ? "italic" : "normal",
+        textAlign: item.align,
+        background: item.fill,
+      }}
+      onMouseDown={onMouseDown}
+      onClick={onSelect}
+      onBlur={(event) => {
+        const text = event.currentTarget.innerText.replace(/\n$/, "");
+        onText?.(text);
+      }}
+    >{item.text}</div>
   );
 }

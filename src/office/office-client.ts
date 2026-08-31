@@ -54,6 +54,17 @@ export function officeAssetUrl(assetPath: string) {
   return convertFileSrc(assetPath);
 }
 
+export function openOfficeFromBuffer(
+  source: Pick<OfficeSource, "key" | "kind" | "format">,
+  buffer: ArrayBuffer,
+): Promise<OfficeOpenResult> {
+  return callWorker<OfficeOpenResult>({
+    action: "open",
+    source: { key: source.key, kind: source.kind, format: source.format },
+    buffer,
+  }, [buffer]);
+}
+
 export function openOfficeDocument(source: OfficeSource): Promise<OfficeOpenResult> {
   const existing = inflight.get(source.key);
   if (existing) return existing;

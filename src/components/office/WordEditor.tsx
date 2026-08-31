@@ -1,9 +1,9 @@
 import { AlignCenter, AlignJustify, AlignLeft, AlignRight, Bold, ChevronDown, Heading1, Heading2, Heading3, IndentDecrease, IndentIncrease, Italic, Link, List, ListOrdered, Redo2, Replace, Search, Strikethrough, Subscript, Superscript, Table, Underline, Undo2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { loadWordChunk, mutateOffice, redoOffice, replaceWordBlock, undoOffice } from "../../office/office-client";
 import type { OfficeMutation, WordOpenResult } from "../../office/types";
 import type { WordBlock, WordParagraph, WordRun } from "../../office/word";
-import { htmlToRuns, paragraphText, wordCount } from "../../office/word";
+import { htmlToRuns, paragraphText, restoreImageRuns, runsToHtml, wordCount } from "../../office/word";
 import { AskAiRibbonButton } from "../AskAiToolbar";
 
 const WORD_CHUNK = 160;
@@ -14,6 +14,7 @@ const HIGHLIGHTS = ["yellow", "green", "cyan", "magenta", "blue", "red", "darkYe
 export function WordEditor({ documentKey, initial, editable, onDirty }: { documentKey: string; initial: WordOpenResult; editable: boolean; onDirty: () => void }) {
   const [blocks, setBlocks] = useState(initial.blocks);
   const [loading, setLoading] = useState(false);
+  const [engineError, setEngineError] = useState("");
   const [focus, setFocus] = useState(0);
   const [tab, setTab] = useState<"home" | "insert">("home");
   const [query, setQuery] = useState("");
@@ -21,6 +22,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
   const [findOpen, setFindOpen] = useState(false);
   const [header, setHeader] = useState(initial.header ?? "");
   const [footer, setFooter] = useState(initial.footer ?? "");
+  const [totalBlocks, setTotalBlocks] = useState(initial.totalBlocks);
   const articleRef = useRef<HTMLElement | null>(null);
   const counts = useMemo(() => wordCount(blocks), [blocks]);
   const focused = blocks[focus];
@@ -29,7 +31,12 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
   const persist = async (index: number, block: WordBlock) => {
     setBlocks((current) => current.map((item, itemIndex) => itemIndex === index ? block : item));
     onDirty();
-    await replaceWordBlock(documentKey, index, block);
+    try {
+      await replaceWordBlock(documentKey, index, block);
+      setEngineError("");
+    } catch (reason) {
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const loadMore = async () => {
@@ -44,14 +51,21 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
 
   const applyMutation = async (mutation: OfficeMutation, nextBlocks?: WordBlock[]) => {
     onDirty();
-    const result = await mutateOffice(documentKey, mutation) as { blocks?: WordBlock[]; block?: WordBlock; header?: string; footer?: string; totalBlocks?: number };
-    if (result.blocks) setBlocks(result.blocks);
-    else if (nextBlocks) setBlocks(nextBlocks);
-    else if (result.block && "index" in mutation) {
-      setBlocks((current) => current.map((item, index) => index === mutation.index ? result.block as WordBlock : item));
+    try {
+      const result = await mutateOffice(documentKey, mutation) as { blocks?: WordBlock[]; block?: WordBlock; header?: string; footer?: string; totalBlocks?: number };
+      if (result.blocks) setBlocks(result.blocks);
+      else if (nextBlocks) setBlocks(nextBlocks);
+      else if (result.block && "index" in mutation) {
+        setBlocks((current) => current.map((item, index) => index === mutation.index ? result.block as WordBlock : item));
+      }
+      if (result.header !== undefined) setHeader(result.header ?? "");
+      if (result.footer !== undefined) setFooter(result.footer ?? "");
+      if (result.totalBlocks != null) setTotalBlocks(result.totalBlocks);
+      setEngineError("");
+    } catch (reason) {
+      if (nextBlocks) setBlocks(nextBlocks);
+      setEngineError(reason instanceof Error ? reason.message : String(reason));
     }
-    if (result.header !== undefined) setHeader(result.header ?? "");
-    if (result.footer !== undefined) setFooter(result.footer ?? "");
   };
 
   const applyStyle = async (patch: NonNullable<Extract<OfficeMutation, { op: "wordStyle" }>["patch"]>) => {
@@ -98,7 +112,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
   };
 
   return (
-    <div className="binary-viewer word-viewer office-editor">
+    <div className="binary-viewer word-viewer office-editor" data-office="word">
       {editable && (
         <div className="office-ribbon-wrap">
           <div className="office-ribbon-tabs" role="tablist">
@@ -192,8 +206,9 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
                 <label className="office-field">页脚 <input value={footer} onChange={(event) => setFooter(event.target.value)} onBlur={() => void applyMutation({ op: "wordHeaderFooter", header, footer })} /></label>
               </>
             )}
-            <small>{counts.words.toLocaleString()} 词 · {counts.characters.toLocaleString()} 字 · {initial.totalBlocks.toLocaleString()} 段</small>
+            <small data-word-total={totalBlocks}>{counts.words.toLocaleString()} 词 · {counts.characters.toLocaleString()} 字 · {totalBlocks.toLocaleString()} 段</small>
           </div>
+          {engineError && <div className="office-engine-error" data-office-error>{engineError}</div>}
         </div>
       )}
       <article className="word-page" ref={articleRef}>
@@ -201,6 +216,7 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
         {blocks.map((block, index) => (
           <WordBlockEditor
             key={index}
+            index={index}
             block={block}
             editable={editable}
             active={focus === index}
@@ -209,23 +225,19 @@ export function WordEditor({ documentKey, initial, editable, onDirty }: { docume
             onSplit={(offset) => {
               const current = blocks[index];
               if (current.kind === "table") return;
-              onDirty();
               const [left, right] = splitLocal(current, offset);
-              setBlocks((items) => {
-                const copy = [...items];
-                copy[index] = left;
-                copy.splice(index + 1, 0, right);
-                return copy;
-              });
+              const next = [...blocks];
+              next[index] = left;
+              next.splice(index + 1, 0, right);
               setFocus(index + 1);
-              void mutateOffice(documentKey, { op: "wordSplit", index, offset });
+              void applyMutation({ op: "wordSplit", index, offset }, next);
             }}
           />
         ))}
         {!blocks.length && <p className="viewer-empty">开始输入文字。此文档会以 Microsoft Word / WPS 文字 OOXML 写回。</p>}
-        {blocks.length < initial.totalBlocks && (
+        {blocks.length < totalBlocks && (
           <button className="load-document-chunk" type="button" disabled={loading} onClick={() => void loadMore()}>
-            <ChevronDown size={15} /> {loading ? "正在载入…" : `继续载入（剩余 ${(initial.totalBlocks - blocks.length).toLocaleString()} 段）`}
+            <ChevronDown size={15} /> {loading ? "正在载入…" : `继续载入（剩余 ${(totalBlocks - blocks.length).toLocaleString()} 段）`}
           </button>
         )}
         {footer && <div className="word-footer-band">{footer}</div>}
@@ -259,6 +271,7 @@ function splitLocal(block: WordParagraph, offset: number): [WordParagraph, WordP
 
 function WordBlockEditor({
   block,
+  index,
   editable,
   active,
   onFocus,
@@ -266,6 +279,7 @@ function WordBlockEditor({
   onSplit,
 }: {
   block: WordBlock;
+  index: number;
   editable: boolean;
   active: boolean;
   onFocus: () => void;
@@ -273,8 +287,10 @@ function WordBlockEditor({
   onSplit: (offset: number) => void;
 }) {
   if (block.kind === "table") {
-    return <div className="word-table-wrap" data-word-block onFocus={onFocus}><table><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td
+    return <div className="word-table-wrap" data-word-block data-word-index={String(index)} onFocus={onFocus}><table><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => cell.hidden ? null : <td
       key={cellIndex}
+      colSpan={cell.colSpan}
+      rowSpan={cell.rowSpan}
       contentEditable={editable}
       suppressContentEditableWarning
       onBlur={(event) => {
@@ -285,43 +301,88 @@ function WordBlockEditor({
       }}
     >{cell.text}</td>)}</tr>)}</tbody></table></div>;
   }
+  return (
+    <WordParagraphEditor
+      block={block}
+      index={index}
+      editable={editable}
+      active={active}
+      onFocus={onFocus}
+      onChange={onChange}
+      onSplit={onSplit}
+    />
+  );
+}
+
+function WordParagraphEditor({
+  block,
+  index,
+  editable,
+  active,
+  onFocus,
+  onChange,
+  onSplit,
+}: {
+  block: WordParagraph;
+  index: number;
+  editable: boolean;
+  active: boolean;
+  onFocus: () => void;
+  onChange: (block: WordBlock) => void;
+  onSplit: (offset: number) => void;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  const html = runsToHtml(block.runs);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || node.innerHTML === html) return;
+    if (document.activeElement === node) {
+      const live = htmlToRuns(node.innerHTML).map((run) => run.text).join("");
+      const next = htmlToRuns(html).map((run) => run.text).join("");
+      if (live !== next) return;
+    }
+    node.innerHTML = html;
+  }, [html, block.kind, block.level]);
   const Tag = (block.kind === "heading" ? `h${Math.max(1, Math.min(6, block.level ?? 2))}` : "p") as "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
   const listClass = block.list ? `word-list word-list-${block.list.type}` : "";
-  return <Tag
-    data-word-block
-    className={`${listClass}${active ? " word-block-active" : ""}${block.pageBreak ? " word-page-break" : ""}`}
-    contentEditable={editable}
-    suppressContentEditableWarning
-    style={{
-      textAlign: block.align,
-      marginLeft: block.indent ? `${block.indent * 1.4}em` : undefined,
-      lineHeight: block.lineSpacing,
-      paddingTop: block.spacingBefore ? block.spacingBefore / 20 : undefined,
-    }}
-    onFocus={onFocus}
-    onKeyDown={(event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        onSplit(caretOffset(event.currentTarget));
-      }
-    }}
-    onBlur={(event) => {
-      const runs = htmlToRuns(event.currentTarget.innerHTML);
-      const next: WordParagraph = { ...block, runs, dirty: true };
-      if (paragraphText(next) === paragraphText(block) && !event.currentTarget.querySelector("b,i,u,s,strong,em")) return;
-      onChange(next);
-    }}
-  >{block.runs.map((run, index) => <span key={index} style={{
-    color: run.color,
-    fontSize: run.fontSize ? `${run.fontSize}pt` : undefined,
-    fontFamily: run.font,
-    fontWeight: run.bold ? 700 : undefined,
-    fontStyle: run.italic ? "italic" : undefined,
-    textDecoration: [run.underline ? "underline" : "", run.strike ? "line-through" : ""].filter(Boolean).join(" ") || undefined,
-    background: run.highlight && !/^#|[0-9A-Fa-f]{6}/.test(run.highlight) ? run.highlight : run.highlight ? `#${run.highlight.replace(/^#/, "")}` : undefined,
-    verticalAlign: run.vertAlign === "subscript" ? "sub" : run.vertAlign === "superscript" ? "super" : undefined,
-    whiteSpace: "pre-wrap",
-  }}>{run.hyperlink ? <a href={run.hyperlink} onClick={(event) => event.preventDefault()}>{run.text}</a> : run.text}</span>)}</Tag>;
+  return (
+    <Tag
+      ref={ref as never}
+      data-word-block
+      data-word-index={String(index)}
+      className={`${listClass}${active ? " word-block-active" : ""}${block.pageBreak ? " word-page-break" : ""}`}
+      contentEditable={editable}
+      suppressContentEditableWarning
+      style={{
+        textAlign: block.align,
+        marginLeft: block.indent ? `${block.indent * 1.4}em` : undefined,
+        lineHeight: block.lineSpacing,
+        paddingTop: block.spacingBefore ? block.spacingBefore / 20 : undefined,
+      }}
+      onFocus={onFocus}
+      onClick={(event) => {
+        const anchor = (event.target as HTMLElement).closest("a");
+        if (!anchor) return;
+        if (!event.ctrlKey && !event.metaKey) event.preventDefault();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          onSplit(caretOffset(event.currentTarget));
+        }
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.isConnected) return;
+        const runs = restoreImageRuns(htmlToRuns(event.currentTarget.innerHTML), block.runs);
+        const next: WordParagraph = { ...block, runs, dirty: true };
+        if (!paragraphText(next) && paragraphText(block)) return;
+        if (paragraphText(next) === paragraphText(block)
+          && runs.filter((run) => run.image).length === block.runs.filter((run) => run.image).length
+          && !event.currentTarget.querySelector("b,i,u,s,strong,em")) return;
+        onChange(next);
+      }}
+    />
+  );
 }
 
 function caretOffset(node: HTMLElement) {

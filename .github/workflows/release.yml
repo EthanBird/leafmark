@@ -1,11 +1,17 @@
 name: Publish Windows, Linux and Android release
 
-# Automatic GitHub Actions publishing is disabled.
-# Linux AppImage packaging repeatedly hit the 50-minute job timeout and cancelled
-# the whole release after Windows/Android were already uploaded. Builds are now
-# produced locally and attached to GitHub Releases by hand.
+# A release stays draft until every platform artifact has been built, checked,
+# uploaded, and verified against GitHub's recorded SHA-256 digest. Release pushes
+# are deliberately gated by the exact "Release LeafMark v<package version>" title.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version from package.json (for example, 0.8.2)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,10 +21,113 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Release LeafMark v'))
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release source and version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            printf 'Releases must run from main, got %s.\n' "$GITHUB_REF"
+            exit 1
+          fi
+
+          version="$(node -p "require('./package.json').version")"
+          package_lock_version="$(node -p "require('./package-lock.json').version")"
+          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)"
+          for actual in "$package_lock_version" "$tauri_version" "$cargo_version"; do
+            if [[ "$actual" != "$version" ]]; then
+              printf 'Version mismatch: package.json=%s, other manifest=%s.\n' "$version" "$actual"
+              exit 1
+            fi
+          done
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$REQUESTED_VERSION" != "$version" ]]; then
+            printf 'Dispatch version %s does not match package.json %s.\n' \
+              "$REQUESTED_VERSION" "$version"
+            exit 1
+          fi
+
+          expected_subject="Release LeafMark v$version"
+          actual_subject="$(git log -1 --pretty=%s)"
+          if [[ "$actual_subject" != "$expected_subject" ]]; then
+            printf 'Release commit title must be exactly "%s", got "%s".\n' \
+              "$expected_subject" "$actual_subject"
+            exit 1
+          fi
+
+      - name: Pin draft release to this main commit
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+
+          mapfile -t releases < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$tag\") | [.id, .draft, .target_commitish] | @tsv"
+          )
+          if [[ "${#releases[@]}" -gt 1 ]]; then
+            printf 'Found multiple releases for %s; refusing to guess.\n' "$tag"
+            exit 1
+          fi
+
+          if [[ "${#releases[@]}" -eq 1 ]]; then
+            IFS=$'\t' read -r release_id is_draft old_target <<< "${releases[0]}"
+            if [[ "$is_draft" != "true" ]]; then
+              printf '%s is already published; refusing to replace it.\n' "$tag"
+              exit 1
+            fi
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -f target_commitish="$GITHUB_SHA" \
+              -F draft=true \
+              -F prerelease=false >/dev/null
+            printf 'Reused draft %s and moved target from %s to %s.\n' \
+              "$release_id" "$old_target" "$GITHUB_SHA"
+          else
+            release_id="$(
+              gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+                -f tag_name="$tag" \
+                -f target_commitish="$GITHUB_SHA" \
+                -f name="LeafMark v$version" \
+                -F draft=true \
+                -F prerelease=false \
+                -F generate_release_notes=true \
+                --jq .id
+            )"
+            printf 'Created draft %s for %s.\n' "$release_id" "$GITHUB_SHA"
+          fi
+
+          printf 'release_id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
   release-windows:
-    if: startsWith(github.event.head_commit.message, 'Release LeafMark v')
+    needs: preflight
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Check out source
@@ -32,6 +141,12 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-windows
 
       - name: Prepare optional Windows signing certificate
         shell: pwsh
@@ -111,35 +226,8 @@ jobs:
             throw "Windows integration must not spawn reg.exe."
           }
 
-      - name: Build and publish NSIS installer
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseName: LeafMark v__VERSION__
-          releaseBody: |
-            - 以 v0.7.2 的 UI、主题、Agent、文档移动、Mermaid 矢量 PDF 与全平台产品树为唯一基线；不包含后续分支的便携版、离线 WebView2 或 Native 改造
-            - 0.8 起可在本机编辑 Word、Excel、PowerPoint（以及 RTF / CSV / OpenDocument 电子表格与演示）；OOXML 为原生模型，未修改部件原样写回，Microsoft / WPS / OnlyOffice 可继续打开
-            - 0.8.1：Markdown / 代码 / Word / Excel / PPT 划词问 AI；助手回答可复制或保存为 Markdown。WPS Skills 驱动本地 OOXML，不是安装版 WPS COM
-            - 0.8.1：Markdown 围栏与主流源码/配置文件按需语法高亮；可打开 TypeScript、Python、JSON、YAML 等文本文件。不是完整 IDE
-            - 0.8.1：文档库默认收起，展开层级按文档库路径记住
-            - 0.8.1：Windows / Android 文件关联覆盖 Office 与代码/配置；微信等应用分享时保留原文件名
-            - WPS 文字：字体/高亮/缩进/行距/分页、多级列表、表格、查找替换、页眉页脚；WPS 表格：数字格式、合并、冻结、排序筛选、自动求和与常用公式；WPS 演示：版式、文本框、备注、隐藏与放映
-            - Office 解析与重算在独立 Worker 中进行，首屏只渲染当前视口；文档 Worker 使用 4 文档 LRU，并限制 OOXML XML 展开量
-            - 文档库内的 Office 文件保存时同步更新工作区与保留快照；微信等外部来源仍只写 LeafMark 私有副本。PDF 与旧版 `.doc` / `.ppt` 仍为只读或系统应用回退
-            - Windows、Linux 与 Android 均保留 v0.7.2 发布路线；Windows 安装包注册 Markdown、Office、代码/配置与 PDF 打开方式
-            - Markdown 完整编辑、导出、Agent 写入和版本回退保持不变；不执行 VBA/宏，不还原 SmartArt、透视图或动画
-
-            Android 请下载 ARM64 APK；Windows 请下载 NSIS 安装程序；Linux 可选择 AppImage 或 .deb。
-            Android APK 继续使用 v0.7.0 起固定的社区更新证书，可直接覆盖更新；该公开证书不提供私钥保密或发布者真实性，请只从本项目官方 GitHub Releases 下载。Windows 未签名构建可能触发 SmartScreen 提示。
-          releaseDraft: true
-          prerelease: false
-          generateReleaseNotes: true
-          uploadUpdaterJson: false
-          retryAttempts: 2
-          args: --bundles nsis --config src-tauri/tauri.signing.conf.json
-          releaseAssetNamePattern: LeafMark_[version]_[arch][setup].[ext]
+      - name: Build NSIS installer
+        run: npx tauri build --ci --bundles nsis --config src-tauri/tauri.signing.conf.json
 
       - name: Verify installer
         shell: pwsh
@@ -172,16 +260,65 @@ jobs:
           }
 
           $version = node -p "require('./package.json').version"
-          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $assetName = "LeafMark_${version}_x64-setup.exe"
+          $assetDir = Join-Path $env:RUNNER_TEMP "leafmark-release-assets"
+          New-Item -ItemType Directory -Path $assetDir -Force | Out-Null
+          $assetPath = Join-Path $assetDir $assetName
+          Copy-Item $installer.FullName $assetPath -Force
+          $asset = Get-Item $assetPath
+          if ($asset.Length -lt 1MB) {
+            throw "NSIS installer is unexpectedly small: $($asset.Length) bytes"
+          }
+          $sha256 = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "WINDOWS_ASSET_NAME=$assetName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WINDOWS_ASSET_PATH=$assetPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "WINDOWS_ASSET_SHA256=$sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Remember release tag
+      - name: Upload and verify Windows asset
         shell: pwsh
-        run: Write-Host "Windows artifact uploaded to draft release $env:RELEASE_TAG"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $assets = gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID/assets?per_page=100" |
+            ConvertFrom-Json
+          $oldAsset = $assets | Where-Object Name -eq $env:WINDOWS_ASSET_NAME
+          if ($oldAsset) {
+            gh api --method DELETE `
+              "repos/$env:GITHUB_REPOSITORY/releases/assets/$($oldAsset.id)"
+          }
+          $uploadUrl = "https://uploads.github.com/repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID/assets?name=$env:WINDOWS_ASSET_NAME"
+          $uploadJson = curl.exe `
+            --fail-with-body `
+            --silent `
+            --show-error `
+            --location `
+            --request POST `
+            --header "Accept: application/vnd.github+json" `
+            --header "Authorization: Bearer $env:GH_TOKEN" `
+            --header "X-GitHub-Api-Version: 2022-11-28" `
+            --header "Content-Type: application/octet-stream" `
+            --data-binary "@$env:WINDOWS_ASSET_PATH" `
+            $uploadUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows asset upload failed with curl exit code $LASTEXITCODE."
+          }
+          $asset = $uploadJson | ConvertFrom-Json
+          $expectedDigest = "sha256:$env:WINDOWS_ASSET_SHA256"
+          if (
+            $asset.name -ne $env:WINDOWS_ASSET_NAME -or
+            $asset.state -ne "uploaded" -or
+            $asset.digest -ne $expectedDigest
+          ) {
+            throw "Windows asset verification failed: $($asset.state) $($asset.digest)"
+          }
 
   release-android:
-    needs: release-windows
+    needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     steps:
       - name: Check out source
@@ -253,22 +390,17 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      - name: Cache Rust Android build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-android-arm64
+
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and upload Android APK
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          mobile: android
-          tagName: v__VERSION__
-          releaseDraft: true
-          prerelease: false
-          uploadUpdaterJson: false
-          retryAttempts: 2
-          args: --apk --target aarch64 --split-per-abi
-          releaseAssetNamePattern: LeafMark_[version]_Android_[arch].[ext]
+      - name: Build Android APK
+        run: npx tauri android build --ci --apk --target aarch64 --split-per-abi
 
       - name: Verify ARM64 release APK
         shell: bash
@@ -362,13 +494,57 @@ jobs:
               "$version_code"
             exit 1
           fi
-          sha256sum "$apk"
-          du -h "$apk"
+          asset_name="LeafMark_${expected_version}_Android_arm64.apk"
+          asset_dir="$RUNNER_TEMP/leafmark-release-assets"
+          mkdir -p "$asset_dir"
+          asset_path="$asset_dir/$asset_name"
+          install -m 0644 "$apk" "$asset_path"
+          asset_sha256="$(sha256sum "$asset_path" | awk '{print $1}')"
+          {
+            printf 'ANDROID_ASSET_NAME=%s\n' "$asset_name"
+            printf 'ANDROID_ASSET_PATH=%s\n' "$asset_path"
+            printf 'ANDROID_ASSET_SHA256=%s\n' "$asset_sha256"
+          } >> "$GITHUB_ENV"
+          sha256sum "$asset_path"
+          du -h "$asset_path"
+
+      - name: Upload and verify Android asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          old_asset_id="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+              --jq ".[] | select(.name == \"$ANDROID_ASSET_NAME\") | .id"
+          )"
+          if [[ -n "$old_asset_id" ]]; then
+            gh api --method DELETE \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$old_asset_id"
+          fi
+          upload_json="$(
+            curl --fail-with-body --silent --show-error --location --request POST \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --header 'Content-Type: application/octet-stream' \
+              --data-binary "@$ANDROID_ASSET_PATH" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$ANDROID_ASSET_NAME"
+          )"
+          read -r uploaded_name state digest size < <(
+            jq -r '[.name, .state, .digest, .size] | @tsv' <<< "$upload_json"
+          )
+          if [[ "$uploaded_name" != "$ANDROID_ASSET_NAME" || "$state" != "uploaded" || "$digest" != "sha256:$ANDROID_ASSET_SHA256" ]]; then
+            printf 'Android asset verification failed: state=%s digest=%s size=%s.\n' \
+              "${state:-missing}" "${digest:-missing}" "${size:-missing}"
+            exit 1
+          fi
 
   release-linux:
-    needs: release-windows
+    needs: preflight
     runs-on: ubuntu-22.04
-    timeout-minutes: 50
+    timeout-minutes: 90
 
     steps:
       - name: Check out source
@@ -383,10 +559,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-linux-amd64
+
       - name: Install Tauri Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo env DEBIAN_FRONTEND=noninteractive \
+            apt-get -o Acquire::Retries=5 update
+          sudo env DEBIAN_FRONTEND=noninteractive \
+            apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
             build-essential \
             curl \
             file \
@@ -408,18 +592,8 @@ jobs:
           npm run typecheck
           cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build and upload Linux bundles
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseDraft: true
-          prerelease: false
-          uploadUpdaterJson: false
-          retryAttempts: 2
-          args: --bundles appimage,deb
-          releaseAssetNamePattern: LeafMark_[version]_Linux_[arch].[ext]
+      - name: Build Linux bundles
+        run: npx tauri build --ci --bundles appimage,deb
 
       - name: Verify Linux bundles and launch
         shell: bash
@@ -448,11 +622,78 @@ jobs:
             exit 1
           fi
 
-          sha256sum "$appimage" "$deb"
-          du -h "$appimage" "$deb"
+          version="$(node -p "require('./package.json').version")"
+          asset_dir="$RUNNER_TEMP/leafmark-release-assets"
+          mkdir -p "$asset_dir"
+          appimage_name="LeafMark_${version}_Linux_amd64.AppImage"
+          deb_name="LeafMark_${version}_Linux_amd64.deb"
+          appimage_path="$asset_dir/$appimage_name"
+          deb_path="$asset_dir/$deb_name"
+          install -m 0755 "$appimage" "$appimage_path"
+          install -m 0644 "$deb" "$deb_path"
+          if (( $(stat -c '%s' "$appimage_path") < 10 * 1024 * 1024 )); then
+            echo 'AppImage is unexpectedly small.'
+            exit 1
+          fi
+          if (( $(stat -c '%s' "$deb_path") < 1024 * 1024 )); then
+            echo 'Debian package is unexpectedly small.'
+            exit 1
+          fi
+          {
+            printf 'LINUX_APPIMAGE_NAME=%s\n' "$appimage_name"
+            printf 'LINUX_APPIMAGE_PATH=%s\n' "$appimage_path"
+            printf 'LINUX_APPIMAGE_SHA256=%s\n' "$(sha256sum "$appimage_path" | awk '{print $1}')"
+            printf 'LINUX_DEB_NAME=%s\n' "$deb_name"
+            printf 'LINUX_DEB_PATH=%s\n' "$deb_path"
+            printf 'LINUX_DEB_SHA256=%s\n' "$(sha256sum "$deb_path" | awk '{print $1}')"
+          } >> "$GITHUB_ENV"
+          sha256sum "$appimage_path" "$deb_path"
+          du -h "$appimage_path" "$deb_path"
+
+      - name: Upload and verify Linux assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          upload_asset() {
+            local name="$1"
+            local path="$2"
+            local expected_digest="$3"
+            local old_asset_id upload_json uploaded_name state digest size
+            old_asset_id="$(
+              gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+                --jq ".[] | select(.name == \"$name\") | .id"
+            )"
+            if [[ -n "$old_asset_id" ]]; then
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$old_asset_id"
+            fi
+            upload_json="$(
+              curl --fail-with-body --silent --show-error --location --request POST \
+                --header 'Accept: application/vnd.github+json' \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                --header 'Content-Type: application/octet-stream' \
+                --data-binary "@$path" \
+                "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name"
+            )"
+            read -r uploaded_name state digest size < <(
+              jq -r '[.name, .state, .digest, .size] | @tsv' <<< "$upload_json"
+            )
+            if [[ "$uploaded_name" != "$name" || "$state" != "uploaded" || "$digest" != "sha256:$expected_digest" ]]; then
+              printf 'Linux asset %s verification failed: state=%s digest=%s size=%s.\n' \
+                "$name" "${state:-missing}" "${digest:-missing}" "${size:-missing}"
+              exit 1
+            fi
+          }
+          upload_asset "$LINUX_APPIMAGE_NAME" "$LINUX_APPIMAGE_PATH" "$LINUX_APPIMAGE_SHA256"
+          upload_asset "$LINUX_DEB_NAME" "$LINUX_DEB_PATH" "$LINUX_DEB_SHA256"
 
   publish-release:
     needs:
+      - preflight
       - release-windows
       - release-android
       - release-linux
@@ -463,9 +704,88 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Publish verified release
+      - name: Verify complete draft and publish as Latest
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.preflight.outputs.release_id }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          version="$(node -p "require('./package.json').version")"
-          gh release edit "v$version" --draft=false --repo "$GITHUB_REPOSITORY"
+          set -euo pipefail
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+          if [[ "$(jq -r .draft <<< "$release_json")" != "true" ]]; then
+            echo 'Release is no longer a draft; refusing an unverified republish.'
+            exit 1
+          fi
+          if [[ "$(jq -r .tag_name <<< "$release_json")" != "$RELEASE_TAG" ]]; then
+            echo 'Draft tag changed during the build.'
+            exit 1
+          fi
+          if [[ "$(jq -r .target_commitish <<< "$release_json")" != "$GITHUB_SHA" ]]; then
+            echo 'Draft target is not the validated main commit.'
+            exit 1
+          fi
+
+          assets_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")"
+          expected_assets=(
+            "LeafMark_${RELEASE_VERSION}_Android_arm64.apk"
+            "LeafMark_${RELEASE_VERSION}_Linux_amd64.AppImage"
+            "LeafMark_${RELEASE_VERSION}_Linux_amd64.deb"
+            "LeafMark_${RELEASE_VERSION}_x64-setup.exe"
+          )
+          mapfile -t actual_assets < <(jq -r '.[].name' <<< "$assets_json" | sort)
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected_assets[@]}" | sort)
+          if [[ "$(printf '%s\n' "${actual_assets[@]}")" != "$(printf '%s\n' "${expected_sorted[@]}")" ]]; then
+            printf 'Draft must contain exactly the four verified platform assets.\nExpected:\n%s\nActual:\n%s\n' \
+              "$(printf '%s\n' "${expected_sorted[@]}")" \
+              "$(printf '%s\n' "${actual_assets[@]}")"
+            exit 1
+          fi
+
+          for name in "${expected_assets[@]}"; do
+            read -r state digest size < <(
+              jq -r --arg name "$name" \
+                '.[] | select(.name == $name) | [.state, .digest, .size] | @tsv' \
+                <<< "$assets_json"
+            )
+            if [[ "$state" != "uploaded" || ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              printf 'Asset %s is not fully uploaded or lacks a SHA-256 digest.\n' "$name"
+              exit 1
+            fi
+            case "$name" in
+              *.AppImage)
+                (( size >= 10 * 1024 * 1024 )) || { echo "$name is unexpectedly small."; exit 1; }
+                ;;
+              *Android*.apk)
+                (( size >= 1024 * 1024 && size <= 16 * 1024 * 1024 )) || {
+                  echo "$name is outside the allowed Android size range."
+                  exit 1
+                }
+                ;;
+              *.deb|*.exe)
+                (( size >= 1024 * 1024 )) || { echo "$name is unexpectedly small."; exit 1; }
+                ;;
+            esac
+          done
+
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -f target_commitish="$GITHUB_SHA" \
+            -F draft=false \
+            -F prerelease=false \
+            -f make_latest=true >/dev/null
+
+          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
+          if [[ "$latest_id" != "$RELEASE_ID" ]]; then
+            printf 'Published release %s did not become Latest (Latest is %s).\n' \
+              "$RELEASE_ID" "$latest_id"
+            exit 1
+          fi
+          tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)"
+          if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+            printf 'Release tag points to %s instead of %s.\n' "$tag_sha" "$GITHUB_SHA"
+            exit 1
+          fi
+          printf 'Published %s from %s with four verified assets.\n' \
+            "$RELEASE_TAG" "$GITHUB_SHA"

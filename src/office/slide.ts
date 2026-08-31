@@ -1,5 +1,6 @@
 import { decodeXml, encodeXml, xmlAttr } from "./xml";
 import { clonePackage, findPackagePart, packageText, setPackageText, type OfficePackage, unzipPackage, zipPackage } from "./package";
+import { findRelationshipTarget, parseXfrm, relationshipMedia, resolvePackagePart } from "./media";
 
 export interface SlideRun {
   text: string;
@@ -7,6 +8,13 @@ export interface SlideRun {
   italic?: boolean;
   fontSize?: number;
   color?: string;
+}
+
+export interface SlideTableCell {
+  text: string;
+  colSpan?: number;
+  rowSpan?: number;
+  hidden?: boolean;
 }
 
 export interface SlideShape {
@@ -22,7 +30,11 @@ export interface SlideShape {
   align: "left" | "center" | "right";
   text: string;
   fill?: string;
-  kind?: "text" | "rect";
+  kind?: "text" | "rect" | "image" | "table";
+  src?: string;
+  table?: SlideTableCell[][];
+  placeholder?: string;
+  fromLayout?: boolean;
   originalXml?: string;
   dirty?: boolean;
 }
@@ -31,6 +43,7 @@ export interface SlideModel {
   index: number;
   title: string;
   background: string;
+  backgroundImage?: string;
   shapes: SlideShape[];
   imageCount: number;
   path: string;
@@ -60,7 +73,7 @@ export function openPptx(buffer: ArrayBuffer): PresentationDocument {
   const height = Number(sizeMatch?.[2] ?? 6_858_000);
   const names = findPackagePart(files, /^ppt\/slides\/slide\d+\.xml$/);
   const slides = names.map((path, index) => {
-    const model = parsePptxSlide(packageText(files, path), index, path, width, height);
+    const model = parsePptxSlide(packageText(files, path), index, path, width, height, files);
     const notesXml = packageText(files, `ppt/notesSlides/notesSlide${index + 1}.xml`, false);
     if (notesXml) model.notes = extractSlideText(notesXml);
     if (/show="0"/.test(packageText(files, path))) model.hidden = true;
@@ -69,36 +82,27 @@ export function openPptx(buffer: ArrayBuffer): PresentationDocument {
   return { type: "presentation", format: "pptx", slides, files, width, height, editable: true };
 }
 
-function parsePptxSlide(xml: string, index: number, path: string, slideWidth: number, slideHeight: number): SlideModel {
-  const background = /<(?:a:)?srgbClr[^>]*val="([0-9A-Fa-f]{6})"/.exec(/<(?:p:)?bg\b[\s\S]*?<\/(?:p:)?bg>/.exec(xml)?.[0] ?? "")?.[1] ?? "ffffff";
-  const shapes: SlideShape[] = [];
-  for (const match of xml.matchAll(/<(?:p:)?sp\b[\s\S]*?<\/(?:p:)?sp>/g)) {
-    const shape = match[0];
-    const text = extractSlideText(shape);
-    const transform = /<(?:a:)?off\b[^>]*x="(-?\d+)"[^>]*y="(-?\d+)"[\s\S]*?<(?:a:)?ext\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/.exec(shape);
-    const fontSize = Number(xmlAttr(/<(?:a:)?rPr\b[^>]*>/.exec(shape)?.[0] ?? /<(?:a:)?defRPr\b[^>]*>/.exec(shape)?.[0] ?? "", "sz") || 1800) / 100;
-    const color = xmlAttr(/<(?:a:)?srgbClr\b[^>]*>/.exec(shape)?.[0] ?? "", "val") || "202124";
-    const alignValue = xmlAttr(/<(?:a:)?pPr\b[^>]*>/.exec(shape)?.[0] ?? "", "algn");
-    shapes.push({
-      id: `${index}:${shapes.length}`,
-      x: transform ? Number(transform[1]) / slideWidth : 0.08,
-      y: transform ? Number(transform[2]) / slideHeight : 0.08 + shapes.length * 0.1,
-      width: transform ? Number(transform[3]) / slideWidth : 0.84,
-      height: transform ? Number(transform[4]) / slideHeight : 0.12,
-      text,
-      fontSize: Math.max(10, Math.min(72, fontSize || 18)),
-      color: `#${color}`,
-      bold: /<(?:a:)?rPr\b[^>]*b="1"/.test(shape),
-      italic: /<(?:a:)?rPr\b[^>]*i="1"/.test(shape),
-      align: alignValue === "ctr" ? "center" : alignValue === "r" ? "right" : "left",
-      originalXml: shape,
-    });
-  }
-  const imageCount = [...xml.matchAll(/<(?:p:)?pic\b/g)].length;
+function parsePptxSlide(xml: string, index: number, path: string, slideWidth: number, slideHeight: number, files?: OfficePackage): SlideModel {
+  const relsPath = path.replace(/slides\/([^/]+)$/, "slides/_rels/$1.rels");
+  const relsXml = files ? packageText(files, relsPath, false) : "";
+  const media = files ? relationshipMedia(files, relsPath, path).media : new Map<string, string>();
+  const layoutTarget = findRelationshipTarget(relsXml, "slideLayout");
+  const layoutPath = files && layoutTarget ? resolvePackagePart(path, layoutTarget) : "";
+  const layoutXml = layoutPath ? packageText(files!, layoutPath, false) : "";
+  const layoutRelsPath = layoutPath ? layoutPath.replace(/slideLayouts\/([^/]+)$/, "slideLayouts/_rels/$1.rels") : "";
+  const layoutMedia = layoutPath && files ? relationshipMedia(files, layoutRelsPath, layoutPath).media : new Map<string, string>();
+  const slideBg = parseSlideBackground(xml, media);
+  const layoutBg = parseSlideBackground(layoutXml, layoutMedia);
+  const background = slideBg.color || slideBg.image ? slideBg : layoutBg;
+  const tree = /<(?:p:)?spTree\b[\s\S]*<\/(?:p:)?spTree>/.exec(xml)?.[0] ?? xml;
+  const shapes = parseSlideTree(tree, index, slideWidth, slideHeight, media);
+  if (layoutXml) mergeLayoutPlaceholders(shapes, layoutXml, index, slideWidth, slideHeight, layoutMedia);
+  const imageCount = shapes.filter((shape) => shape.kind === "image").length || [...xml.matchAll(/<(?:p:)?pic\b/g)].length;
   return {
     index,
-    title: shapes[0]?.text.slice(0, 80) || `幻灯片 ${index + 1}`,
-    background: `#${background}`,
+    title: slideTitleFromShapes(shapes, `幻灯片 ${index + 1}`),
+    background: background.color || "#ffffff",
+    backgroundImage: background.image,
     shapes,
     imageCount,
     path,
@@ -106,11 +110,208 @@ function parsePptxSlide(xml: string, index: number, path: string, slideWidth: nu
   };
 }
 
+function parseSlideBackground(xml: string, media: Map<string, string>) {
+  const bg = /<(?:p:)?bg\b[\s\S]*?<\/(?:p:)?bg>/.exec(xml)?.[0] ?? "";
+  if (!bg) return { color: "", image: undefined as string | undefined };
+  const color = /<(?:a:)?srgbClr[^>]*val="([0-9A-Fa-f]{6})"/.exec(bg)?.[1] ?? "ffffff";
+  const embed = xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(bg)?.[0] ?? "", "r:embed")
+    || xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(bg)?.[0] ?? "", "r:link");
+  return { color: `#${color}`, image: embed ? media.get(embed) : undefined };
+}
+
+function placeholderKey(xml: string) {
+  const ph = /<(?:p:)?ph\b[^>]*>/.exec(xml)?.[0];
+  if (!ph) return "";
+  return `${xmlAttr(ph, "type") || "body"}:${xmlAttr(ph, "idx") || "0"}`;
+}
+
+function mergeLayoutPlaceholders(
+  shapes: SlideShape[],
+  layoutXml: string,
+  index: number,
+  slideWidth: number,
+  slideHeight: number,
+  media: Map<string, string>,
+) {
+  const chrome = new Set(["dt", "ftr", "sldNum", "hdr"]);
+  const present = new Set(shapes.map((shape) => shape.placeholder).filter(Boolean));
+  const tree = /<(?:p:)?spTree\b[\s\S]*<\/(?:p:)?spTree>/.exec(layoutXml)?.[0] ?? layoutXml;
+  const extras = parseSlideTree(tree, index, slideWidth, slideHeight, media)
+    .filter((shape) => {
+      const type = (shape.placeholder ?? "").split(":")[0];
+      if (!shape.placeholder || present.has(shape.placeholder) || chrome.has(type)) return false;
+      return shape.kind === "text" || !shape.kind;
+    });
+  extras.forEach((shape, extraIndex) => {
+    shapes.push({
+      ...shape,
+      id: `${index}:layout:${extraIndex}`,
+      fromLayout: true,
+      originalXml: undefined,
+      dirty: false,
+    });
+  });
+}
+
+function parseSlideTree(xml: string, index: number, slideWidth: number, slideHeight: number, media: Map<string, string>, origin?: { x: number; y: number; sx: number; sy: number }): SlideShape[] {
+  const shapes: SlideShape[] = [];
+  const ox = origin?.x ?? 0;
+  const oy = origin?.y ?? 0;
+  const sx = origin?.sx ?? 1;
+  const sy = origin?.sy ?? 1;
+  const push = (shape: SlideShape) => {
+    shape.x = ox + shape.x * sx;
+    shape.y = oy + shape.y * sy;
+    shape.width *= sx;
+    shape.height *= sy;
+    shapes.push(shape);
+  };
+  for (const match of xml.matchAll(/<(?:p:)?grpSp\b[\s\S]*?<\/(?:p:)?grpSp>/g)) {
+    const group = match[0];
+    const inner = group.replace(/^<(?:p:)?grpSp\b[^>]*>/, "").replace(/<\/(?:p:)?grpSp>$/, "");
+    const xfrm = parseXfrm(/<(?:p:)?grpSpPr\b[\s\S]*?<\/(?:p:)?grpSpPr>/.exec(group)?.[0] ?? group);
+    const chExt = /<(?:a:)?chExt\b[^>]*\/?>/.exec(group)?.[0] ?? "";
+    const childOrigin = xfrm
+      ? {
+          x: ox + (xfrm.x / slideWidth) * sx,
+          y: oy + (xfrm.y / slideHeight) * sy,
+          sx: sx * ((xfrm.cx || 1) / (Number(xmlAttr(chExt, "cx")) || xfrm.cx || 1)),
+          sy: sy * ((xfrm.cy || 1) / (Number(xmlAttr(chExt, "cy")) || xfrm.cy || 1)),
+        }
+        : origin;
+    shapes.push(...parseSlideTree(inner, index, slideWidth, slideHeight, media, childOrigin));
+  }
+  const withoutGroups = xml.replace(/<(?:p:)?grpSp\b[\s\S]*?<\/(?:p:)?grpSp>/g, "");
+  for (const match of withoutGroups.matchAll(/<(?:p:)?pic\b[\s\S]*?<\/(?:p:)?pic>/g)) {
+    const pic = match[0];
+    const transform = parseXfrm(pic);
+    const embed = xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(pic)?.[0] ?? "", "r:embed")
+      || xmlAttr(/<(?:a:)?blip\b[^>]*>/.exec(pic)?.[0] ?? "", "r:link");
+    push({
+      id: `${index}:${shapes.length + Math.random().toString(36).slice(2, 6)}`,
+      x: transform ? transform.x / slideWidth : 0.08,
+      y: transform ? transform.y / slideHeight : 0.08,
+      width: transform ? transform.cx / slideWidth : 0.4,
+      height: transform ? transform.cy / slideHeight : 0.3,
+      text: "",
+      fontSize: 12,
+      color: "#202124",
+      bold: false,
+      align: "left",
+      kind: "image",
+      src: embed ? media.get(embed) : undefined,
+      originalXml: pic,
+    });
+  }
+  for (const match of withoutGroups.matchAll(/<(?:p:)?graphicFrame\b[\s\S]*?<\/(?:p:)?graphicFrame>/g)) {
+    const frame = match[0];
+    const tableXml = /<(?:a:)?tbl\b[\s\S]*?<\/(?:a:)?tbl>/.exec(frame)?.[0];
+    if (!tableXml) continue;
+    const transform = parseXfrm(frame);
+    const rows = parseSlideTable(tableXml);
+    push({
+      id: `${index}:${shapes.length + Math.random().toString(36).slice(2, 6)}`,
+      x: transform ? transform.x / slideWidth : 0.08,
+      y: transform ? transform.y / slideHeight : 0.2,
+      width: transform ? transform.cx / slideWidth : 0.84,
+      height: transform ? transform.cy / slideHeight : Math.max(0.12, rows.length * 0.08),
+      text: rows.map((row) => row.filter((cell) => !cell.hidden).map((cell) => cell.text).join(" ")).join("\n"),
+      fontSize: 14,
+      color: "#202124",
+      bold: false,
+      align: "left",
+      kind: "table",
+      table: rows,
+      originalXml: frame,
+    });
+  }
+  for (const match of withoutGroups.matchAll(/<(?:p:)?sp\b[\s\S]*?<\/(?:p:)?sp>/g)) {
+    const shape = match[0];
+    const ph = placeholderKey(shape);
+    const phType = ph.split(":")[0];
+    if (phType === "dt" || phType === "ftr" || phType === "sldNum" || phType === "hdr") continue;
+    const text = extractSlideText(shape);
+    const transform = parseXfrm(shape);
+    const fontSize = Number(xmlAttr(/<(?:a:)?rPr\b[^>]*>/.exec(shape)?.[0] ?? /<(?:a:)?defRPr\b[^>]*>/.exec(shape)?.[0] ?? "", "sz") || 1800) / 100;
+    const color = xmlAttr(/<(?:a:)?srgbClr\b[^>]*>/.exec(shape)?.[0] ?? "", "val") || "202124";
+    const alignValue = xmlAttr(/<(?:a:)?pPr\b[^>]*>/.exec(shape)?.[0] ?? "", "algn");
+    push({
+      id: `${index}:${shapes.length}`,
+      x: transform ? transform.x / slideWidth : 0.08,
+      y: transform ? transform.y / slideHeight : 0.08 + shapes.length * 0.1,
+      width: transform ? transform.cx / slideWidth : 0.84,
+      height: transform ? transform.cy / slideHeight : 0.12,
+      text,
+      fontSize: Math.max(10, Math.min(72, fontSize || 18)),
+      color: `#${color}`,
+      bold: /<(?:a:)?rPr\b[^>]*b="1"/.test(shape),
+      italic: /<(?:a:)?rPr\b[^>]*i="1"/.test(shape),
+      align: alignValue === "ctr" ? "center" : alignValue === "r" ? "right" : "left",
+      kind: "text",
+      placeholder: placeholderKey(shape) || undefined,
+      originalXml: shape,
+    });
+  }
+  return shapes.map((shape, shapeIndex) => ({ ...shape, id: `${index}:${shapeIndex}` }));
+}
+
 function extractSlideText(xml: string) {
-  return [...xml.matchAll(/<(?:a:)?t\b(?:\s[^>]*)?>([\s\S]*?)<\/(?:a:)?t>/g)]
+  const bodies = [...xml.matchAll(/<(?:(?:a|p):)?txBody\b[\s\S]*?<\/(?:(?:a|p):)?txBody>/g)];
+  const source = bodies.length ? bodies.map((item) => item[0]).join("\n") : xml;
+  const paragraphs = [...source.matchAll(/<(?:a:)?p\b[\s\S]*?<\/(?:a:)?p>/g)].map((item) =>
+    [...item[0].matchAll(/<(?:a:)?t\b(?:\s[^>]*)?>([\s\S]*?)<\/(?:a:)?t>/g)]
+      .map((match) => decodeXml(match[1]))
+      .join("")
+      .replace(/\u000b/g, "\n"),
+  );
+  const text = (paragraphs.length ? paragraphs.join("\n") : [...source.matchAll(/<(?:a:)?t\b(?:\s[^>]*)?>([\s\S]*?)<\/(?:a:)?t>/g)]
     .map((match) => decodeXml(match[1]))
-    .join("")
+    .join(""))
     .replace(/\u000b/g, "\n");
+  return text.replace(/^\n+|\n+$/g, "");
+}
+
+function parseSlideTable(tableXml: string): SlideTableCell[][] {
+  const rows = [...tableXml.matchAll(/<(?:a:)?tr\b[\s\S]*?<\/(?:a:)?tr>/g)].map((row) =>
+    [...row[0].matchAll(/<(?:a:)?tc\b[\s\S]*?<\/(?:a:)?tc>/g)].map((cell) => {
+      const open = cell[0].slice(0, cell[0].indexOf(">") + 1);
+      const pr = /<(?:a:)?tcPr\b[\s\S]*?<\/(?:a:)?tcPr>/.exec(cell[0])?.[0] ?? "";
+      const gridSpan = Number(xmlAttr(open, "gridSpan") || xmlAttr(/<(?:a:)?gridSpan\b[^>]*>/.exec(pr)?.[0] ?? "", "val"));
+      const vMergeEl = /<(?:a:)?vMerge\b[^>]*>/.exec(pr)?.[0] ?? "";
+      const vMergeAttr = xmlAttr(open, "vMerge");
+      const vRestart = vMergeAttr === "restart" || xmlAttr(vMergeEl, "val") === "restart";
+      const vContinue = Boolean(vMergeAttr && vMergeAttr !== "restart") || (Boolean(vMergeEl) && !vRestart);
+      const hMerge = xmlAttr(open, "hMerge") === "1" || /<(?:a:)?hMerge\b/.test(pr);
+      return {
+        text: extractSlideText(cell[0]),
+        colSpan: gridSpan > 1 ? gridSpan : undefined,
+        hidden: hMerge || vContinue || undefined,
+        vRestart,
+      };
+    }),
+  );
+  return rows.map((row, rowIndex) => row.map((cell, cellIndex) => {
+    const { vRestart, ...rest } = cell;
+    if (!vRestart) return rest;
+    let rowSpan = 1;
+    for (let next = rowIndex + 1; next < rows.length; next += 1) {
+      if (!rows[next][cellIndex]?.hidden) break;
+      rowSpan += 1;
+    }
+    return rowSpan > 1 ? { ...rest, rowSpan } : rest;
+  }));
+}
+
+export function slideTitleFromShapes(shapes: SlideShape[], fallback: string) {
+  const usable = (shape: SlideShape) => {
+    const text = shape.text.trim();
+    if (!text || shape.kind === "image" || shape.kind === "table") return "";
+    return text.replace(/\s+/g, " ");
+  };
+  const byPlaceholder = shapes.find((shape) => /^(ctrTitle|title|subTitle)\b/.test(shape.placeholder ?? "") && usable(shape));
+  if (byPlaceholder) return usable(byPlaceholder).slice(0, 80);
+  const texts = shapes.filter((shape) => usable(shape)).sort((a, b) => a.y - b.y || b.fontSize - a.fontSize);
+  return (texts[0] ? usable(texts[0]) : "").slice(0, 80) || fallback;
 }
 
 export function openOdp(buffer: ArrayBuffer): PresentationDocument {
@@ -161,7 +362,7 @@ export function updateShapeText(slide: SlideModel, shapeId: string, text: string
   shape.text = text;
   shape.dirty = true;
   slide.dirty = true;
-  slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+  slide.title = slideTitleFromShapes(slide.shapes, `幻灯片 ${slide.index + 1}`);
 }
 
 export function updateShapeStyle(slide: SlideModel, shapeId: string, patch: Partial<Pick<SlideShape, "bold" | "italic" | "fontSize" | "align" | "color" | "text" | "fill">>) {
@@ -171,7 +372,7 @@ export function updateShapeStyle(slide: SlideModel, shapeId: string, patch: Part
   shape.dirty = true;
   shape.originalXml = undefined;
   slide.dirty = true;
-  if (patch.text !== undefined) slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+  if (patch.text !== undefined) slide.title = slideTitleFromShapes(slide.shapes, `幻灯片 ${slide.index + 1}`);
 }
 
 export function deleteShape(slide: SlideModel, shapeId: string) {
@@ -179,7 +380,7 @@ export function deleteShape(slide: SlideModel, shapeId: string) {
   if (index < 0) return undefined;
   const [removed] = slide.shapes.splice(index, 1);
   slide.dirty = true;
-  slide.title = slide.shapes[0]?.text.slice(0, 80) || `幻灯片 ${slide.index + 1}`;
+  slide.title = slideTitleFromShapes(slide.shapes, `幻灯片 ${slide.index + 1}`);
   return removed;
 }
 
@@ -262,7 +463,37 @@ export function addBlankSlide(document: PresentationDocument) {
   return slide;
 }
 
+function shapeBox(shape: Pick<SlideShape, "x" | "y" | "width" | "height">) {
+  return { x: shape.x, y: shape.y, width: shape.width, height: shape.height };
+}
+
+function boxesOverlap(a: ReturnType<typeof shapeBox>, b: ReturnType<typeof shapeBox>, pad = 0.01) {
+  return a.x < b.x + b.width - pad && a.x + a.width > b.x + pad && a.y < b.y + b.height - pad && a.y + a.height > b.y + pad;
+}
+
+function occupiesCanvas(shape: SlideShape) {
+  if (shape.kind === "image" && shape.width >= 0.92 && shape.height >= 0.92 && shape.x <= 0.04 && shape.y <= 0.04) return false;
+  return true;
+}
+
+export function findTextBoxSlot(slide: SlideModel, width = 0.76, height = 0.18) {
+  const blockers = slide.shapes.filter(occupiesCanvas).map(shapeBox);
+  const candidates = [
+    { x: 0.08, y: 0.74, width, height },
+    { x: 0.08, y: 0.04, width, height },
+    { x: 0.54, y: 0.72, width: Math.min(width, 0.4), height },
+    { x: 0.08, y: 0.72, width: Math.min(width, 0.4), height },
+    { x: 0.54, y: 0.22, width: Math.min(width, 0.4), height },
+    { x: 0.08, y: 0.22, width: Math.min(width, 0.4), height },
+  ];
+  const free = candidates.find((slot) => !blockers.some((item) => boxesOverlap(slot, item)));
+  if (free) return free;
+  const lowest = blockers.reduce((max, item) => Math.max(max, item.y + item.height), 0);
+  return { x: 0.12, y: Math.min(0.78, lowest + 0.02), width, height };
+}
+
 export function addTextBox(slide: SlideModel, patch?: Partial<SlideShape>) {
+  const placed = patch && (patch.x != null || patch.y != null) ? null : findTextBoxSlot(slide);
   const shape: SlideShape = {
     id: `${slide.index}:${slide.shapes.length}`,
     x: 0.12,
@@ -276,6 +507,7 @@ export function addTextBox(slide: SlideModel, patch?: Partial<SlideShape>) {
     align: "left",
     kind: "text",
     dirty: true,
+    ...placed,
     ...patch,
   };
   slide.shapes.push(shape);
@@ -291,7 +523,6 @@ export function moveShape(slide: SlideModel, shapeId: string, x: number, y: numb
   if (width != null) shape.width = width;
   if (height != null) shape.height = height;
   shape.dirty = true;
-  shape.originalXml = undefined;
   slide.dirty = true;
 }
 
@@ -354,9 +585,14 @@ function serializeSlideXml(slide: SlideModel, document: PresentationDocument) {
     let xml = slide.originalXml;
     for (const shape of slide.shapes) {
       if (!shape.originalXml) continue;
-      xml = xml.replace(shape.originalXml, rewriteShapeText(shape.originalXml, shape.text));
+      let next = shape.kind === "image" || shape.kind === "table"
+        ? shape.originalXml
+        : rewriteShapeText(shape.originalXml, shape.text);
+      next = rewriteShapeXfrm(next, shape, document);
+      xml = xml.replace(shape.originalXml, next);
+      shape.originalXml = next;
     }
-    const missing = slide.shapes.filter((shape) => !shape.originalXml);
+    const missing = slide.shapes.filter((shape) => !shape.originalXml && !shape.fromLayout);
     if (missing.length) {
       const extra = missing.map((shape) => shapeXml(shape, document)).join("");
       xml = xml.replace(/<\/(?:p:)?spTree>/, `${extra}</p:spTree>`);
@@ -364,11 +600,55 @@ function serializeSlideXml(slide: SlideModel, document: PresentationDocument) {
     return xml;
   }
   if (slide.originalXml && !slide.dirty) return slide.originalXml;
-  const shapes = slide.shapes.map((shape) => shapeXml(shape, document)).join("");
+  const shapes = slide.shapes.filter((shape) => !shape.fromLayout).map((shape) => shape.originalXml && (shape.kind === "image" || shape.kind === "table")
+    ? rewriteShapeXfrm(shape.originalXml, shape, document)
+    : shapeXml(shape, document)).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"${slide.hidden ? ` show="0"` : ""}><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${slide.background.replace(/^#/, "")}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${document.width}" cy="${document.height}"/><a:chOff x="0" y="0"/><a:chExt cx="${document.width}" cy="${document.height}"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
 }
 
+function rewriteShapeXfrm(xml: string, shape: SlideShape, document: PresentationDocument) {
+  const x = Math.round(shape.x * document.width);
+  const y = Math.round(shape.y * document.height);
+  const cx = Math.round(shape.width * document.width);
+  const cy = Math.round(shape.height * document.height);
+  let next = xml.replace(/<(?:a:)?off\b[^>]*\/?>/, `<a:off x="${x}" y="${y}"/>`);
+  next = next.replace(/<(?:a:)?ext\b[^>]*\/?>/, `<a:ext cx="${cx}" cy="${cy}"/>`);
+  return next;
+}
+
+function rewriteTxBody(body: string, lines: string[]) {
+  const encoded = lines.map(encodeXml);
+  let index = 0;
+  let next = body.replace(/<(?:a:)?p\b[\s\S]*?<\/(?:a:)?p>/g, (para) => {
+    if (index >= lines.length) return "";
+    const line = encoded[index];
+    index += 1;
+    if (/<(?:a:)?t\b/.test(para)) {
+      let replaced = false;
+      return para.replace(/<(?:a:)?t\b(?:\s[^>]*)?>[\s\S]*?<\/(?:a:)?t>/g, (match) => {
+        if (replaced) return match.replace(/>[\s\S]*</, "><");
+        replaced = true;
+        return match.replace(/>[\s\S]*</, ` xml:space="preserve">${line}<`);
+      });
+    }
+    return para.replace(/<\/(?:a:)?p>/, `<a:r><a:t xml:space="preserve">${line}</a:t></a:r></a:p>`);
+  });
+  if (!index && encoded.length) {
+    const extra = encoded.map((line) => `<a:p><a:r><a:t xml:space="preserve">${line}</a:t></a:r></a:p>`).join("");
+    return next.replace(/<(?:a:)?lstStyle\s*\/>/, `$&${extra}`);
+  }
+  if (index < encoded.length) {
+    const extra = encoded.slice(index).map((line) => `<a:p><a:r><a:t xml:space="preserve">${line}</a:t></a:r></a:p>`).join("");
+    next = next.replace(/(<\/(?:(?:a|p):)?txBody>)/, `${extra}$1`);
+  }
+  return next;
+}
+
 function rewriteShapeText(xml: string, text: string) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (/<(?:(?:a|p):)?txBody\b/.test(xml)) {
+    return xml.replace(/<(?:(?:a|p):)?txBody\b[\s\S]*?<\/(?:(?:a|p):)?txBody>/, (body) => rewriteTxBody(body, lines));
+  }
   const encoded = encodeXml(text);
   if (/<(?:a:)?t\b/.test(xml)) {
     let replaced = false;
@@ -388,7 +668,11 @@ function shapeXml(shape: SlideShape, document: PresentationDocument) {
   const cy = Math.round(shape.height * document.height);
   const align = shape.align === "center" ? "ctr" : shape.align === "right" ? "r" : "l";
   const fill = shape.fill ? `<a:solidFill><a:srgbClr val="${shape.fill.replace(/^#/, "")}"/></a:solidFill>` : "";
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${Number(shape.id.split(":")[1] ?? 2) + 2}" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${fill}</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/><a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="zh-CN" sz="${Math.round(shape.fontSize * 100)}" b="${shape.bold ? 1 : 0}" i="${shape.italic ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${shape.color.replace(/^#/, "")}"/></a:solidFill></a:rPr><a:t>${encodeXml(shape.text)}</a:t></a:r></a:p></p:txBody></p:sp>`;
+  const runPr = `<a:rPr lang="zh-CN" sz="${Math.round(shape.fontSize * 100)}" b="${shape.bold ? 1 : 0}" i="${shape.italic ? 1 : 0}" dirty="0"><a:solidFill><a:srgbClr val="${shape.color.replace(/^#/, "")}"/></a:solidFill></a:rPr>`;
+  const paragraphs = shape.text.replace(/\r\n/g, "\n").split("\n").map((line) =>
+    `<a:p><a:pPr algn="${align}"/><a:r>${runPr}<a:t xml:space="preserve">${encodeXml(line)}</a:t></a:r></a:p>`,
+  ).join("");
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${Number(shape.id.split(":")[1] ?? 2) + 2}" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${fill}</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>${paragraphs}</p:txBody></p:sp>`;
 }
 
 function serializeOdp(document: PresentationDocument) {

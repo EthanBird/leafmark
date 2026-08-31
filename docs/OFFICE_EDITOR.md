@@ -24,16 +24,16 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 | `.docx` / `.rtf` | 前 160 个段落/表格 | 滚动继续取块；未编辑块保留原始 XML |
 | `.xlsx` / `.csv` / `.xls` | 活动表视口（约 80×26） | 稀疏单元格 + 滚动按需取数 |
 | `.pptx` / `.odp` | 幻灯片目录 + 第 1 页 | 切页时再解析该页 |
-| `.pdf` | 系统 WebView PDF | 仍为只读 |
+| `.pdf` | PDF.js 浅色画布（缩放/翻页） | 只读；失败时回退系统查看器 |
 | `.doc` / `.ppt` | 兼容性回退 | 交给系统 Office |
 
 “窗口可操作”与“整份文件解析完毕”解耦。产品目标：普通本地文档冷启动后 1 秒内出现可编辑首屏；大表格只渲染可见单元格，绝不把十万行塞进 React。
 
 ## 兼容与写回
 
-- **Word / WPS 文字**：Run 级字体、字号、颜色、高亮、上标/下标、超链接；段落对齐、缩进、行距、分页符、多级列表。可插入/增删表格行列、查找替换、页眉页脚、字数统计。未修改块原样写回；修改块生成 WordprocessingML。使用列表时补齐 `word/numbering.xml`（9 级）与 Content_Types。
-- **Excel / WPS 表格**：原生 SpreadsheetML。数字格式（常规/数值/货币/百分比/日期/科学计数/文本）、字体对齐换行填充、合并单元格、列宽、冻结窗格、排序、自动筛选、向右填充、自动求和、重命名/删除工作表。打开时解析已有合并/冻结/筛选/列宽；写回时更新 `workbook.xml` 工作表列表且保留主题/样式关系。公式用函数注册表重算后再写 `<f>` / `<v>`。
-- **PowerPoint / WPS 演示**：改文本时只替换对应 `a:t`；可新增文本框、移动形状、改填充、备注、隐藏幻灯片、版式、重排。写回时更新 `sldIdLst`、关系部件与 notesSlide。
+- **Word / WPS 文字**：Run 级字体、字号、颜色、高亮、上标/下标、超链接（把 `r:id` 解析成真实 URL）；段落对齐、缩进、行距、分页符、多级列表。内嵌与浮动图片从 `word/media` 解析为可见图片，未改动的 drawing XML 原样写回。表格读取 `gridSpan` / `vMerge`。可插入/增删表格行列、查找替换、页眉页脚、字数统计。编辑时按 HTML 语义提取文本，不再把 `contentEditable` 的 `<span>` 标签写进正文。
+- **Excel / WPS 表格**：原生 SpreadsheetML。数字格式、字体对齐换行填充、合并单元格、列宽（打开时按 `cols` 绘制）、冻结窗格（表头与冻结行列钉在视口）、排序、自动筛选、填充柄拖拽、向右填充、自动求和、重命名/删除工作表。可用鼠标拖选区域。公式用函数注册表重算后再写 `<f>` / `<v>`。
+- **PowerPoint / WPS 演示**：改文本时按段落写回全部 `a:t`；解析 `a:xfrm`、组合形状、图片、表格、幻灯片/版式背景图，以及版式占位符（会忽略日期/页脚/页码母版零件）。可新增文本框（避开已有图片/表格）、移动形状、改填充、备注、隐藏幻灯片、版式、重排。写回时更新 `sldIdLst`、关系部件与 notesSlide。
 - **外部来源**（微信、邮件、临时 `content://`）：仍然只写 LeafMark 保留副本，绝不回写来源路径。文档库内的文件保存时同步更新工作区文件与快照。
 
 公式引擎对齐 Microsoft Excel / WPS / OnlyOffice 常见语义：四则与比较、`A1` / `$A$1` / `Sheet1!B2`、区域、`IFERROR` 捕获参数错误，以及 `SUM AVERAGE MIN MAX COUNT COUNTA COUNTBLANK COUNTIF COUNTIFS SUMIF SUMIFS AVERAGEIF AVERAGEIFS MAXIFS MINIFS PRODUCT ABS ROUND ROUNDUP ROUNDDOWN INT TRUNC CEILING FLOOR MOD POWER SQRT LN LOG LOG10 EXP PI SIGN RAND RANDBETWEEN IF IFS SWITCH IFNA AND OR XOR NOT TRUE FALSE ISBLANK ISNUMBER ISTEXT ISERROR ISNA ISEVEN ISODD N LEN LEFT RIGHT MID TRIM UPPER LOWER PROPER CONCAT CONCATENATE TEXTJOIN VALUE FIND SEARCH SUBSTITUTE REPLACE REPT EXACT CHAR CODE FIXED DOLLAR T HYPERLINK NOW TODAY DATE YEAR MONTH DAY WEEKDAY HOUR MINUTE SECOND TIME EDATE EOMONTH DAYS DATEDIF NETWORKDAYS TEXT NA CHOOSE COLUMN ROW COLUMNS ROWS LARGE SMALL MEDIAN SUMPRODUCT VLOOKUP HLOOKUP LOOKUP XLOOKUP INDEX MATCH INDIRECT RANK RANK.EQ STDEV STDEV.S STDEVP STDEV.P VAR VAR.S VARP VAR.P PMT FV PV NPV NPER SIN COS TAN ASIN ACOS ATAN DEGREES RADIANS FACT GCD LCM EVEN ODD COMBIN QUOTIENT UNIQUE`。循环引用返回 `#CYCLE!`。对照用例见 `src/office/office-compat.test.ts` 与 `src/office/office-wps.test.ts`。
@@ -41,10 +41,8 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 ## 明确不做的事（本版本）
 
 - 不执行 VBA / 宏 / 外部链接 / 嵌入脚本
-- 不保证复杂浮动图文、SmartArt、透视图、动画的像素级还原
-- PDF、二进制 `.doc` / `.ppt`、VBA / 宏 / 外部链接 / 嵌入脚本
-- 不保证复杂浮动图文、SmartArt、透视图、动画的像素级还原
-- 二进制 `.doc` / `.ppt` 不在应用内实现不完整的 OLE 排版器
+- 不保证复杂浮动图文、SmartArt、透视图、动画的像素级还原；不是 OnlyOffice / LibreOffice 的完整替代
+- PDF 只读（PDF.js 浅色纸面、缩放与翻页，无注释/表单）；二进制 `.doc` / `.ppt` 仍回退系统应用
 
 ## Agent 与划词问 AI
 
@@ -62,5 +60,6 @@ UI 线程（React）                Worker 线程                 Rust / 磁盘
 
 - `npm run typecheck`
 - `npm test`（含 DOCX/XLSX/PPTX 往返、撤销，以及与 Microsoft Excel 语义对照的公式套件）
+- 真实样张：`python3 scripts/generate-office-fixtures.py` 写出 `public/office-fixtures/leafmark-sample.docx` / `.pptx` / `.xlsx`。开发时打开 `http://127.0.0.1:1420/office-gallery.html`，Word / PPT / Excel 走同一套可编辑画布（工具栏、改字、插入、拖选）。`node scripts/screenshot-office-gallery.mjs` 用无头 Chrome 点选、改字并截编辑后的界面。
 - Windows / Linux `cargo test`
 - 真实语料：冷启动首屏、编辑后用 Microsoft Office 打开、源文件删除后从保留副本继续编辑
