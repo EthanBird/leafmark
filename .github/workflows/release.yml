@@ -53,7 +53,8 @@ jobs:
           package_lock_version="$(node -p "require('./package-lock.json').version")"
           tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)"
-          for actual in "$package_lock_version" "$tauri_version" "$cargo_version"; do
+          release_body_version="$(sed -n 's/^<!-- release-version: \([^ ]*\) -->$/\1/p' .github/release-body.md)"
+          for actual in "$package_lock_version" "$tauri_version" "$cargo_version" "$release_body_version"; do
             if [[ "$actual" != "$version" ]]; then
               printf 'Version mismatch: package.json=%s, other manifest=%s.\n' "$version" "$actual"
               exit 1
@@ -738,6 +739,7 @@ jobs:
           fi
 
           assets_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")"
+          release_body="$(cat .github/release-body.md)"
           expected_assets=(
             "LeafMark_${RELEASE_VERSION}_Android_arm64.apk"
             "LeafMark_${RELEASE_VERSION}_Linux_amd64.AppImage"
@@ -782,6 +784,7 @@ jobs:
           gh api --method PATCH \
             "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             -f target_commitish="$GITHUB_SHA" \
+            -f body="$release_body" \
             -F draft=false \
             -F prerelease=false \
             -f make_latest=true >/dev/null
@@ -799,3 +802,94 @@ jobs:
           fi
           printf 'Published %s from %s with four verified assets.\n' \
             "$RELEASE_TAG" "$GITHUB_SHA"
+
+  refresh-release-metadata:
+    if: >-
+      github.event_name == 'push' &&
+      startsWith(github.event.head_commit.message, 'Refresh LeafMark v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Refresh metadata only after verifying the published assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            printf 'Release metadata must be refreshed from main, got %s.\n' "$GITHUB_REF"
+            exit 1
+          fi
+
+          version="$(node -p "require('./package.json').version")"
+          expected_subject="Refresh LeafMark v$version release metadata"
+          actual_subject="$(git log -1 --pretty=%s)"
+          if [[ "$actual_subject" != "$expected_subject" ]]; then
+            printf 'Metadata commit title must be exactly "%s", got "%s".\n' \
+              "$expected_subject" "$actual_subject"
+            exit 1
+          fi
+          release_body_version="$(sed -n 's/^<!-- release-version: \([^ ]*\) -->$/\1/p' .github/release-body.md)"
+          if [[ "$release_body_version" != "$version" ]]; then
+            printf 'Release body version %s does not match package version %s.\n' \
+              "$release_body_version" "$version"
+            exit 1
+          fi
+
+          tag="v$version"
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          release_id="$(jq -r .id <<< "$release_json")"
+          if [[ "$(jq -r .draft <<< "$release_json")" != "false" || \
+                "$(jq -r .prerelease <<< "$release_json")" != "false" ]]; then
+            echo 'Metadata refresh requires an already published stable release.'
+            exit 1
+          fi
+
+          assets_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100")"
+          expected_assets=(
+            "LeafMark_${version}_Android_arm64.apk"
+            "LeafMark_${version}_Linux_amd64.AppImage"
+            "LeafMark_${version}_Linux_amd64.deb"
+            "LeafMark_${version}_x64-setup.exe"
+          )
+          mapfile -t actual_assets < <(jq -r '.[].name' <<< "$assets_json" | sort)
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected_assets[@]}" | sort)
+          if [[ "$(printf '%s\n' "${actual_assets[@]}")" != "$(printf '%s\n' "${expected_sorted[@]}")" ]]; then
+            echo 'Published release no longer has exactly the four expected platform assets.'
+            exit 1
+          fi
+          for name in "${expected_assets[@]}"; do
+            read -r state digest < <(
+              jq -r --arg name "$name" \
+                '.[] | select(.name == $name) | [.state, .digest] | @tsv' \
+                <<< "$assets_json"
+            )
+            if [[ "$state" != "uploaded" || ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              printf 'Published asset %s is not complete and digest-verified.\n' "$name"
+              exit 1
+            fi
+          done
+
+          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
+          if [[ "$latest_id" != "$release_id" ]]; then
+            echo 'Refusing to edit a release that is not currently Latest.'
+            exit 1
+          fi
+          release_body="$(cat .github/release-body.md)"
+          updated_release="$(
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              -f name="LeafMark v$version" \
+              -f body="$release_body" \
+              -f make_latest=true
+          )"
+          if [[ "$(jq -r .body <<< "$updated_release")" != "$release_body" || \
+                "$(jq -r .tag_name <<< "$updated_release")" != "$tag" ]]; then
+            echo 'GitHub did not preserve the requested release metadata.'
+            exit 1
+          fi
+          printf 'Refreshed metadata for %s after verifying four published assets.\n' "$tag"
